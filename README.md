@@ -96,6 +96,20 @@ Both are parsed **server-side** with a preview-before-apply step (Upload & Data 
 - **Cash cushion** (`… Cash Cushion Report.xlsx`): upserts each property's cash snapshot, SP
   budget, units, and loan terms. **Mid-month cash adjustments are preserved** across re-imports.
 
+## Generate Contract (project workflow)
+
+Once a bid document is attached to a project's bid slot, a **Generate Contract** button appears in
+the project's Bids panel. It opens a popup pre-filled from the property and the approved bid
+(effective date = today, term end = +60 days, contractor + total from the approved bid) and produces
+the execution-ready **Independent Contractor Agreement** PDF: agreement body (Sections 1–25) +
+signature block, **Exhibit A&B** with the bid embedded (PDF pages copied exactly, or images/ZIP
+contents placed), **Exhibit C** (Conditional Lien Waiver) and **Exhibit D** (Final Lien Waiver). The
+PDF is built natively with `pdf-lib` (`src/contract.ts`) — no system dependencies.
+
+On generate it downloads the PDF, attaches it to the project, ticks the **Contract Generated**
+lifecycle step, and remembers the owner entity + legal addresses on the property for next time.
+Output filename follows `CODE_[Unit]_Contractor_MMDDYYYY_Unexecuted.pdf`.
+
 ## Backup / restore / reset (Upload & Data view)
 
 - **Export backup (.json)** — full dataset, same shape as the original app's export.

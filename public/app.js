@@ -67,6 +67,7 @@ async function boot(){ await refreshState(); render(); }
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
 function cleanBids(p){ return (p.bids||[]).map(b=>({id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:b.fileKey||null,fileName:b.fileName||null,fileSize:b.fileSize||null})); }
+async function saveProjectSilent(p){ const payload={...p,bids:cleanBids(p)}; if(S.projects.find(x=>x.id===p.id)) await API.send('PATCH','/projects/'+p.id,payload); else await API.send('POST','/projects',payload); }
 async function saveProject(p,msg,isNew){
   const payload={...p,bids:cleanBids(p)};
   try{
@@ -779,7 +780,7 @@ function openProject(id,preset){
   function save(){
     if(!p.name.trim()){toast('Give the project a name first.');return;}
     p.region=reg(); p.manager=PROP(p.property).manager;
-    p.bids=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.approved);
+    p.bids=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||bd.approved);
     close(); saveProject(p, isNew?'Project added':'Project saved', isNew);
   }
   function del(){ close(); deleteProject(p.id); }
@@ -896,7 +897,7 @@ function openProject(id,preset){
   applyUnit();
 
   // --- bids (collapsible: 3 standard slots, each with a bid document) ---
-  const anyBid=p.bids.some(bd=>bd.approved||bd.contractor||bd.amount!=null||bd.file);
+  const anyBid=p.bids.some(bd=>bd.approved||bd.contractor||bd.amount!=null||bd.file||bd.fileKey);
   const bidsWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(anyBid?{open:''}:{})});
   const bidMeta=el('span',{class:'bs-meta'},'');
   const summary=el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Bids'), el('div',{class:'sp'}), bidMeta);
@@ -904,8 +905,19 @@ function openProject(id,preset){
   bidBody.append(el('p',{class:'bs-hint'},'Three standard slots — attach each contractor’s bid document, then approve the winner. Approving fills in the contractor and anticipated cost and advances the workflow to “Bid Approved”.'));
   const slotsWrap=el('div',{});
   bidBody.append(slotsWrap);
-  function attachBid(bd,file){ const fr=new FileReader(); fr.onload=e=>{ bd.file={name:file.name,type:file.type,size:file.size,data:e.target.result}; drawBids(); }; fr.readAsDataURL(file); }
-  function openBidFile(bd){ const a=el('a',{href:bd.file.data,download:bd.file.name}); document.body.append(a); a.click(); a.remove(); }
+  async function attachBid(bd,file){
+    const slot=p.bids.indexOf(bd);
+    const fd=new FormData(); fd.append('file',file);
+    toast('Uploading bid…');
+    try{
+      const r=await fetch(`/api/projects/${p.id}/bids/${slot}/file`,{method:'POST',body:fd});
+      if(!r.ok)throw new Error(await r.text());
+      const meta=await r.json();
+      bd.fileKey=meta.fileKey; bd.fileName=meta.fileName; bd.fileSize=meta.fileSize; bd.file=null;
+      drawBids();
+    }catch(e){ toast('Upload failed: '+e.message); }
+  }
+  function openBidFile(bd){ if(bd.fileKey) window.open('/api/bids/file/'+bd.fileKey,'_blank'); }
   function bidSlot(i){
     const bd=p.bids[i];
     const slot=el('div',{class:'bidslot'+(bd.approved?' win':'')});
@@ -923,22 +935,80 @@ function openProject(id,preset){
       el('input',{value:bd.contractor||'',placeholder:'Contractor / vendor',oninput:e=>{bd.contractor=e.target.value;refreshMeta();}}),
       el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;refreshMeta();}})));
     const fileRow=el('div',{class:'bs-file'});
-    if(bd.file){
+    if(bd.fileKey){
       fileRow.append(el('span',{class:'bs-doc'},'📄'),
-        el('a',{href:'#',title:'Download stored bid',onclick:e=>{e.preventDefault();openBidFile(bd);}},bd.file.name),
-        el('span',{class:'bs-sz'},fileSize(bd.file.size)),
+        el('a',{href:'/api/bids/file/'+bd.fileKey,target:'_blank',title:'View stored bid'},bd.fileName||'bid'),
+        el('span',{class:'bs-sz'},bd.fileSize?fileSize(bd.fileSize):''),
         el('div',{style:'flex:1'}),
-        el('button',{class:'btn ghost sm',onclick:()=>{bd.file=null;drawBids();}},'✕ Remove'));
+        el('button',{class:'btn ghost sm',onclick:()=>{bd.fileKey=null;bd.fileName=null;bd.fileSize=null;drawBids();}},'✕ Remove'));
     } else {
-      const inp=el('input',{type:'file',accept:'.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg',style:'display:none',onchange:e=>{if(e.target.files[0])attachBid(bd,e.target.files[0]);}});
+      const inp=el('input',{type:'file',accept:'.pdf,.png,.jpg,.jpeg,.zip',style:'display:none',onchange:e=>{if(e.target.files[0])attachBid(bd,e.target.files[0]);}});
       const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
       fileRow.append(lbl,inp);
     }
     slot.append(fileRow);
     return slot;
   }
-  function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
-  function drawBids(){ slotsWrap.innerHTML=''; for(let i=0;i<3;i++) slotsWrap.append(bidSlot(i)); refreshMeta(); }
+  function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
+
+  // --- Generate Contract (Independent Contractor Agreement) ---
+  const genRow=el('div',{style:'margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2);display:flex;align-items:center;gap:10px;flex-wrap:wrap'});
+  bidBody.append(genRow);
+  function refreshGen(){
+    genRow.innerHTML='';
+    const hasFile=p.bids.some(bd=>bd.fileKey);
+    const btn=el('button',{class:'btn accent sm',onclick:()=>openContractDialog()},'📄 Generate Contract');
+    if(!hasFile){ btn.disabled=true; btn.title='Attach a bid document to a slot first'; btn.style.opacity='.5'; btn.style.cursor='default'; }
+    genRow.append(btn, el('span',{class:'bs-meta'}, hasFile?'Builds the Independent Contractor Agreement with the bid embedded (Exhibits A–D).':'Attach a bid document to enable.'));
+    if(p.contractFileKey){ genRow.append(el('div',{style:'flex:1'}), el('a',{class:'btn ghost sm',href:'/api/files/'+p.contractFileKey+'?name='+encodeURIComponent(p.contractFileName||'contract.pdf')},'⬇ '+(p.contractFileName||'contract.pdf'))); }
+  }
+
+  function openContractDialog(){
+    const prop=PROP(p.property)||{};
+    const approved=p.bids.find(b=>b.approved&&b.fileKey)||p.bids.find(b=>b.fileKey)||{};
+    const total=p.actualCost!=null?p.actualCost:(approved.amount!=null?approved.amount:(p.anticipatedCost!=null?p.anticipatedCost:0));
+    const usd=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+    const isoToMdy=iso=>{const m=String(iso||'').split('-');return m.length===3?`${m[1]}/${m[2]}/${m[0]}`:'';};
+    const plusDays=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;};
+    const data={
+      effectiveDate:isoToMdy(today()), termEndDate:plusDays(60),
+      ownerEntity:prop.ownerEntity||'', contractorName:(approved.contractor||p.contractor||''),
+      propertyName:prop.name||'', propertyAddr:prop.address||'',
+      ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:'',
+      contractTotal:usd(total), unit:''
+    };
+    const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+    const sheet=el('div',{class:'sheet'});
+    const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Generate contract'),
+      el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'));
+    const bb=el('div',{class:'sb'});
+    bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Pre-filled from the property and approved bid. Owner entity and addresses are saved to the property for next time.'));
+    const f=(label,key,opts={})=>el('div',{class:'field'},el('label',{},label),el('input',{value:data[key]||'',placeholder:opts.ph||'',oninput:e=>data[key]=e.target.value}));
+    bb.append(el('div',{class:'frow'}, f('Effective date (MM/DD/YYYY)','effectiveDate'), f('Term end date (MM/DD/YYYY)','termEndDate')));
+    bb.append(f('Owner entity (legal)','ownerEntity',{ph:'e.g. MIMG CCXXXI South Pointe Sub, LLC'}));
+    bb.append(el('div',{class:'frow'}, f('Contractor name','contractorName'), f('Contract total','contractTotal')));
+    bb.append(f('Property address','propertyAddr',{ph:'street, city, ST ZIP'}));
+    bb.append(f('Owner notice address','ownerNoticeAddr',{ph:'usually same as property'}));
+    bb.append(f('Contractor address','contractorAddr'));
+    bb.append(el('div',{class:'frow'}, f('Unit # (optional)','unit',{ph:'e.g. 201'}), el('div',{})));
+    const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
+    const genBtn=el('button',{class:'btn accent',onclick:async()=>{
+      if(!data.ownerEntity||!data.contractorName||!data.contractTotal){ err.textContent='Owner entity, contractor name and contract total are required.'; return; }
+      genBtn.disabled=true; genBtn.textContent='Generating…'; err.textContent='';
+      try{
+        await saveProjectSilent(p);
+        const r=await fetch('/api/projects/'+p.id+'/contract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
+        if(!r.ok){ const e=await r.json().catch(()=>({})); err.textContent=e.error||'Generation failed.'; genBtn.disabled=false; genBtn.textContent='Generate contract'; return; }
+        const out=await r.json();
+        const a=el('a',{href:out.downloadUrl}); document.body.append(a); a.click(); a.remove();
+        scrim.remove(); close(); await afterWrite('Contract generated · '+out.contractFileName);
+      }catch(e){ err.textContent='Failed: '+e.message; genBtn.disabled=false; genBtn.textContent='Generate contract'; }
+    }},'Generate contract');
+    bb.append(err, el('div',{style:'display:flex;gap:8px;margin-top:6px'}, el('div',{style:'flex:1'}), genBtn));
+    sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
+  }
+
+  function drawBids(){ slotsWrap.innerHTML=''; for(let i=0;i<3;i++) slotsWrap.append(bidSlot(i)); refreshMeta(); refreshGen(); }
   drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap);
 
   // --- lifecycle steps ---

@@ -49,6 +49,8 @@ export interface Project {
   progressNotes?: ProgressNote[];
   noContract?: boolean;
   noContractSet?: boolean;
+  contractFileKey?: string | null;
+  contractFileName?: string | null;
 }
 
 export interface Property {
@@ -58,6 +60,9 @@ export interface Property {
   manager: string;
   spBudget?: number;
   units?: number;
+  ownerEntity?: string;
+  address?: string;
+  ownerNoticeAddr?: string;
 }
 
 export interface CashSnapshot {

@@ -76,6 +76,8 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     amountCompleted: r.amount_completed,
     noContract: !!r.no_contract,
     noContractSet: !!r.no_contract_set,
+    contractFileKey: r.contract_file_key ?? null,
+    contractFileName: r.contract_file_name ?? null,
     bids,
     progressNotes: notes,
   };
@@ -116,7 +118,7 @@ export async function assembleState(): Promise<AppState> {
     notesByProject.set(n.project_id, arr);
   }
 
-  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0 }));
+  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '' }));
   const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || []));
 
   const cashMap: Record<string, CashSnapshot> = {};

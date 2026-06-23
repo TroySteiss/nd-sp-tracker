@@ -1,13 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, createReadStream, existsSync } from 'node:fs';
+import { mkdirSync, createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs';
 import { join, extname } from 'node:path';
 import type pg from 'pg';
 import { pool, query, tx, assembleState, rowToProject } from './db.js';
 import { loadStateInto } from './seed.js';
 import { parseGL, parseCushion } from './importers.js';
-import { applyCostRules, uid, STEP_KEYS, type Project, type AppState } from '../shared/domain.js';
+import { buildContract, type ContractVars, type BidAttachment } from './contract.js';
+import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, type Project, type AppState } from '../shared/domain.js';
 
 export const api = Router();
 
@@ -118,6 +119,75 @@ api.get('/bids/file/:key', (req, res) => {
   if (!existsSync(full)) return res.status(404).send('not found');
   res.setHeader('Content-Disposition', 'inline');
   createReadStream(full).pipe(res);
+});
+
+// Download a stored file (used for generated contracts). ?name sets the filename.
+api.get('/files/:key', (req, res) => {
+  const key = req.params.key.replace(/[^a-zA-Z0-9._-]/g, '');
+  const full = join(UPLOAD_DIR, key);
+  if (!existsSync(full)) return res.status(404).send('not found');
+  const name = String(req.query.name || key).replace(/[^a-zA-Z0-9._ -]/g, '');
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
+  createReadStream(full).pipe(res);
+});
+
+/* ---------- Generate Independent Contractor Agreement (spec: Contract_Generation_Workflow) ---------- */
+const camel = (s: string) => String(s || '').replace(/[^a-zA-Z0-9 ]/g, '').split(/\s+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('');
+const mmddyyyy = (d: string) => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); if (m) return `${m[2]}${m[3]}${m[1]}`; const s = String(d || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); return s ? `${s[1].padStart(2, '0')}${s[2].padStart(2, '0')}${s[3]}` : 'date'; };
+
+api.post('/projects/:id/contract', async (req, res) => {
+  const projRow = await query('select * from projects where id=$1', [req.params.id]);
+  if (!projRow.rowCount) return res.status(404).json({ error: 'project not found' });
+  const proj = projRow.rows[0];
+  const b = req.body || {};
+  const vars: ContractVars = {
+    effectiveDate: b.effectiveDate || '', termEndDate: b.termEndDate || '', ownerEntity: b.ownerEntity || '',
+    contractorName: b.contractorName || '', propertyName: b.propertyName || '', propertyAddr: b.propertyAddr || '',
+    ownerNoticeAddr: b.ownerNoticeAddr || b.propertyAddr || '', contractorAddr: b.contractorAddr || '', contractTotal: b.contractTotal || '',
+  };
+  if (!vars.ownerEntity || !vars.contractorName || !vars.contractTotal) return res.status(400).json({ error: 'ownerEntity, contractorName and contractTotal are required' });
+
+  // Gather bid attachments for this project (approved first), reading files from storage.
+  const bidsRows = (await query('select * from bids where project_id=$1 order by approved desc, slot asc', [proj.id])).rows;
+  const attachments: BidAttachment[] = [];
+  for (const bd of bidsRows) {
+    if (!bd.file_key) continue;
+    const full = join(UPLOAD_DIR, bd.file_key);
+    if (existsSync(full)) attachments.push({ buffer: readFileSync(full), name: bd.file_name || bd.file_key });
+  }
+
+  let pdf: Uint8Array;
+  try { pdf = await buildContract(vars, attachments); }
+  catch (e: any) { return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) }); }
+
+  // Filename: [CODE]_[Unit?]_[ContractorCamel]_[MMDDYYYY]_Unexecuted.pdf
+  const unit = b.unit ? `Unit${String(b.unit).replace(/[^0-9A-Za-z]/g, '')}_` : '';
+  const fileName = `${proj.property_code}_${unit}${camel(vars.contractorName)}_${mmddyyyy(vars.effectiveDate)}_Unexecuted.pdf`;
+  const fileKey = `${randomUUID()}.pdf`;
+  writeFileSync(join(UPLOAD_DIR, fileKey), Buffer.from(pdf));
+
+  await tx(async (c) => {
+    // attach the contract to the project
+    let steps = proj.steps || {};
+    if (b.tickStep !== false) {
+      steps = { ...steps, contractGenerated: true };
+      // cascade up: completing a post-approval step implies earlier non-N/A steps
+      const noContract = !!proj.no_contract;
+      STEP_KEYS.slice(0, STEP_KEYS.indexOf('contractGenerated')).forEach((k) => {
+        if (!(noContract && CONTRACT_STEPS.includes(k))) steps[k] = true;
+      });
+    }
+    await c.query('update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
+      [fileKey, fileName, JSON.stringify(steps), proj.id]);
+    // remember legal fields on the property for next time
+    if (b.rememberProperty !== false) {
+      await c.query('update properties set owner_entity=$1, address=$2, owner_notice_addr=$3 where code=$4',
+        [vars.ownerEntity, vars.propertyAddr, vars.ownerNoticeAddr, proj.property_code]);
+    }
+  });
+
+  res.json({ contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
 });
 
 /* ---------- cash snapshot (mid-month edit) ---------- */

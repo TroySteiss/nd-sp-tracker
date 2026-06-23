@@ -1,0 +1,1447 @@
+
+"use strict";
+/* ============================================================
+   NORTH DAKOTA — SPECIAL PROJECTS / CAPEX TRACKER
+   Single-file tool. Data persists via the artifact storage API
+   when available, otherwise localStorage, otherwise in-memory.
+   A JSON backup can always be exported/imported for portability.
+   ============================================================ */
+
+/* ---------- Lifecycle (the 12 steps from the workflow brief) ---------- */
+const LIFECYCLE = [
+  {key:'planned',           label:'Planned',                 short:'Plan', desc:'Scope, anticipated cost and planned timing captured.'},
+  {key:'gotBids',           label:'Bids Received',           short:'Bids', desc:'Bids collected (3 is standard; not always required).'},
+  {key:'approved',          label:'Bid Approved',            short:'Appr', desc:'One bid selected and approved.'},
+  {key:'contractGenerated', label:'Contract Generated',      short:'Ctrct',desc:'Contract drafted to the approved bid and sent to the contractor.'},
+  {key:'signed',            label:'Signed & Countersigned',  short:'Sign', desc:'Contractor signed; we countersigned and returned.'},
+  {key:'contractSaved',     label:'Contract Filed',          short:'File', desc:'Executed contract saved in the property SharePoint folder.'},
+  {key:'workStarted',       label:'Work Started',            short:'Start',desc:'Work underway (may run in phases).'},
+  {key:'workCompleted',     label:'Work Completed',          short:'Done', desc:'Contractor completed the work or phase.'},
+  {key:'paid',              label:'Work Paid For',           short:'Paid', desc:'Invoice paid (confirmed by the general ledger).'},
+  {key:'completed',         label:'Completed',               short:'✓',    desc:'Work closed out; reflected in the financial statements.'},
+  {key:'lienWaiver',        label:'Lien Waiver Received',    short:'Lien', desc:'Contractor returned the lien waiver.'},
+  {key:'lienSaved',         label:'Waiver Filed',            short:'WFile',desc:'Lien waiver saved in the same SharePoint folder.'},
+];
+const STEP_KEYS = LIFECYCLE.map(s=>s.key);
+const CATEGORIES = ['APPLIANCES','BUILDING REPAIRS','CABINETS/COUNTERTOPS','CARPETS/VINYL','COMMON AREA UPGRADES','Concrete/Asphalt','DOORS/WINDOWS','DRAPES/BLINDS','ELECTRICAL - EXTERIOR','ELECTRICAL - INTERIOR','ELEVATORS','FENCING','FIRE','FURNITURE/EQUIPMENT','GENERAL','HVAC','INSPECTION EXPENSES','JANITORIAL','LABOR','LANDSCAPING','OTHER','PAINTING - EXTERIOR','PAINTING - INTERIOR','PARKING','PLUMBING','POOL','REPAIR DOWN UNITS','ROOFING','SECURITY CAMERA','SIGNAGE','SUPPLIES','UNIT AMENITIES/UPGRADES','WOOD REPLACEMENT'];
+/* IDs of projects that were imported from the spreadsheet's "SP COMPLETE" archive tab and should not appear as active work. Purged once at boot (see S.meta.spCompletePurge). */
+const SP_COMPLETE_IDS=["P001","P002","P003","P004","P005","P006","P007","P008","P009","P010","P011","P012","P013","P014","P015","P016","P017","P018","P019","P020","P021","P022","P023","P024","P025","P026","P027","P028","P029","P030","P031","P032","P033","P034","P035","P036","P037","P038","P039","P040","P041","P042","P043","P044","P045","P046","P047","P048","P049","P050","P051","P052","P053","P054","P055","P056","P057","P058","P059","P060","P061","P062","P063","P064","P065","P066","P067","P068","P070","P071","P072","P073","P074","P075","P076","P077","P078","P079","P080","P081","P082","P083","P084","P085","P086","P087","P088","P089","P090","P091","P092","P093","P094","P095","P096","P097","P098","P099","P100","P101","P102","P103","P104","P105","P106","P107","P108","P109","P110","P111","P112","P113","P114","P115","P116","P117","P118","P119","P120"];
+
+/* ---------- Helpers ---------- */
+const $ = (s,r=document)=>r.querySelector(s);
+const el = (t,a={},...kids)=>{const n=document.createElement(t);for(const k in a){if(k==='class')n.className=a[k];else if(k==='html')n.innerHTML=a[k];else if(k.startsWith('on'))n.addEventListener(k.slice(2),a[k]);else if(a[k]!=null)n.setAttribute(k,a[k]);}for(let c of kids){if(c==null||c===false)continue;n.append(c.nodeType?c:document.createTextNode(c));}return n;};
+const fmt = (n,dash=true)=>{if(n==null||n===''||isNaN(n))return dash?'—':'';const v=Math.round(Number(n));const s=Math.abs(v).toLocaleString('en-US');return v<0?`($${s})`:`$${s}`;};
+const fmt1=(n)=>{if(n==null||isNaN(n))return '—';return '$'+Number(n).toLocaleString('en-US',{maximumFractionDigits:0});};
+const pct = (n)=>n==null||isNaN(n)?'—':(Number(n)*100).toFixed(n<0.1?1:0)+'%';
+const esc = s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+const today=()=>new Date().toISOString().slice(0,10);
+const fmtDate=(d)=>{ if(!d)return '—'; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); const dt=new Date(+m[0],+m[1]-1,+m[2]); if(isNaN(dt))return String(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
+const inDateRange=(p,state)=>{ const d=(p.dateAdded||'').slice(0,10); if(state.dateFrom&&(!d||d<state.dateFrom))return false; if(state.dateTo&&(!d||d>state.dateTo))return false; return true; };
+const uid = p=>p+Math.random().toString(36).slice(2,8);
+
+/* ---------- Persistence ---------- */
+/* ---------- API client (replaces localStorage Store; data now lives in Postgres) ---------- */
+const API={
+  async get(path){ const r=await fetch('/api'+path,{headers:{'Accept':'application/json'}}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok)throw new Error(await r.text()); return r.json(); },
+  async send(method,path,body){ const r=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},body:body!=null?JSON.stringify(body):undefined}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok){ let msg; try{msg=(await r.json()).error;}catch(e){ msg='request failed'; } throw new Error(msg||'request failed'); } return r.json(); }
+};
+async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.cashAdjustments||[]; S.gl=S.gl||[]; S.projects=S.projects||[]; S.cash=S.cash||{}; S.meta=S.meta||{}; }
+
+/* ---------- App state ---------- */
+let S=null;            // working state
+let VIEW={tab:'dashboard',prop:null};
+let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
+let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
+let DASH={region:'',props:[],cat:'',hidePlanned:false,discSort:'cost',discProp:''};  // dashboard controls
+const PCOLOR={
+  /* Minot — shades of blue */
+  CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
+  /* Williston — shades of warm orange → red */
+  BCND:'#e0973a', ECND:'#d2731f', FHND:'#b8501f', PHND:'#8f3818'
+};
+const pcolor=code=>PCOLOR[code]||'#7a8190';
+
+/* seedState removed — initial data is seeded server-side into Postgres */
+
+async function boot(){ await refreshState(); render(); }
+function commit(msg){ render(); if(msg) toast(msg); }
+async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
+function cleanBids(p){ return (p.bids||[]).map(b=>({id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:b.fileKey||null,fileName:b.fileName||null,fileSize:b.fileSize||null})); }
+async function saveProject(p,msg,isNew){
+  const payload={...p,bids:cleanBids(p)};
+  try{
+    if(isNew||!S.projects.find(x=>x.id===p.id)){ await API.send('POST','/projects',payload); }
+    else { await API.send('PATCH','/projects/'+p.id,payload); }
+    await afterWrite(msg);
+  }catch(e){ toast('Save failed: '+e.message); }
+}
+async function deleteProject(id){ try{ await API.send('DELETE','/projects/'+id); await afterWrite('Project deleted'); }catch(e){ toast('Delete failed: '+e.message); } }
+async function linkGl(g,msg){ try{ await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
+async function saveMatch(g,pr,msg){ try{ await API.send('PATCH','/projects/'+pr.id,{...pr,bids:cleanBids(pr)}); await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
+async function addAdj(a){ try{ await API.send('POST','/cash-adjustments',a); await afterWrite('Adjustment recorded'); }catch(e){ toast('Failed: '+e.message); } }
+async function delAdj(id){ try{ await API.send('DELETE','/cash-adjustments/'+id); await afterWrite('Adjustment removed'); }catch(e){ toast('Failed: '+e.message); } }
+async function saveCash(code,obj,msg){ try{ await API.send('PATCH','/cash/'+code,obj); await afterWrite(msg||'Cash updated'); }catch(e){ toast('Failed: '+e.message); } }
+async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWrite('Reset to starter data'); }catch(e){ toast('Failed: '+e.message); } }
+async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
+/* ---------- login (shared password) ---------- */
+function showLogin(){ const o=document.getElementById('login'); if(o)o.style.display='flex'; }
+function hideLogin(){ const o=document.getElementById('login'); if(o)o.style.display='none'; }
+async function start(){
+  const form=document.getElementById('login-form');
+  if(form&&!form._wired){ form._wired=true; form.addEventListener('submit',async ev=>{
+    ev.preventDefault();
+    const pw=document.getElementById('login-pw').value;
+    const err=document.getElementById('login-err'); err.textContent='';
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
+    if(r.ok){ hideLogin(); await boot(); } else { err.textContent='Incorrect password.'; }
+  }); }
+  try{ const st=await fetch('/api/auth/status').then(r=>r.json()); if(st.authed){ hideLogin(); await boot(); } else { showLogin(); } }
+  catch(e){ showLogin(); }
+}
+/* ---------- Derived ---------- */
+const PROP=code=>S.properties.find(p=>p.code===code);
+/* Contract steps become "N/A" when a project needs no contract (e.g. < $5K). */
+const CONTRACT_STEPS=['contractGenerated','signed','contractSaved'];
+const naKeys=p=>p.noContract?CONTRACT_STEPS:[];
+const isNA=(p,key)=>!!p.noContract && CONTRACT_STEPS.includes(key);
+const appKeys=p=>{ const na=naKeys(p); return STEP_KEYS.filter(k=>!na.includes(k)); };
+const appLifecycle=p=>{ const na=naKeys(p); return LIFECYCLE.filter(s=>!na.includes(s.key)); };
+function stage(p){ let last=-1; STEP_KEYS.forEach((k,i)=>{if(p.steps&&p.steps[k])last=i;}); return last; } // index of furthest completed step (global)
+function stepsDone(p){ return appKeys(p).filter(k=>p.steps&&p.steps[k]).length; }   // applicable steps only
+function stepsTotal(p){ return appKeys(p).length; }
+function isComplete(p){ if(p.inHouse){ const t=Number(p.totalToComplete)||0,d=Number(p.amountCompleted)||0; return t>0&&d>=t; } return !!(p.steps&&p.steps.completed); }
+/* consistent per-property colour chip (matches dashboard bubbles + pipeline) */
+function propChip(code,extra){ return el('span',{class:'chip pchip'+(extra?' '+extra:''),style:`background:${pcolor(code)};color:#fff`},code); }
+function glSpentFor(code,cat){ return S.gl.filter(g=>g.property===code && (cat==null||g.category===cat)).reduce((a,g)=>a+(Number(g.amount)||0),0); }
+function cashAdjFor(code){ return S.cashAdjustments.filter(a=>a.property===code).reduce((a,b)=>a+(Number(b.amount)||0),0); }
+function effectiveCash(code){ const c=S.cash[code]; const base=c&&c.cash!=null?Number(c.cash):0; return base+cashAdjFor(code); }
+function projForProp(code){ return S.projects.filter(p=>p.property===code); }
+function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&&!p.onHold).reduce((a,p)=>a+(Number(p.anticipatedCost)||0),0); }
+
+/* ---------- Cash projection + audit model ---------- */
+const OVER_THRESHOLD = 5000;                       // unplanned-spend flag threshold
+const APPROVED_IDX = STEP_KEYS.indexOf('approved'); // workflow "lock-in" point
+const isApproved=p=>!!(p.steps&&p.steps.approved);
+const isPaidP=p=>!!(p.steps&&p.steps.paid);
+const hasCost=p=>p.anticipatedCost!=null||p.actualCost!=null;
+const projOutflow=p=>p.actualCost!=null?Number(p.actualCost):(p.anticipatedCost!=null?Number(p.anticipatedCost):0);
+/* ---- in-house (own-crew) projects: estimate + progress, no contracts/bids/liens ---- */
+const isInHouse=p=>!!p.inHouse;
+const ihIsBudget=p=>p.ihUnit!=='quantity';        // default budget ($); else quantity (count)
+const ihNum=n=>Number(n||0).toLocaleString('en-US');
+const ihFmt=(p,n)=>ihIsBudget(p)?fmt(n,false):ihNum(n);
+const ihTotal=p=>Number(p.totalToComplete)||0;
+const ihDone=p=>Number(p.amountCompleted)||0;
+const ihRemaining=p=>Math.max(0, ihTotal(p)-ihDone(p));
+const ihPct=p=>{ const t=ihTotal(p); return t>0?Math.min(1, ihDone(p)/t):0; };
+/* phase: where a project sits relative to its workflow.
+   In-house projects use a progress workflow (total to complete / amount completed).
+   Contractor projects: no cost = "note"; cost pre-approval = "discussed"; approval locks the pipeline. */
+function phase(p){
+  if(p.onHold) return 'hold';
+  if(p.inHouse){
+    const t=ihTotal(p), d=ihDone(p);
+    if(t<=0 && d<=0) return 'note';
+    if(t>0 && d>=t)  return 'done';
+    return 'active';
+  }
+  if(isComplete(p)) return 'done';
+  if(isPaidP(p)) return 'paid';
+  if(isApproved(p)) return 'active';
+  if(!hasCost(p)) return 'note';
+  return 'discussed';
+}
+const PHASES=[
+  {key:'active',   label:'In progress',      chip:'',     desc:'Approved & in the pipeline, not yet paid'},
+  {key:'paid',     label:'Paid · awaiting closeout', chip:'done', desc:'Paid but not fully closed out'},
+  {key:'discussed',label:'Discussed / planned', chip:'discussed', desc:'Has a cost; pre-approval — order is flexible'},
+  {key:'note',     label:'Notes',            chip:'note', desc:'Jotted down — no cost plugged in yet'},
+  {key:'hold',     label:'On hold',          chip:'hold', desc:'Parked for a future period'},
+  {key:'done',     label:'Completed',        chip:'done', desc:'Closed out & in the financials'},
+];
+function phaseMeta(k){ return PHASES.find(x=>x.key===k); }
+
+/* What cash *should* be: snapshot is a point-in-time fact; the tracker projects
+   forward by netting outstanding (committed, unpaid) work against it. */
+function cashModel(code){
+  const c=S.cash[code]||{};
+  const snapshot = c.cash!=null?Number(c.cash):null;
+  const adj = cashAdjFor(code);
+  const cashToday = (snapshot||0)+adj;
+  const projs=projForProp(code);
+  const outstanding=[], paid=[], discussed=[];
+  let outstandingTotal=0, paidTotal=0, discussedTotal=0;
+  projs.forEach(p=>{
+    if(p.inHouse){
+      if(p.onHold || !ihIsBudget(p)) return;          // quantity-tracked in-house has no $ figure
+      const t=ihTotal(p), d=ihDone(p);
+      if(t<=0 && d<=0) return;                        // note
+      if(d>0){ paid.push(p); paidTotal+=d; }          // completed-to-date = spent (final)
+      const rem=ihRemaining(p);
+      if(rem>0 && !isComplete(p)){ outstanding.push(p); outstandingTotal+=rem; }  // remaining = projected out
+      return;
+    }
+    if(phase(p)==='active'){ outstanding.push(p); outstandingTotal+=projOutflow(p); }   // committed, unpaid
+    else if(isPaidP(p)){ paid.push(p); paidTotal+=projOutflow(p); }                      // final
+    else if(phase(p)==='discussed'){ discussed.push(p); discussedTotal+=projOutflow(p); }
+  });
+  return {snapshot,adj,cashToday,outstanding,outstandingTotal,paid,paidTotal,discussed,discussedTotal,
+          projectedCash: cashToday-outstandingTotal};
+}
+/* Reconcile project records against the general ledger. GL = source of truth for paid work. */
+function auditModel(code){
+  const gls=S.gl.filter(g=>g.property===code);
+  const glTotal=gls.reduce((a,g)=>a+(Number(g.amount)||0),0);
+  const linkedIds=new Set(gls.map(g=>g.linkedProjectId).filter(Boolean));
+  const unplanned=gls.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId);   // posted, >$5k, not tied to a project
+  const paid=projForProp(code).filter(isPaidP);
+  const paidNoGL=paid.filter(p=>!linkedIds.has(p.id));                                     // marked paid but no GL backing
+  return {gls,glTotal,unplanned,paid,paidNoGL,linkedCount:linkedIds.size};
+}
+function unplannedAll(){ return S.gl.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId); }
+/* Rough GL→project match scoring, so tying out is point-and-click rather than hunting. */
+function glMatchScore(g,p){
+  let score=0; const reasons=[];
+  if(g.category && p.category && String(g.category).toUpperCase()===String(p.category).toUpperCase()){ score+=40; reasons.push('category'); }
+  const amt=Math.abs(Number(g.amount)||0);
+  const tot=Math.abs(p.inHouse?ihTotal(p):projOutflow(p));
+  if(tot>0 && amt>0){
+    const diff=Math.abs(amt-tot)/Math.max(amt,tot);
+    if(diff<0.005){ score+=45; reasons.push('exact $'); }
+    else if(diff<0.05){ score+=32; reasons.push('≈ $'); }
+    else if(diff<0.2){ score+=16; reasons.push('~ $'); }
+  }
+  const toks=s=>String(s||'').toLowerCase().split(/[^a-z0-9]+/).filter(w=>w.length>2);
+  const gtok=new Set([...toks(g.vendor),...toks(g.remarks)]);
+  const ptok=new Set([...toks(p.name),...toks(p.contractor),...toks(p.plan)]);
+  let overlap=0; ptok.forEach(t=>{ if(gtok.has(t))overlap++; });
+  if(overlap){ score+=Math.min(30,overlap*12); reasons.push('name'); }
+  return {score,reasons};
+}
+
+/* =========================================================
+   RENDER
+========================================================= */
+function render(){
+  const root=$('#root');
+  root.innerHTML='';
+  const app=el('div',{class:'app'});
+  app.append(rail(), mainCol());
+  root.append(app);
+}
+
+function rail(){
+  const counts={
+    projects:S.projects.length,
+    active:S.projects.filter(p=>!isComplete(p)).length,
+  };
+  const r=el('div',{class:'rail'+(VIEW.railOpen?' open':'')});
+  const brand=el('div',{class:'brand'},
+    el('div',{class:'mark'}, el('div',{class:'glyph'},'SP'),
+      el('div',{}, el('h1',{},'North Dakota'), el('div',{class:'sub'},'Special Projects · Capex'))));
+  const nav=el('div',{class:'nav'});
+  const item=(tab,ic,label,ct)=>{
+    const b=el('button',{class:VIEW.tab===tab?'on':'',onclick:()=>{VIEW.tab=tab;VIEW.railOpen=false;render();}},
+      el('span',{class:'ic'},ic), el('span',{},label));
+    if(ct!=null)b.append(el('span',{class:'ct'},String(ct)));
+    return b;
+  };
+  nav.append(el('div',{class:'grp'},'Overview'));
+  nav.append(item('dashboard','◧','Dashboard'));
+  nav.append(item('projects','▤','Projects',counts.active));
+  nav.append(item('inhouse','🛠','In-house',S.projects.filter(isInHouse).length||null));
+  nav.append(el('div',{class:'grp'},'Properties'));
+  ['Minot','Williston'].forEach(reg=>{
+    nav.append(el('div',{class:'grp',style:'padding-top:6px'},reg));
+    S.properties.filter(p=>p.region===reg).forEach(p=>{
+      const b=el('button',{class:(VIEW.tab==='property'&&VIEW.prop===p.code)?'on':'',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;VIEW.railOpen=false;render();}},
+        el('span',{class:'ic',style:`color:${pcolor(p.code)}`},'●'), el('span',{},p.code),
+        el('span',{class:'ct'},String(projForProp(p.code).filter(x=>!isComplete(x)).length)));
+      nav.append(b);
+    });
+  });
+  nav.append(el('div',{class:'grp'},'Money'));
+  nav.append(item('cash','$','Cash & Loans'));
+  nav.append(item('data','⇪','Upload & Data'));
+
+  const foot=el('div',{class:'foot'},
+    el('div',{class:'row'}, el('span',{},'GL period'), el('span',{class:'mono'},S.meta&&S.meta.glPeriod?S.meta.glPeriod:'—')),
+    el('div',{class:'row',style:'margin-top:4px'}, el('span',{},'Cash as of'), el('span',{class:'mono'},S.meta&&S.meta.cashAsOf?S.meta.cashAsOf:'—')));
+  r.append(brand,nav,foot);
+  return r;
+}
+
+function mainCol(){
+  const m=el('div',{class:'main'});
+  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,property:viewProperty,cash:viewCash,data:viewData};
+  const {bar,body}=(views[VIEW.tab]||viewDashboard)();
+  m.append(bar,el('div',{class:'content'},body));
+  return m;
+}
+function topbar(crumb,title,...actions){
+  const t=el('div',{class:'topbar'});
+  const menu=el('button',{class:'btn ghost sm menu-btn',onclick:()=>{VIEW.railOpen=!VIEW.railOpen;render();}},'☰');
+  const tt=el('div',{class:'tt'}, el('div',{class:'crumb'},crumb), el('h2',{},title));
+  t.append(menu,tt,el('div',{class:'sp'}),...actions);
+  return t;
+}
+
+/* =========================================================
+   DASHBOARD
+========================================================= */
+function viewDashboard(){
+  const regions=['Minot','Williston'];
+  DASH.props=DASH.props||[];
+  let props=S.properties.filter(p=>!DASH.region||p.region===DASH.region);
+  if(DASH.props.length) props=props.filter(p=>DASH.props.includes(p.code));
+  const codeset=new Set(props.map(p=>p.code));
+  const inReg=code=>codeset.has(code);
+  const catOk=p=>!DASH.cat||p.category===DASH.cat;
+  const glOk=g=>inReg(g.property)&&(!DASH.cat||g.category===DASH.cat);
+
+  // dashboard controls: region toggle + hide-planned
+  const regSeg=el('div',{class:'seg-ctl'},
+    el('button',{class:DASH.region===''?'on':'',onclick:()=>{DASH.region='';render();}},'All'),
+    ...regions.map(r=>el('button',{class:DASH.region===r?'on':'',onclick:()=>{DASH.region=r;DASH.props=[];render();}},r)));
+  const hideChk=el('label',{class:'chk'},
+    (()=>{const c=el('input',{type:'checkbox',onchange:e=>{DASH.hidePlanned=e.target.checked;render();}});if(DASH.hidePlanned)c.checked=true;return c;})(),
+    'Hide \u2018Planned\u2019');
+  const bar=topbar('Portfolio','Dashboard', regSeg, hideChk,
+    el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project'));
+  const body=el('div',{class:'grid'});
+
+  // property bubble toggles + category filter
+  const pbWrap=el('div',{class:'bubbles'}, el('span',{class:'bub-lab'},'Properties'));
+  S.properties.filter(p=>!DASH.region||p.region===DASH.region).forEach(pr=>{
+    const on=DASH.props.includes(pr.code);
+    pbWrap.append(el('button',{class:'bub'+(on?' on':''),style:on?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
+      onclick:()=>{const i=DASH.props.indexOf(pr.code);if(i<0)DASH.props.push(pr.code);else DASH.props.splice(i,1);render();}},
+      el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code));
+  });
+  if(DASH.props.length)pbWrap.append(el('button',{class:'bub clear',onclick:()=>{DASH.props=[];render();}},'clear'));
+  const catsPresent=[...new Set(S.projects.filter(p=>inReg(p.property)).map(p=>p.category))].sort();
+  const catSel=el('select',{class:'mini-sel',onchange:e=>{DASH.cat=e.target.value;render();}});
+  catSel.append(el('option',{value:'',...(DASH.cat?{}:{selected:true})},'All categories'));
+  catsPresent.forEach(cd=>catSel.append(el('option',{value:cd,...(DASH.cat===cd?{selected:true}:{})},cd)));
+  body.append(el('div',{class:'dash-filter'}, pbWrap, el('div',{class:'bubbles'}, el('span',{class:'bub-lab'},'Category'), catSel,
+    DASH.cat?el('button',{class:'bub clear',onclick:()=>{DASH.cat='';render();}},'clear'):null)));
+
+  const all=S.projects.filter(p=>inReg(p.property)&&catOk(p));
+  const notesCount=all.filter(p=>phase(p)==='note').length;
+  const active=all.filter(p=>!isComplete(p)&&phase(p)!=='note');   // in-progress = priced, non-complete work (notes excluded)
+  const totBudget=props.reduce((a,p)=>a+(Number(p.spBudget)||0),0);
+  const totSpent=S.gl.filter(glOk).reduce((a,g)=>a+(Number(g.amount)||0),0);
+  const totOutstanding=props.reduce((a,p)=>a+cashModel(p.code).outstandingTotal,0);
+  const totCash=props.reduce((a,p)=>a+effectiveCash(p.code),0);
+
+  const kpis=el('div',{class:'grid kpis'});
+  const kpi=(lab,val,sub,cls)=>el('div',{class:'kpi'+(cls?' '+cls:'')}, el('div',{class:'lab'},lab), el('div',{class:'val'+(typeof val==='string'&&val[0]==='('?' neg':'')},val), el('div',{class:'sub'},sub));
+  kpis.append(
+    kpi('Properties',String(props.length),DASH.region||'Minot · Williston'),
+    kpi('Active projects',String(active.length),`${all.length} tracked${notesCount?` · ${notesCount} note${notesCount!==1?'s':''}`:''}`),
+    kpi('SP budget (2026)',fmt(totBudget),DASH.region?DASH.region:'across portfolio','accent'),
+    kpi('Spent to date',fmt(totSpent),'posted per ledger'),
+    kpi('Cash today',fmt(totCash),'snapshot + adjustments'),
+    kpi('Projected cash',fmt(totCash-totOutstanding),`less ${fmt(totOutstanding,false)} committed`),
+  );
+  body.append(kpis);
+
+  /* Pipeline funnel — contractor lifecycle, stacked one colour per property (in-house excluded) */
+  let hold=0; active.forEach(p=>{ if(p.onHold)hold++; });
+  const fActive=active.filter(p=>!isInHouse(p));
+  const stageProp=LIFECYCLE.map(()=>({})); const stageTotal=new Array(LIFECYCLE.length).fill(0);
+  fActive.forEach(p=>{ if(p.onHold)return; const s=Math.max(0,stage(p)); stageProp[s][p.property]=(stageProp[s][p.property]||0)+1; stageTotal[s]++; });
+  const maxT=Math.max(1,...stageTotal);
+  const funnel=el('div',{class:'panel'});
+  funnel.append(el('div',{class:'ph'}, el('h3',{},'Lifecycle pipeline'), el('div',{class:'sp'}),
+    el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'segment = property · click to open'),
+    el('span',{class:'chip'},`${hold} on hold`)));
+  const legendProps=props.filter(pr=>fActive.some(p=>!p.onHold&&p.property===pr.code));
+  const legend=el('div',{class:'plegend'});
+  legendProps.forEach(pr=>legend.append(el('button',{class:'pl-item',title:`Open ${pr.code}`,onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
+    el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}), pr.code)));
+  funnel.append(el('div',{class:'pad',style:'padding-bottom:6px'},legend));
+  const fwrap=el('div',{class:'pad',style:'padding-top:6px'});
+  const fn=el('div',{class:'funnel'});
+  LIFECYCLE.forEach((s,i)=>{
+    if(DASH.hidePlanned&&i===0)return;        // hide the Planned stage to cut clutter
+    const row=el('div',{class:'f'});
+    row.append(el('div',{class:'fn'},`${i+1}. ${s.label}`));
+    const stack=el('div',{class:'fstack',style:`width:${Math.max(2,stageTotal[i]/maxT*100)}%`});
+    const entries=Object.entries(stageProp[i]).sort((a,b)=>b[1]-a[1]);
+    if(!entries.length) stack.append(el('div',{class:'fseg empty'}));
+    entries.forEach(([cd,n])=>{
+      const seg=el('div',{class:'fseg',style:`flex:${n};background:${pcolor(cd)}`,title:`${cd}: ${n} at ${s.label}`,
+        onclick:e=>{e.stopPropagation();VIEW.tab='property';VIEW.prop=cd;render();}});
+      if(n/Math.max(1,stageTotal[i])>0.14) seg.textContent=String(n);
+      stack.append(seg);
+    });
+    row.append(el('div',{},stack), el('div',{class:'fc'},String(stageTotal[i])));
+    fn.append(row);
+  });
+  fwrap.append(fn); funnel.append(fwrap); body.append(funnel);
+
+  /* Portfolio table */
+  const tp=el('div',{class:'panel'});
+  tp.append(el('div',{class:'ph'}, el('h3',{},'Portfolio — budget, spend & cash'), el('div',{class:'sp'}),
+    el('span',{class:'chip'},`as of ${S.meta&&S.meta.cashAsOf||'—'}`)));
+  const tbl=el('table',{class:'tbl'});
+  tbl.append(el('thead',{},tr(
+    th('Property'),th('Units','r'),th('SP budget','r'),th('Spent','r'),th('Remaining','r'),th('% used','r'),
+    th('Open plan','r'),th('Active','r'),th('Cash','r'),th('Loan matures','r'))));
+  const tb=el('tbody');
+  regions.filter(r=>!DASH.region||r===DASH.region).forEach(reg=>{
+    const regProps=props.filter(p=>p.region===reg); if(!regProps.length)return;
+    tb.append(el('tr',{class:'grp'}, el('td',{colspan:10}, `${reg} — ${PROP(regProps[0].code).manager}`)));
+    let bB=0,bS=0,bR=0;
+    regProps.forEach(p=>{
+      const c=S.cash[p.code]||{};
+      const budget=Number(p.spBudget)||0;
+      const spent=glSpentFor(p.code)|| (c.spSpent!=null?Number(c.spSpent):0);
+      const rem=budget-spent; bB+=budget;bS+=spent;bR+=rem;
+      const used=budget?spent/budget:0;
+      const actv=projForProp(p.code).filter(x=>!isComplete(x)&&phase(x)!=='note').length;
+      const row=el('tr',{class:'clickrow',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;render();}},
+        td(el('div',{style:'display:flex;align-items:center;gap:8px'}, el('span',{class:'pl-dot',style:'background:'+pcolor(p.code)}), el('div',{}, el('strong',{},p.code), el('div',{style:'font-size:11px;color:var(--ink-3)'},p.name)))),
+        tdn(p.units), tdn(budget,1), tdn(spent,1),
+        td(el('span',{class:rem<0?'mono neg':'mono'},fmt(rem)),'r'),
+        td(barCell(used),'r'),
+        tdn(estAdditional(p.code),1), tdn(actv),
+        tdn(effectiveCash(p.code),1),
+        td(el('span',{class:'mono',style:'font-size:12px'}, c.loanDue||'—'),'r'));
+      tb.append(row);
+    });
+    tb.append(el('tr',{class:'sub'}, td('Subtotal'), td(''),
+      tdn(bB,1),tdn(bS,1), td(el('span',{class:bR<0?'mono neg':'mono'},fmt(bR)),'r'),
+      td(barCell(bB?bS/bB:0),'r'), td(''),td(''),td(''),td('')));
+  });
+  tbl.append(tb);
+  tp.append(el('div',{style:'overflow:auto'},tbl));
+  body.append(tp);
+
+  /* Needs attention */
+  const att=el('div',{class:'grid',style:'grid-template-columns:1fr 1fr'});
+  att.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed')),
+             attentionPanel('Work done, not yet closed', active.filter(p=>p.steps.workCompleted&&!p.steps.completed)));
+  body.append(att);
+
+  /* Unplanned large postings (audit) */
+  const unp=unplannedAll().filter(g=>glOk(g));
+  const up=el('div',{class:'panel'});
+  up.append(el('div',{class:'ph'}, el('h3',{},'Unplanned postings over $5,000'), el('div',{class:'sp'}),
+    el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'large GL entries not tied to a tracked project'),
+    el('span',{class:'chip'+(unp.length?' hold':' done')},String(unp.length))));
+  const ub=el('div',{style:'max-height:320px;overflow:auto'});
+  if(!unp.length)ub.append(el('div',{class:'empty'},'None — every large posting is tied to a project.'));
+  else{
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('Property'),th('Date'),th('Category'),th('Vendor / description'),th('Amount','r'))));
+    const tb2=el('tbody');
+    unp.slice().sort((a,b)=>b.amount-a.amount).forEach(g=>{
+      tb2.append(el('tr',{class:'clickrow',onclick:()=>{VIEW.tab='property';VIEW.prop=g.property;render();}},
+        td(propChip(g.property)),
+        td(el('span',{class:'mono',style:'font-size:12px'},g.date)),
+        td(el('span',{style:'font-size:12px'},g.category)),
+        td(el('div',{style:'font-size:12px;max-width:340px'}, el('div',{},g.vendor), g.remarks?el('div',{style:'color:var(--ink-3);font-size:11px'},g.remarks):null)),
+        tdn(g.amount,1)));
+    });
+    t.append(tb2); ub.append(t);
+  }
+  up.append(ub); body.append(up);
+  return {bar,body};
+}
+function discussedPanel(list){
+  const p=el('div',{class:'panel'});
+  const propsInList=[...new Set(list.map(x=>x.property))].sort();
+  const cost=x=>(x.anticipatedCost!=null?x.anticipatedCost:(x.actualCost!=null?x.actualCost:0));
+  let view=list.slice();
+  if(DASH.discProp && propsInList.includes(DASH.discProp)) view=view.filter(x=>x.property===DASH.discProp);
+  const sorters={cost:(a,b)=>cost(b)-cost(a),costAsc:(a,b)=>cost(a)-cost(b),
+    new:(a,b)=>(b.dateAdded||'').localeCompare(a.dateAdded||''),old:(a,b)=>(a.dateAdded||'').localeCompare(b.dateAdded||''),
+    prop:(a,b)=>a.property.localeCompare(b.property)||cost(b)-cost(a),name:(a,b)=>(a.name||'').localeCompare(b.name||'')};
+  view.sort(sorters[DASH.discSort]||sorters.cost);
+  p.append(el('div',{class:'ph'}, el('h3',{},'Discussed · awaiting approval'), el('div',{class:'sp'}), el('span',{class:'chip'},String(view.length))));
+  const sortSel=el('select',{class:'mini-sel',onchange:e=>{DASH.discSort=e.target.value;render();}});
+  [['cost','Cost: high → low'],['costAsc','Cost: low → high'],['new','Newest first'],['old','Oldest first'],['prop','Property'],['name','Name A–Z']]
+    .forEach(o=>sortSel.append(el('option',{value:o[0],...(DASH.discSort===o[0]?{selected:true}:{})},o[1])));
+  const propSel=el('select',{class:'mini-sel',onchange:e=>{DASH.discProp=e.target.value;render();}});
+  propSel.append(el('option',{value:'',...(DASH.discProp?{}:{selected:true})},'All properties'));
+  propsInList.forEach(cd=>propSel.append(el('option',{value:cd,...(DASH.discProp===cd?{selected:true}:{})},cd)));
+  p.append(el('div',{class:'pad disc-tools'}, el('span',{class:'dt-lab'},'Sort'), sortSel, el('span',{class:'dt-lab'},'Filter'), propSel));
+  const b=el('div',{style:'max-height:300px;overflow:auto'});
+  if(!view.length) b.append(el('div',{class:'empty'},'Nothing here — all clear.'));
+  view.slice(0,80).forEach(p2=>{
+    const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
+    r.append(propChip(p2.property),
+      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name),
+        el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category+(p2.dateAdded?' · '+p2.dateAdded:''))),
+      el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(cost(p2),false)));
+    b.append(r);
+  });
+  p.append(b); return p;
+}
+function attentionPanel(title,list){
+  const p=el('div',{class:'panel'});
+  p.append(el('div',{class:'ph'}, el('h3',{},title), el('div',{class:'sp'}), el('span',{class:'chip'},String(list.length))));
+  const b=el('div',{style:'max-height:280px;overflow:auto'});
+  if(!list.length) b.append(el('div',{class:'empty'},'Nothing here — all clear.'));
+  list.slice(0,40).forEach(p2=>{
+    const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
+    r.append(propChip(p2.property),
+      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name),
+        el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category)),
+      el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(p2.anticipatedCost||p2.actualCost,false)));
+    b.append(r);
+  });
+  p.append(b); return p;
+}
+function legendItem(color,label){ return el('span',{}, el('span',{class:'dot',style:`background:${color}`}), label); }
+/* Conditional-format tile for the property sticky header. tone: good|warn|bad|none */
+function hstat(label,valueText,tone,sub){
+  return el('div',{class:'hstat tone-'+(tone||'none')},
+    el('div',{class:'hs-lab'},label),
+    el('div',{class:'hs-val mono'},valueText),
+    sub?el('div',{class:'hs-sub'},sub):null);
+}
+/* Locked (sticky) property header: name + key SP-budget & cash-per-door metrics. */
+function propHead(p,actions,metrics){
+  const t=el('div',{class:'topbar prop-head'});
+  const menu=el('button',{class:'btn ghost sm menu-btn',onclick:()=>{VIEW.railOpen=!VIEW.railOpen;render();}},'☰');
+  const r1=el('div',{class:'ph-row1'}, menu,
+    el('div',{class:'tt'}, el('div',{class:'crumb'},`${p.region} · ${p.manager}`), el('h2',{}, el('span',{style:`display:inline-block;width:11px;height:11px;border-radius:3px;background:${pcolor(p.code)};margin-right:8px;vertical-align:middle`}), `${p.code} — ${p.name}`)),
+    el('div',{class:'sp'}), ...actions);
+  t.append(r1, el('div',{class:'headstats'}, ...metrics));
+  return t;
+}
+function barCell(used){
+  const over=used>1;
+  const w=Math.min(100,used*100);
+  return el('div',{style:'display:flex;align-items:center;gap:7px;justify-content:flex-end'},
+    el('span',{class:'mono',style:'font-size:11px;color:'+(over?'var(--rust)':'var(--ink-3)')},pct(used)),
+    el('div',{class:'bar'+(over?' over':''),style:'width:70px'}, el('i',{style:`width:${w}%`})));
+}
+function reconCell(label,val,flag){
+  return el('div',{class:'rc'}, el('div',{class:'rk'},label),
+    el('div',{class:'rv mono'+(flag?' neg':'')},fmt(val)));
+}
+function flagBlock(title,items,tone,note){
+  const wrap=el('div',{class:'flagblock'});
+  wrap.append(el('div',{class:'fb-h'}, el('span',{class:'fb-dot '+tone}),
+    el('span',{},title), el('span',{style:'flex:1'}),
+    el('span',{class:'chip'+(items.length?(tone==='rust'?' hold':' '):' done'),style:items.length&&tone==='amber'?'background:var(--amber-soft);color:var(--amber)':''},String(items.length))));
+  if(!items.length){ wrap.append(el('div',{class:'fb-ok'},'None — all clear.')); return wrap; }
+  wrap.append(el('div',{class:'fb-note'},note));
+  items.slice(0,8).forEach(it=>{
+    const r=el('div',{class:'fb-row'+(it.onclick?' clickrow':'')});
+    if(it.onclick)r.addEventListener('click',it.onclick);
+    r.append(el('div',{style:'flex:1;min-width:0'}, el('div',{class:'fb-t'},it.title), el('div',{class:'fb-s'},it.sub)),
+      el('span',{class:'mono fb-amt'},fmt(it.amt)));
+    wrap.append(r);
+  });
+  if(items.length>8) wrap.append(el('div',{class:'fb-s',style:'padding:6px 0 0'},`+ ${items.length-8} more`));
+  return wrap;
+}
+
+/* =========================================================
+   PROJECTS
+========================================================= */
+function dateFilterGroup(state){
+  const g=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Added'));
+  g.append(el('input',{type:'date',class:'date-f',value:state.dateFrom||'',title:'Added on or after',oninput:e=>{state.dateFrom=e.target.value;render();}}));
+  g.append(el('span',{class:'date-sep'},'to'));
+  g.append(el('input',{type:'date',class:'date-f',value:state.dateTo||'',title:'Added on or before',oninput:e=>{state.dateTo=e.target.value;render();}}));
+  if(state.dateFrom||state.dateTo) g.append(el('button',{class:'bub sm',title:'Clear date range',onclick:()=>{state.dateFrom='';state.dateTo='';render();}},'Clear ✕'));
+  return g;
+}
+function viewProjects(){
+  const bar=topbar('Pipeline','Projects',
+    el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project'));
+  const body=el('div',{});
+
+  // ---- filters: all selected by default; every group can select-all / clear-all ----
+  const ALLPROPS=S.properties.map(p=>p.code);
+  const STAT=[['open','Open'],['note','Notes'],['discussed','Discussed'],['active','In progress'],['paid','Paid'],['inhouse','In-house'],['hold','On hold'],['done','Completed']];
+  const ALLSTAT=STAT.map(s=>s[0]);
+  const ALLCATS=[...new Set(S.projects.map(p=>p.category))].sort();
+  if(!Array.isArray(FILT.props))FILT.props=ALLPROPS.slice();
+  if(!Array.isArray(FILT.statuses))FILT.statuses=ALLSTAT.slice();
+  if(!Array.isArray(FILT.cats))FILT.cats=ALLCATS.slice();
+  FILT.cats=FILT.cats.filter(c=>ALLCATS.includes(c));
+  const toggle=(arr,v)=>{const i=arr.indexOf(v);if(i<0)arr.push(v);else arr.splice(i,1);render();};
+  const setAll=(arr,full)=>{ if(arr.length>=full.length){arr.length=0;} else {arr.length=0; full.forEach(v=>arr.push(v));} render(); };
+  const isAll=(arr,full)=>arr.length>=full.length;
+
+  // toolbar: search + board/table
+  const tb=el('div',{class:'toolbar'});
+  tb.append(el('input',{type:'search',placeholder:'Search projects…',value:FILT.q,style:'min-width:220px;flex:1',oninput:e=>{FILT.q=e.target.value;debounced();}}));
+  tb.append(el('div',{class:'seg-ctl'},
+    el('button',{class:FILT.view==='board'?'on':'',onclick:()=>{FILT.view='board';render();}},'Board'),
+    el('button',{class:FILT.view==='table'?'on':'',onclick:()=>{FILT.view='table';render();}},'Table')));
+  body.append(tb);
+
+  const fbar=el('div',{class:'filter-panel'});
+
+  // property group
+  const allP=isAll(FILT.props,ALLPROPS);
+  const propRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Property'),
+    el('button',{class:'bub all'+(allP?' on':''),onclick:()=>setAll(FILT.props,ALLPROPS)}, allP?'All ✓':'All'));
+  S.properties.forEach(pr=>{ const on=FILT.props.includes(pr.code);
+    propRow.append(el('button',{class:'bub'+(on?' on':''),style:on?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
+      onclick:()=>toggle(FILT.props,pr.code)}, el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code)); });
+  fbar.append(propRow);
+
+  // status group
+  const allS=isAll(FILT.statuses,ALLSTAT);
+  const statRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Status'),
+    el('button',{class:'bub all'+(allS?' on':''),onclick:()=>setAll(FILT.statuses,ALLSTAT)}, allS?'All ✓':'All'));
+  STAT.forEach(([k,lab])=>{ const on=FILT.statuses.includes(k);
+    statRow.append(el('button',{class:'bub'+(on?' on accent':''),onclick:()=>toggle(FILT.statuses,k)},lab)); });
+  fbar.append(statRow);
+
+  // category group — checkbox dropdown, with selected shown as bubbles
+  const allC=isAll(FILT.cats,ALLCATS);
+  const catRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Category'));
+  const ddWrap=el('div',{class:'cat-dd'});
+  ddWrap.append(el('button',{class:'bub dd-btn'+(FILT.catOpen?' open':''),onclick:()=>{FILT.catOpen=!FILT.catOpen;render();}},
+    (allC?'All categories':`${FILT.cats.length} of ${ALLCATS.length}`), el('span',{class:'chev'},'▾')));
+  if(FILT.catOpen){
+    const panel=el('div',{class:'cat-dd-panel'});
+    panel.append(el('button',{class:'bub all'+(allC?' on':''),style:'margin-bottom:6px',onclick:()=>setAll(FILT.cats,ALLCATS)}, allC?'Clear all':'Select all'));
+    ALLCATS.forEach(cat=>{ const on=FILT.cats.includes(cat);
+      panel.append(el('label',{class:'cat-item'},
+        (()=>{const c=el('input',{type:'checkbox',onchange:()=>toggle(FILT.cats,cat)}); if(on)c.checked=true; return c;})(),
+        el('span',{},cat))); });
+    ddWrap.append(panel);
+  }
+  catRow.append(ddWrap);
+  if(!allC) FILT.cats.slice().sort().forEach(cat=>catRow.append(el('button',{class:'bub on accent sm',title:'Remove',onclick:()=>toggle(FILT.cats,cat)},cat,' ✕')));
+  fbar.append(catRow);
+  fbar.append(dateFilterGroup(FILT));
+  body.append(fbar);
+
+  // ---- apply filters ----
+  let list=S.projects.filter(p=>FILT.props.includes(p.property) && FILT.cats.includes(p.category));
+  if(FILT.q){const q=FILT.q.toLowerCase();list=list.filter(p=>(p.name+' '+p.contractor+' '+p.plan+' '+p.actionItem+' '+p.category).toLowerCase().includes(q));}
+  const stMatch=p=>FILT.statuses.some(s=>
+    s==='open'?(!isComplete(p)&&!p.onHold):
+    s==='inhouse'?isInHouse(p):
+    s==='hold'?p.onHold:
+    phase(p)===s);
+  list=list.filter(stMatch);
+  list=list.filter(p=>inDateRange(p,FILT));
+
+  body.append(el('div',{style:'font-size:12.5px;color:var(--ink-3);margin:4px 0 12px'},`${list.length} project${list.length!==1?'s':''}`));
+
+  if(!list.length){ body.append(el('div',{class:'empty'}, el('div',{class:'big'},'No projects match'),'Adjust the filters or add a new project.')); return {bar,body}; }
+
+  if(FILT.view==='board'){
+    const board=el('div',{class:'board'});
+    list.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||(a.onHold-b.onHold)|| (stage(b)-stage(a)) || (b.dateAdded||'').localeCompare(a.dateAdded||''));
+    list.forEach(p=>board.append(projectCard(p)));
+    body.append(board);
+  } else {
+    body.append(projectsTable(list));
+  }
+  return {bar,body};
+}
+let _t;function debounced(){clearTimeout(_t);_t=setTimeout(render,180);}
+
+/* =========================================================
+   IN-HOUSE TRACKING (own-crew projects)
+========================================================= */
+function viewInHouse(){
+  const bar=topbar('Own crew','In-house projects',
+    el('button',{class:'btn accent',onclick:()=>openProject(null,{inHouse:true})},'+ New in-house project'));
+  const body=el('div',{});
+  const list=S.projects.filter(isInHouse);
+  if(!list.length){ body.append(el('div',{class:'empty'}, el('div',{class:'big'},'No in-house projects yet'),'Add one here, or toggle “In-house (own crew)” on any project in its editor.')); return {bar,body}; }
+  const bud=list.filter(ihIsBudget);
+  const tot=bud.reduce((a,p)=>a+ihTotal(p),0), done=bud.reduce((a,p)=>a+ihDone(p),0);
+  const inProg=list.filter(p=>!isComplete(p)&&!p.onHold).length;
+  const qtyCount=list.length-bud.length;
+  const k=el('div',{class:'grid kpis',style:'grid-template-columns:repeat(4,1fr)'});
+  const kpi=(l,v,s,cls)=>el('div',{class:'kpi'+(cls?' '+cls:'')}, el('div',{class:'lab'},l), el('div',{class:'val'},v), el('div',{class:'sub'},s));
+  k.append(kpi('In-house projects',String(list.length),`${inProg} in progress${qtyCount?` · ${qtyCount} by count`:''}`),
+    kpi('Est. to complete',fmt(tot),'budget-tracked'),
+    kpi('Completed to date',fmt(done),pct(tot?done/tot:0)+' of budget','accent'),
+    kpi('Remaining',fmt(tot-done),'budget work left'));
+  body.append(k);
+  const grid=el('div',{class:'ih-grid'});
+  list.sort((a,b)=>(a.onHold-b.onHold)||((isComplete(a)?1:0)-(isComplete(b)?1:0))||(ihPct(b)-ihPct(a)));
+  list.forEach(p=>grid.append(ihTile(p)));
+  body.append(grid);
+  return {bar,body};
+}
+function ihTile(p){
+  const pc=ihPct(p), done=isComplete(p);
+  const t=el('div',{class:'ih-tile',style:'border-top:3px solid '+pcolor(p.property),onclick:()=>openProject(p.id)});
+  t.append(el('div',{class:'iht-top'}, propChip(p.property),
+    el('span',{class:'chip',style:'font-size:9.5px'}, ihIsBudget(p)?'$':'#'),
+    el('div',{style:'flex:1'}),
+    p.onHold?el('span',{class:'chip hold'},'Hold'):done?el('span',{class:'chip done'},'Done'):el('span',{class:'chip ih'},ihTotal(p)>0?pct(pc):'note')));
+  t.append(el('div',{class:'iht-name'},p.name));
+  t.append(el('div',{class:'iht-cat'},p.category));
+  t.append(el('div',{class:'ih-bigbar'}, el('i',{class:done?'full':'',style:'width:'+Math.round(pc*100)+'%'})));
+  t.append(el('div',{class:'iht-fig'},
+    el('span',{}, el('span',{class:'mono',style:'font-weight:600'},ihFmt(p,ihDone(p))), el('span',{style:'color:var(--ink-3)'},' / '+ihFmt(p,ihTotal(p)))),
+    el('span',{style:'color:var(--ink-3)'},ihFmt(p,ihRemaining(p))+' left')));
+  const last=(p.progressNotes||[]).slice(-1)[0];
+  t.append(el('div',{class:'iht-note'}, last?el('span',{},el('span',{class:'mono'},last.date),' · ',last.note):el('span',{style:'color:var(--ink-3)'},'No progress notes yet')));
+  return t;
+}
+
+function projectCard(p){
+  const ih=isInHouse(p);
+  const c=el('div',{class:'pcard'+(ih?' inhouse':''),onclick:()=>openProject(p.id)});
+  const top=el('div',{class:'top'}, propChip(p.property));
+  if(ih)top.append(el('span',{class:'chip ih'},'In-house'));
+  if(p.pinned)top.append(el('span',{class:'pin-i',title:'Pinned'},'📌'));
+  if(p.onHold)top.append(el('span',{class:'chip hold'},'On hold'));
+  else if(isComplete(p))top.append(el('span',{class:'chip done'},'Complete'));
+  else if(phase(p)==='note')top.append(el('span',{class:'chip note'},'Note'));
+  else if(!ih&&phase(p)==='discussed')top.append(el('span',{class:'chip discussed'},'Discussed'));
+  top.append(el('div',{style:'flex:1'}), el('span',{style:'font-size:11px;color:var(--ink-3)'},p.category));
+  c.append(top);
+  c.append(el('div',{class:'nm'},p.name));
+  c.append(el('div',{class:'meta'}, p.contractor? '◷ '+p.contractor : (p.actionItem? p.actionItem.slice(0,70):'—')));
+  c.append(el('div',{class:'card-added'}, 'Added '+fmtDate(p.dateAdded)));
+  if(ih){
+    c.append(progressEl(p));
+    const t=ihTotal(p), d=ihDone(p);
+    c.append(el('div',{class:'ft'},
+      el('span',{}, isComplete(p)?'✓ done':(t>0?pct(ihPct(p))+' complete':'note')),
+      el('span',{class:'cost'}, t>0?ihFmt(p,d)+' / '+ihFmt(p,t):'—')));
+  } else {
+    c.append(trackEl(p));
+    const cost=p.actualCost!=null?p.actualCost:p.anticipatedCost;
+    const lab=p.actualCost!=null?'actual':'planned';
+    c.append(el('div',{class:'ft'},
+      el('span',{}, `${stepsDone(p)}/${stepsTotal(p)} · `, el('span',{},isComplete(p)?'done':(phase(p)==='note'?'note':(stage(p)>=0?LIFECYCLE[stage(p)].label:'planned')))),
+      el('span',{class:'cost'}, cost!=null? fmt(cost):'—', cost!=null?el('span',{style:'font-weight:400;color:var(--ink-3);font-size:10px'},' '+lab):'')));
+  }
+  return c;
+}
+function progressEl(p){
+  const pc=ihPct(p); const done=isComplete(p);
+  return el('div',{class:'progress',title:pct(pc)+' complete'}, el('i',{class:done?'full':'',style:`width:${Math.round(pc*100)}%`}));
+}
+function trackEl(p){
+  const t=el('div',{class:'track'});
+  const steps=appLifecycle(p);                       // N/A (no-contract) steps excluded
+  let cur=-1; steps.forEach((s,i)=>{ if(p.steps&&p.steps[s.key])cur=i; });
+  steps.forEach((s,i)=>{
+    const done=p.steps&&p.steps[s.key];
+    const cls=done?(i===cur&&!isComplete(p)?'seg cur':'seg done'):'seg';
+    const seg=el('div',{class:cls,title:`${s.label}${done?' ✓':''}`});
+    t.append(seg);
+  });
+  return t;
+}
+function projectsTable(list){
+  const wrap=el('div',{class:'panel',style:'overflow:auto'});
+  const tbl=el('table',{class:'tbl'});
+  tbl.append(el('thead',{},tr(th('Property'),th('Project'),th('Category'),th('Added'),th('Contractor'),th('Lifecycle'),th('Cost','r'),th('Status'))));
+  const tb=el('tbody');
+  list.sort((a,b)=>(a.property).localeCompare(b.property)||(stage(b)-stage(a)));
+  list.forEach(p=>{
+    const ih=isInHouse(p);
+    const cost=ih?ihTotal(p):(p.actualCost!=null?p.actualCost:p.anticipatedCost);
+    tb.append(el('tr',{class:'clickrow',onclick:()=>openProject(p.id)},
+      td(propChip(p.property)),
+      td(el('div',{style:'font-weight:600;max-width:280px'},p.name, ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
+      td(el('span',{style:'font-size:12px'},p.category)),
+      td(el('span',{style:'font-size:12px;white-space:nowrap;color:var(--ink-3)'},fmtDate(p.dateAdded))),
+      td(el('span',{style:'font-size:12px'},ih?'own crew':(p.contractor||'—'))),
+      td(el('div',{style:'min-width:150px'}, ih?progressEl(p):trackElMini(p))),
+      tdn(cost,1),
+      td(p.onHold?el('span',{class:'chip hold'},'Hold'):isComplete(p)?el('span',{class:'chip done'},'Done'):(ih?el('span',{class:'chip ih'},pct(ihPct(p))):el('span',{class:'chip'},`${stepsDone(p)}/${stepsTotal(p)}`)))));
+  });
+  tbl.append(tb); wrap.append(tbl); return wrap;
+}
+function trackElMini(p){ const t=trackEl(p); return t; }
+
+/* =========================================================
+   PROJECT EDITOR (sheet)
+========================================================= */
+function openProject(id,preset){
+  const isNew=!id;
+  let p = isNew ? {id:uid('P'),property:VIEW.prop||S.properties[0].code,category:'GENERAL',name:'',description:'',plan:'',contractor:'',actionItem:'',anticipatedCost:null,actualCost:null,dateAdded:today(),plannedStart:'',plannedEnd:'',bids:[],steps:{},notes:'',onHold:false,pinned:false,inHouse:false,ihUnit:'budget',totalToComplete:null,amountCompleted:null,progressNotes:[],noContract:false,noContractSet:false}
+                 : JSON.parse(JSON.stringify(S.projects.find(x=>x.id===id)));
+  if(isNew&&preset)Object.assign(p,preset);
+  p.steps=p.steps||{}; p.bids=p.bids||[]; p.progressNotes=p.progressNotes||[];
+  while(p.bids.length<3) p.bids.push({id:uid('b'),contractor:'',amount:null,approved:false,file:null});
+  const fileSize=n=>n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB';
+  const reg=()=>PROP(p.property)?PROP(p.property).region:'';
+
+  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)close();}});
+  const sheet=el('div',{class:'sheet sheet-editor'});
+  function close(){scrim.remove();}
+  function save(){
+    if(!p.name.trim()){toast('Give the project a name first.');return;}
+    p.region=reg(); p.manager=PROP(p.property).manager;
+    p.bids=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.approved);
+    close(); saveProject(p, isNew?'Project added':'Project saved', isNew);
+  }
+  function del(){ close(); deleteProject(p.id); }
+
+  const head=el('div',{class:'sh'},
+    propChip(p.property),
+    el('h2',{style:'font-size:16px;flex:1'}, isNew?'New project':'Edit project'),
+    el('button',{class:'btn ghost',onclick:close},'Cancel'),
+    el('button',{class:'btn accent',onclick:save},'Save'));
+  const b=el('div',{class:'sb'});
+
+  // --- core fields ---
+  const core=el('div',{class:'panel pad'});
+  const f=(label,node)=>el('div',{class:'field'}, el('label',{},label), node);
+  const inp=(key,attrs={})=>{const n=el('input',{value:p[key]==null?'':p[key],...attrs,oninput:e=>p[key]=attrs.type==='number'?(e.target.value===''?null:+e.target.value):e.target.value});return n;};
+  // Entering a cost figure promotes a bare note into a planned project — tick "Planned".
+  const costInp=(key)=>{const n=inp(key,{type:'number',placeholder:key==='actualCost'?'from GL':'0'});
+    n.addEventListener('input',()=>{
+      if(p[key]!=null && !isNaN(p[key]) && !p.steps.planned){ p.steps.planned=true; }
+      if(!p.noContractSet){ const co=projOutflow(p); p.noContract = co>0 && co<OVER_THRESHOLD; if(p.noContract)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); }
+      if(typeof drawSteps==='function')drawSteps();
+      if(typeof refreshNC==='function')refreshNC();
+    });
+    return n;};
+  const propSel=el('select',{onchange:e=>{p.property=e.target.value;}});
+  S.properties.forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
+  const catSel=el('select',{onchange:e=>p.category=e.target.value});
+  CATEGORIES.forEach(c=>catSel.append(el('option',{value:c,...(p.category===c?{selected:true}:{})},c)));
+
+  core.append(f('Project name',inp('name',{placeholder:'e.g. Garage roof repairs'})));
+  core.append(el('div',{class:'frow'}, f('Property',propSel), f('Category',catSel)));
+  core.append(f('Plan / scope / comments',el('textarea',{oninput:e=>p.plan=e.target.value},p.plan||'')));
+  core.append(el('div',{class:'frow'},
+    f('Contractor',inp('contractor',{placeholder:'Awarded / leading contractor'})),
+    f('Current action item',inp('actionItem',{placeholder:'Next step / who owns it'}))));
+  core.append(el('div',{class:'frow3'},
+    f('Date added',inp('dateAdded',{type:'date'})),
+    f('Planned start',inp('plannedStart',{type:'date'})),
+    f('Planned end',inp('plannedEnd',{type:'date'}))));
+  // mode-specific cost block
+  const contractorCost=el('div',{class:'frow'},
+    f('Anticipated cost',costInp('anticipatedCost')),
+    f('Actual cost',costInp('actualCost')));
+  const ihTotalInp=inp('totalToComplete',{type:'number',placeholder:'estimated total $'});
+  const ihDoneInp=inp('amountCompleted',{type:'number',placeholder:'$ completed so far'});
+  const inhouseCost=el('div',{class:'frow'},
+    f('Total to complete',ihTotalInp),
+    f('Amount completed',ihDoneInp));
+  core.append(contractorCost, inhouseCost);
+  const holdWrap=el('label',{style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
+    (()=>{const c=el('input',{type:'checkbox',onchange:e=>p.onHold=e.target.checked});if(p.onHold)c.checked=true;return c;})(),'Mark as on hold');
+  const pinWrap=el('label',{style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
+    (()=>{const c=el('input',{type:'checkbox',onchange:e=>p.pinned=e.target.checked});if(p.pinned)c.checked=true;return c;})(),'📌 Pin to top');
+  const ihWrap=el('label',{class:'ih-toggle',style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
+    (()=>{const c=el('input',{type:'checkbox',onchange:e=>{p.inHouse=e.target.checked;applyMode();}});if(p.inHouse)c.checked=true;return c;})(),'🛠 In-house (own crew)');
+  let ncChk;
+  const ncWrap=el('label',{class:'nc-toggle',style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
+    (()=>{ncChk=el('input',{type:'checkbox',onchange:e=>{p.noContract=e.target.checked;p.noContractSet=true; if(p.noContract)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); drawSteps();}}); if(p.noContract)ncChk.checked=true; return ncChk;})(),'📄 No contract needed');
+  function refreshNC(){ if(ncChk)ncChk.checked=!!p.noContract; }
+  core.append(el('div',{style:'display:flex;gap:24px;flex-wrap:wrap'},holdWrap,pinWrap,ihWrap,ncWrap));
+  b.append(core);
+
+  // --- in-house panel: progress + additional notes ---
+  const inhousePanel=el('div',{class:'panel ih-panel',style:'margin-top:16px'});
+  const unitSeg=el('div',{class:'seg-ctl sm'},
+    el('button',{onclick:()=>{p.ihUnit='budget';applyUnit();}},'Budget $'),
+    el('button',{onclick:()=>{p.ihUnit='quantity';applyUnit();}},'Quantity #'));
+  inhousePanel.append(el('div',{class:'ph'}, el('h3',{},'In-house progress'), el('div',{class:'sp'}), unitSeg, el('span',{class:'ih-meta'},'')));
+  const ihBody=el('div',{class:'pad'});
+  const ihIntro=el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'');
+  ihBody.append(ihIntro);
+  const ihBar=el('div',{class:'ih-bigbar'}, el('i',{}));
+  const ihStat=el('div',{class:'ih-stat'});
+  ihBody.append(ihBar, ihStat);
+  // additional progress notes (timestamped)
+  ihBody.append(el('div',{class:'field',style:'margin-top:14px'}, el('label',{},'Progress / additional notes')));
+  const pnList=el('div',{class:'pn-list'});
+  const pnInput=el('input',{placeholder:'Add a dated progress note…',onkeydown:e=>{if(e.key==='Enter'&&e.target.value.trim()){p.progressNotes.push({id:uid('n'),date:today(),note:e.target.value.trim()});e.target.value='';drawIH();}}});
+  ihBody.append(el('div',{class:'pn-add'}, pnInput, el('button',{class:'btn sm',onclick:()=>{if(pnInput.value.trim()){p.progressNotes.push({id:uid('n'),date:today(),note:pnInput.value.trim()});pnInput.value='';drawIH();}}},'Add note')));
+  ihBody.append(pnList);
+  inhousePanel.append(ihBody); b.append(inhousePanel);
+  function drawIH(){
+    const t=ihTotal(p), d=ihDone(p), pc=ihPct(p);
+    ihBar.firstChild.style.width=Math.round(pc*100)+'%';
+    ihBar.firstChild.className=(t>0&&d>=t)?'full':'';
+    ihStat.innerHTML='';
+    ihStat.append(el('span',{class:'mono',style:'font-weight:600'},ihFmt(p,d)+' of '+ihFmt(p,t)),
+      el('span',{style:'color:var(--ink-3)'},'  ·  '+pct(pc)+' complete'+(t>0?'  ·  '+ihFmt(p,ihRemaining(p))+' remaining':'')));
+    inhousePanel.querySelector('.ih-meta').textContent=t>0?pct(pc)+' complete':'no estimate yet';
+    pnList.innerHTML='';
+    p.progressNotes.slice().reverse().forEach(n=>{
+      pnList.append(el('div',{class:'pn-item'},
+        el('span',{class:'pn-date mono'},n.date),
+        el('span',{style:'flex:1'},n.note),
+        el('button',{class:'btn ghost sm',onclick:()=>{p.progressNotes=p.progressNotes.filter(x=>x.id!==n.id);drawIH();}},'✕')));
+    });
+    if(!p.progressNotes.length) pnList.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'No progress notes yet.'));
+  }
+  function applyUnit(){
+    const budget=ihIsBudget(p);
+    ihTotalInp.placeholder=budget?'estimated total $':'total count';
+    ihDoneInp.placeholder=budget?'$ completed so far':'count completed';
+    unitSeg.children[0].className=budget?'on':'';
+    unitSeg.children[1].className=budget?'':'on';
+    ihIntro.textContent=budget
+      ? 'Own-crew work — no contracts, bids, or lien waivers. Track an estimated dollar total and update the amount completed as work progresses.'
+      : 'Own-crew work tracked by count (e.g. units done). Set the total to complete and update the quantity completed as work progresses.';
+    inhouseCost.querySelector('label').textContent = budget?'Total to complete ($)':'Total to complete (#)';
+    inhouseCost.querySelectorAll('label')[1].textContent = budget?'Amount completed ($)':'Quantity completed (#)';
+    drawIH();
+  }
+  ihTotalInp.addEventListener('input',drawIH);
+  ihDoneInp.addEventListener('input',drawIH);
+  applyUnit();
+
+  // --- bids (collapsible: 3 standard slots, each with a bid document) ---
+  const anyBid=p.bids.some(bd=>bd.approved||bd.contractor||bd.amount!=null||bd.file);
+  const bidsWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(anyBid?{open:''}:{})});
+  const bidMeta=el('span',{class:'bs-meta'},'');
+  const summary=el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Bids'), el('div',{class:'sp'}), bidMeta);
+  const bidBody=el('div',{class:'pad'});
+  bidBody.append(el('p',{class:'bs-hint'},'Three standard slots — attach each contractor’s bid document, then approve the winner. Approving fills in the contractor and anticipated cost and advances the workflow to “Bid Approved”.'));
+  const slotsWrap=el('div',{});
+  bidBody.append(slotsWrap);
+  function attachBid(bd,file){ const fr=new FileReader(); fr.onload=e=>{ bd.file={name:file.name,type:file.type,size:file.size,data:e.target.result}; drawBids(); }; fr.readAsDataURL(file); }
+  function openBidFile(bd){ const a=el('a',{href:bd.file.data,download:bd.file.name}); document.body.append(a); a.click(); a.remove(); }
+  function bidSlot(i){
+    const bd=p.bids[i];
+    const slot=el('div',{class:'bidslot'+(bd.approved?' win':'')});
+    slot.append(el('div',{class:'bs-hd'},
+      el('span',{class:'bs-no'},'Bid '+(i+1)),
+      bd.approved?el('span',{class:'chip done',style:'margin-left:8px'},'Selected'):null,
+      el('div',{style:'flex:1'}),
+      el('button',{class:'bs-appr'+(bd.approved?' on':''),onclick:()=>{
+        const willApprove=!bd.approved;
+        p.bids.forEach((x,j)=>x.approved=(j===i)?willApprove:false);
+        if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor; if(bd.amount!=null)p.anticipatedCost=bd.amount; }
+        drawBids(); drawSteps();
+      }}, bd.approved?'✓ Approved':'Approve')));
+    slot.append(el('div',{class:'bs-row'},
+      el('input',{value:bd.contractor||'',placeholder:'Contractor / vendor',oninput:e=>{bd.contractor=e.target.value;refreshMeta();}}),
+      el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;refreshMeta();}})));
+    const fileRow=el('div',{class:'bs-file'});
+    if(bd.file){
+      fileRow.append(el('span',{class:'bs-doc'},'📄'),
+        el('a',{href:'#',title:'Download stored bid',onclick:e=>{e.preventDefault();openBidFile(bd);}},bd.file.name),
+        el('span',{class:'bs-sz'},fileSize(bd.file.size)),
+        el('div',{style:'flex:1'}),
+        el('button',{class:'btn ghost sm',onclick:()=>{bd.file=null;drawBids();}},'✕ Remove'));
+    } else {
+      const inp=el('input',{type:'file',accept:'.pdf,.doc,.docx,.xls,.xlsx,.png,.jpg,.jpeg',style:'display:none',onchange:e=>{if(e.target.files[0])attachBid(bd,e.target.files[0]);}});
+      const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
+      fileRow.append(lbl,inp);
+    }
+    slot.append(fileRow);
+    return slot;
+  }
+  function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
+  function drawBids(){ slotsWrap.innerHTML=''; for(let i=0;i<3;i++) slotsWrap.append(bidSlot(i)); refreshMeta(); }
+  drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap);
+
+  // --- lifecycle steps ---
+  const stepsPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  stepsPanel.append(el('div',{class:'ph'}, el('h3',{},'Lifecycle'), el('div',{class:'sp'}),
+    el('button',{class:'btn sm',onclick:()=>{
+      const keys=appKeys(p); let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
+      const next=keys[cur+1];
+      if(next){ p.steps[next]=true; const gi=STEP_KEYS.indexOf(next);
+        if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k))p.steps[k]=true; }); }
+        drawSteps(); }
+    }},'Advance ▸')));
+  const stepBody=el('div',{class:'pad'}); const stepsList=el('div',{class:'steps'});
+  function drawSteps(){
+    stepsList.innerHTML='';
+    LIFECYCLE.forEach((s,i)=>{
+      const na=isNA(p,s.key);
+      const on=!na && !!p.steps[s.key];
+      const row=el('div',{class:'step'+(on?' on':'')+(na?' na':'')});
+      row.append(el('div',{class:'num'}, na?'–':(on?'✓':String(i+1))),
+        el('div',{style:'flex:1'}, el('div',{class:'nm'},s.label), el('div',{class:'ds'}, na?'Not applicable — no contract needed.':s.desc)));
+      if(na){
+        row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge'},'N/A')));
+      } else {
+        const sw=el('button',{class:'switch'+(on?' on':''),title:'toggle',onclick:()=>{
+          const nv=!p.steps[s.key];
+          p.steps[s.key]=nv;
+          if(i<=APPROVED_IDX){
+            if(!nv && i===APPROVED_IDX){ STEP_KEYS.slice(i+1).forEach(k=>p.steps[k]=false); }
+          } else {
+            if(nv){ STEP_KEYS.slice(0,i).forEach(k=>{ if(!isNA(p,k))p.steps[k]=true; }); }
+            else  { STEP_KEYS.slice(i+1).forEach(k=>p.steps[k]=false); }
+          }
+          drawSteps();
+        }});
+        row.append(el('div',{class:'toggle'},sw));
+      }
+      stepsList.append(row);
+    });
+  }
+  drawSteps(); stepBody.append(stepsList); stepsPanel.append(stepBody); b.append(stepsPanel);
+
+  // show contractor panels or in-house panel depending on mode
+  function applyMode(){
+    const ih=!!p.inHouse;
+    contractorCost.style.display=ih?'none':'';
+    inhouseCost.style.display=ih?'':'none';
+    inhousePanel.style.display=ih?'':'none';
+    bidsWrap.style.display=ih?'none':'';
+    stepsPanel.style.display=ih?'none':'';
+    sheet.classList.toggle('ih-mode',ih);
+  }
+  applyMode();
+
+  // notes
+  const np=el('div',{class:'panel pad',style:'margin-top:16px'});
+  np.append(el('div',{class:'field'}, el('label',{},'Notes'), el('textarea',{oninput:e=>p.notes=e.target.value},p.notes||'')));
+  b.append(np);
+
+  if(!isNew){
+    b.append(el('div',{style:'margin-top:18px;display:flex'}, el('div',{style:'flex:1'}),
+      el('button',{class:'btn danger',onclick:()=>{if(confirm('Delete this project?'))del();}},'Delete project')));
+    // linked GL
+    const gls=S.gl.filter(g=>g.linkedProjectId===p.id);
+    if(gls.length){
+      const gp=el('div',{class:'panel',style:'margin-top:16px;overflow:auto'});
+      gp.append(el('div',{class:'ph'}, el('h3',{},'Linked ledger entries')));
+      const t=el('table',{class:'tbl'});t.append(el('thead',{},tr(th('Date'),th('Vendor'),th('Amount','r'))));
+      const tbb=el('tbody');gls.forEach(g=>tbb.append(tr(td(g.date),td(g.vendor),tdn(g.amount,1))));
+      t.append(tbb);gp.append(t);b.append(gp);
+    }
+  }
+
+  // Two-column layout: everything on the left, the lifecycle track on the right
+  // (keeps notes visible without scrolling past the tall step list).
+  const edGrid=el('div',{class:'editor-grid'});
+  const edMain=el('div',{class:'ed-main'});
+  const edSide=el('div',{class:'ed-side'});
+  Array.from(b.childNodes).forEach(n=>{ if(n===stepsPanel) edSide.append(n); else edMain.append(n); });
+  edGrid.append(edMain, edSide);
+  b.append(edGrid);
+  applyMode();
+
+  sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+}
+
+/* =========================================================
+   PROPERTY DETAIL
+========================================================= */
+function viewProperty(){
+  const code=VIEW.prop||S.properties[0].code;
+  const p=PROP(code); const c=S.cash[code]||{};
+  const budget=Number(p.spBudget)||0;
+  const glSpent=glSpentFor(code);
+  const cushSpent=c.spSpent!=null?Number(c.spSpent):null;
+  const spent=glSpent||cushSpent||0;
+  const remaining=budget-spent;
+  const cm=cashModel(code);
+  const am=auditModel(code);
+  const usedPct=budget?spent/budget:0;
+  const cashToday=cm.cashToday;
+  const cpd=p.units?cashToday/Number(p.units):null;
+  // years remaining on the loan, from the cash record's maturity date (MM/DD/YYYY)
+  let loanYrs=null;
+  if(c.loanDue){ const m=String(c.loanDue).split('/'); if(m.length===3){ const due=new Date(+m[2],+m[0]-1,+m[1]); if(!isNaN(due)){ loanYrs=(due-new Date())/(1000*60*60*24*365.25); } } }
+  const cashPerYr=(loanYrs!=null&&loanYrs>0)?cashToday/loanYrs:null;
+  // conditional formatting
+  const remTone = remaining<0?'bad':(budget&&remaining<budget*0.15?'warn':'good');
+  const cpdTone = cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));   // green >$3k · yellow $2k–$3k · red <$2k
+  const projTone = cm.projectedCash<0?'bad':(cm.projectedCash<cashToday*0.25?'warn':'good');
+  const bar=propHead(p,
+    [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
+      el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
+    [ hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
+      hstat('SP budget (2026)', fmt(budget), 'none'),
+      hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
+      hstat('Remaining', fmt(remaining), remTone, pct(usedPct)+' used'),
+      hstat('Projected cash', fmt(cm.projectedCash), projTone, 'after committed'),
+      hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count'),
+      hstat('Cash / yr of loan', cashPerYr==null?'—':fmt(cashPerYr), 'none', loanYrs!=null&&loanYrs>0?`${loanYrs.toFixed(1)} yrs to ${c.loanDue}`:'no loan maturity') ]);
+  const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
+
+  // LEFT: cash + loan
+  const left=el('div',{class:'grid',style:'gap:16px;align-content:start'});
+  const cashPanel=el('div',{class:'panel'});
+  cashPanel.append(el('div',{class:'ph'}, el('h3',{},'Cash position'), el('div',{class:'sp'}), el('span',{class:'chip'},`snapshot ${c.asOfDate||S.meta.cashAsOf||'—'}`)));
+  const sl=el('div',{class:'pad stat-list'});
+  const row=(k,v,cls,sub)=>el('div',{class:'sl'+(cls?' '+cls:'')}, el('span',{class:'k'},k,sub?el('span',{class:'sl-sub'},sub):null), el('span',{class:'v'+(typeof v==='number'&&v<0?' neg':'')},typeof v==='number'?fmt(v):v));
+  sl.append(
+    row('Cash snapshot', cm.snapshot==null?'—':cm.snapshot,null,'from cushion report'),
+    row('Mid-month adjustments', cm.adj),
+    row('Cash today', cm.cashToday,'hl','final · actual'),
+    row('Outstanding commitments', cm.outstandingTotal?-cm.outstandingTotal:0,null,'approved, not yet paid'),
+    row('Projected cash', cm.projectedCash,'big','once open work is paid'),
+    row('Spent vs SP budget', budget-(spent+cm.outstandingTotal),null,'budget less spent & committed'),
+    cm.discussedTotal?row('Discussed / ideas', cm.discussedTotal,null,'not yet committed'):null,
+  );
+  cashPanel.append(sl); left.append(cashPanel);
+
+  const loanPanel=el('div',{class:'panel'});
+  loanPanel.append(el('div',{class:'ph'}, el('h3',{},'Loan & valuation')));
+  const sl3=el('div',{class:'pad stat-list'});
+  sl3.append(
+    row('Market value', c.marketValue!=null?Number(c.marketValue):'—'),
+    row('Loan amount', c.loanAmount!=null?Number(c.loanAmount):'—'),
+    row('LTV', c.ltv!=null?pct(c.ltv):'—'),
+    row('Loan rate', c.loanRate!=null?pct(c.loanRate):'—'),
+    row('Loan matures', c.loanDue||'—'),
+    row('DCR', c.dcr!=null?Number(c.dcr).toFixed(2)+'x':'—'),
+    row('NOI', c.noi!=null?Number(c.noi):'—'),
+    row('Units', p.units||'—'),
+  );
+  loanPanel.append(sl3); left.append(loanPanel);
+
+  // RIGHT: projects (grouped) + reconciliation + GL
+  const right=el('div',{class:'grid',style:'gap:16px;align-content:start'});
+  const projs=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
+  const pj=el('div',{class:'panel'});
+  const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
+  pj.append(el('div',{class:'ph'}, el('h3',{},'Projects'), el('div',{class:'sp'}), el('span',{class:'chip'},`${projs.length} total`)));
+  // phase filter chips — click to hide/show a completion group
+  const filt=el('div',{class:'phasefilt'});
+  PHASES.forEach(ph=>{ if(!counts[ph.key])return; const hidden=!!PFILT.hide[ph.key];
+    filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[ph.key]=!PFILT.hide[ph.key];render();}},
+      el('span',{},ph.label), el('span',{class:'pf-n'},String(counts[ph.key]))));
+  });
+  pj.append(el('div',{class:'pad',style:'padding-bottom:8px'},dateFilterGroup(PFILT),el('div',{style:'height:9px'}),filt,
+    el('div',{style:'font-size:11px;color:var(--ink-3);margin-top:8px'},'Auto-grouped by completion. Click a group to hide it; 📌 pins a project to the top.')));
+  const pb=el('div',{style:'max-height:560px;overflow:auto;padding-bottom:6px'});
+  if(!projs.length)pb.append(el('div',{class:'empty'},'No projects yet for this property.'));
+  function projRow(pr){
+    const ih=isInHouse(pr);
+    const r=el('div',{class:'clickrow proj-row',style:'padding:11px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(pr.id)});
+    const topr=el('div',{style:'display:flex;gap:8px;align-items:center;margin-bottom:6px'},
+      el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
+      el('strong',{style:'font-size:13px;flex:1;min-width:0'},pr.name),
+      ih?el('span',{class:'chip ih'},'In-house'):null,
+      el('span',{style:'font-size:11px;color:var(--ink-3)'},pr.category),
+      el('span',{style:'font-size:11px;color:var(--ink-3);white-space:nowrap'},'· '+fmtDate(pr.dateAdded)),
+      el('span',{class:'mono',style:'font-size:12px;font-weight:600'},fmt(ih?ihTotal(pr):(pr.actualCost!=null?pr.actualCost:pr.anticipatedCost),false)));
+    r.append(topr, ih?progressEl(pr):trackEl(pr));
+    return r;
+  }
+  const pinned=projs.filter(p2=>p2.pinned && !PFILT.hide[phase(p2)]);
+  if(pinned.length){ pb.append(el('div',{class:'grp-h pinned'},'📌 Pinned', el('span',{class:'grp-n'},String(pinned.length)))); pinned.forEach(pr=>pb.append(projRow(pr))); }
+  PHASES.forEach(ph=>{
+    if(PFILT.hide[ph.key])return;
+    const list=projs.filter(p2=>phase(p2)===ph.key && !p2.pinned);
+    if(!list.length)return;
+    list.sort((a,b)=>(stage(b)-stage(a))||(b.dateAdded||'').localeCompare(a.dateAdded||''));
+    pb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
+    list.forEach(pr=>pb.append(projRow(pr)));
+  });
+  pj.append(pb); right.append(pj);
+
+  // reconciliation & flags
+  const auditP=el('div',{class:'panel'});
+  const reviewN=am.unplanned.length+am.paidNoGL.length;
+  auditP.append(el('div',{class:'ph'}, el('h3',{},'Reconciliation & flags'), el('div',{class:'sp'}),
+    el('span',{class:'chip'+(reviewN?' hold':' done')}, reviewN?`${reviewN} to review`:'all clear')));
+  const ab=el('div',{class:'pad'});
+  ab.append(el('div',{class:'recon'},
+    reconCell('GL posted',am.glTotal),
+    reconCell('Paid per tracker',cm.paidTotal),
+    reconCell('Difference',am.glTotal-cm.paidTotal,Math.abs(am.glTotal-cm.paidTotal)>OVER_THRESHOLD)));
+  ab.append(flagBlock('Posted over $5,000 — unplanned',
+    am.unplanned.map(g=>({title:g.vendor||g.category,sub:(g.date||'')+' · '+g.category,amt:g.amount})),'rust',
+    'Large ledger postings not linked to a tracked project. Link them on the ledger below, or add the project so the spend is accounted for.'));
+  ab.append(flagBlock('Marked paid — no ledger match',
+    am.paidNoGL.map(p2=>({title:p2.name,sub:p2.category,amt:projOutflow(p2),onclick:()=>openProject(p2.id)})),'amber',
+    'Flagged paid in the tracker but with no linked GL entry to confirm. Link a ledger line below to finalize.'));
+  auditP.append(ab); right.append(auditP);
+
+  // GL
+  const gls=S.gl.filter(g=>g.property===code);
+  const gp=el('div',{class:'panel',style:'overflow:auto'});
+  gp.append(el('div',{class:'ph'}, el('h3',{},'General ledger — SP spend'), el('div',{class:'sp'}), el('span',{class:'chip'},`${gls.length} lines`), el('span',{class:'chip'},fmt(glSpent))));
+  if(gls.length){
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('Date'),th('Category'),th('Vendor / description'),th('Amount','r'),th('Match'))));
+    const tbb=el('tbody');
+    gls.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
+    gls.forEach(g=>{
+      tbb.append(tr(td(el('span',{class:'mono',style:'font-size:12px'},g.date)),td(el('span',{style:'font-size:12px'},g.category)),
+        td(el('div',{style:'font-size:12px;max-width:260px'}, el('div',{},g.vendor), g.remarks?el('div',{style:'color:var(--ink-3);font-size:11px'},g.remarks):null)),
+        tdn(g.amount,1), td(glLinkCell(g,code))));
+    });
+    t.append(tbb); gp.append(t);
+  } else gp.append(el('div',{class:'empty'},'No ledger lines for this property. Upload a general ledger on the Data tab.'));
+  right.append(gp);
+
+  body.append(left,right);
+  return {bar,body};
+}
+/* GL link cell: shows the linked project or a Match button with a best-guess hint. */
+function glLinkCell(g,code){
+  const cell=el('div',{class:'gl-link'});
+  if(g.linkedProjectId){
+    const pr=S.projects.find(x=>x.id===g.linkedProjectId);
+    cell.append(el('button',{class:'gl-linked',title:pr?('Re-match · '+pr.name):'',onclick:()=>openGLMatch(g,code)}, '🔗 '+(pr?pr.name.slice(0,20):'(missing)')));
+    if(g.partial)cell.append(el('span',{class:'chip',style:'background:var(--amber-soft);color:var(--amber)'},'partial'));
+    cell.append(el('button',{class:'btn ghost sm',title:'Unlink',onclick:()=>{g.linkedProjectId=null;g.partial=false;linkGl(g,'Unlinked');}},'✕'));
+  } else {
+    const cands=projForProp(code).map(pr=>({pr,...glMatchScore(g,pr)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+    cell.append(el('button',{class:'btn sm accent',onclick:()=>openGLMatch(g,code)},'Match…'));
+    if(cands[0])cell.append(el('button',{class:'gl-hint',title:'Suggested: '+cands[0].pr.name,onclick:()=>openGLMatch(g,code)},'≈ '+cands[0].pr.name.slice(0,16)));
+  }
+  return cell;
+}
+/* Matcher modal: ranked rough matches + tie-out options (update total / partial / link). */
+function openGLMatch(g,code){
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Match ledger line to a project'),
+    el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+  const b=el('div',{class:'sb'});
+  b.append(el('div',{class:'panel pad'},
+    el('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap'},
+      el('strong',{class:'mono',style:'font-size:16px'},fmt(g.amount)), el('span',{class:'chip'},g.category||'—'),
+      el('span',{style:'color:var(--ink-3);font-size:12px'},g.date||'')),
+    el('div',{style:'margin-top:5px;font-size:13px'},g.vendor||''),
+    g.remarks?el('div',{style:'font-size:11.5px;color:var(--ink-3);margin-top:2px'},g.remarks):null));
+  let q='';
+  const listWrap=el('div',{class:'panel',style:'margin-top:14px;overflow:hidden'});
+  const search=el('input',{type:'search',placeholder:'Search this property’s projects…',style:'width:100%;padding:10px 12px;border:0;border-bottom:1px solid var(--line-2);background:var(--panel-2)',oninput:e=>{q=e.target.value.toLowerCase();draw();}});
+  const rows=el('div',{style:'max-height:52vh;overflow:auto'});
+  listWrap.append(search,rows); b.append(listWrap);
+  function commitLink(pr,mode){
+    g.linkedProjectId=pr.id;
+    const amt=Math.abs(Number(g.amount)||0);
+    if(mode==='update'){
+      if(pr.inHouse){ pr.totalToComplete=amt; pr.amountCompleted=amt; }
+      else { pr.actualCost=amt; pr.anticipatedCost=pr.anticipatedCost!=null?pr.anticipatedCost:amt; pr.steps.workCompleted=true; pr.steps.paid=true; }
+      g.partial=false;
+    } else if(mode==='partial'){
+      g.partial=true;
+      if(pr.inHouse){ pr.amountCompleted=Math.min(ihTotal(pr)||amt,(Number(pr.amountCompleted)||0)+amt); }
+      else { pr.steps.workStarted=true; }   // partial payment — work underway, not fully paid
+    } else {
+      if(!pr.inHouse){ pr.steps.workCompleted=true; pr.steps.paid=true; }
+      g.partial=false;
+    }
+    scrim.remove(); saveMatch(g,pr,'Ledger line matched');
+  }
+  function draw(){
+    rows.innerHTML='';
+    let cands=projForProp(code).map(pr=>({pr,...glMatchScore(g,pr)}));
+    if(q)cands=cands.filter(x=>(x.pr.name+' '+x.pr.category+' '+(x.pr.contractor||'')).toLowerCase().includes(q));
+    cands.sort((a,b)=>b.score-a.score || (b.pr.dateAdded||'').localeCompare(a.pr.dateAdded||''));
+    if(!cands.length){rows.append(el('div',{class:'empty'},'No matching projects.'));return;}
+    cands.slice(0,40).forEach(({pr,score,reasons})=>{
+      const total=pr.inHouse?ihTotal(pr):projOutflow(pr);
+      const row=el('div',{class:'gm-row'});
+      const rh=el('div',{class:'gm-head'},
+        el('div',{style:'flex:1;min-width:0'},
+          el('div',{class:'gm-name'},pr.name, pr.inHouse?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null),
+          el('div',{class:'gm-sub'}, pr.category+(total?(' · total '+fmt(total,false)):' · no total'))),
+        score>0?el('span',{class:'gm-score'},score+'%'):null);
+      const rwrap=el('div',{class:'gm-reasons'}); reasons.forEach(rs=>rwrap.append(el('span',{class:'gm-tag'},rs)));
+      row.append(rh); if(reasons.length)row.append(rwrap);
+      const diff = total>0 && Math.abs(Math.abs(g.amount)-total)/Math.max(Math.abs(g.amount),total) > 0.01;
+      const actions=el('div',{class:'gm-actions'});
+      if(diff){
+        actions.append(el('div',{class:'gm-note'},`Ledger ${fmt(g.amount)} vs project total ${fmt(total)} — how should this tie out?`),
+          el('div',{style:'display:flex;gap:7px;flex-wrap:wrap'},
+            el('button',{class:'btn sm accent',onclick:()=>commitLink(pr,'update')},`Set total to ${fmt(g.amount,false)}`),
+            el('button',{class:'btn sm',onclick:()=>commitLink(pr,'partial')},'Partial payment'),
+            el('button',{class:'btn sm ghost',onclick:()=>commitLink(pr,'link')},'Link, keep total')));
+      } else {
+        actions.append(el('button',{class:'btn sm accent',onclick:()=>commitLink(pr,'update')},'Tie out & link'));
+      }
+      row.append(actions); rows.append(row);
+    });
+  }
+  draw();
+  sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+}
+
+/* =========================================================
+   CASH & LOANS
+========================================================= */
+function viewCash(){
+  const bar=topbar('Money','Cash & Loans',
+    el('button',{class:'btn accent',onclick:openAdjust},'+ Cash adjustment'));
+  const body=el('div',{class:'grid'});
+
+  // snapshot table
+  const sp=el('div',{class:'panel',style:'overflow:auto'});
+  sp.append(el('div',{class:'ph'}, el('h3',{},'Cash snapshot & loan terms'), el('div',{class:'sp'}), el('span',{class:'chip'},`cushion as of ${S.meta.cashAsOf||'—'}`)));
+  const tbl=el('table',{class:'tbl'});
+  tbl.append(el('thead',{},tr(th('Property'),th('Snapshot cash','r'),th('Adjustments','r'),th('Cash today','r'),
+    th('Outstanding','r'),th('Projected cash','r'),
+    th('SP remaining','r'),th('Loan amount','r'),th('Rate','r'),th('LTV','r'),th('Matures','r'),th('DCR','r'))));
+  const tb=el('tbody');
+  ['Minot','Williston'].forEach(reg=>{
+    tb.append(el('tr',{class:'grp'}, el('td',{colspan:12},reg)));
+    S.properties.filter(p=>p.region===reg).forEach(p=>{
+      const c=S.cash[p.code]||{}; const adj=cashAdjFor(p.code); const cmm=cashModel(p.code);
+      tb.append(el('tr',{class:'clickrow',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;render();}},
+        td(el('strong',{},p.code)),
+        tdn(c.cash,1), td(el('span',{class:adj<0?'mono neg':'mono'},adj?fmt(adj):'—'),'r'),
+        td(el('span',{class:'mono',style:'font-weight:600'},fmt(effectiveCash(p.code))),'r'),
+        td(el('span',{class:'mono'+(cmm.outstandingTotal?' neg':'')},cmm.outstandingTotal?fmt(-cmm.outstandingTotal):'—'),'r'),
+        td(el('span',{class:'mono',style:'font-weight:600'},fmt(cmm.projectedCash)),'r'),
+        tdn(c.spRemaining,1), tdn(c.loanAmount,1),
+        td(el('span',{class:'mono'},c.loanRate!=null?pct(c.loanRate):'—'),'r'),
+        td(el('span',{class:'mono'},c.ltv!=null?pct(c.ltv):'—'),'r'),
+        td(el('span',{class:'mono',style:'font-size:12px'},c.loanDue||'—'),'r'),
+        td(el('span',{class:'mono'},c.dcr!=null?Number(c.dcr).toFixed(2)+'x':'—'),'r')));
+    });
+  });
+  tbl.append(tb); sp.append(tbl); body.append(sp);
+
+  // adjustments ledger
+  const ap=el('div',{class:'panel'});
+  ap.append(el('div',{class:'ph'}, el('h3',{},'Mid-month cash adjustments'), el('div',{class:'sp'}),
+    el('button',{class:'btn sm accent',onclick:openAdjust},'+ Add')));
+  const ab=el('div',{});
+  if(!S.cashAdjustments.length)ab.append(el('div',{class:'empty'},el('div',{class:'big'},'No adjustments yet'),'Record cash moves between monthly cushion reports — they layer on top of the snapshot.'));
+  else{
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('Date'),th('Property'),th('Note'),th('Amount','r'),th(''))));
+    const tbb=el('tbody');
+    S.cashAdjustments.slice().sort((a,b)=>(b.date||'').localeCompare(a.date||'')).forEach(a=>{
+      tbb.append(tr(td(el('span',{class:'mono',style:'font-size:12px'},a.date)),
+        td(propChip(a.property)),
+        td(a.note||'—'),
+        td(el('span',{class:a.amount<0?'mono neg':'mono'},fmt(a.amount)),'r'),
+        td(el('button',{class:'btn ghost sm',onclick:()=>{delAdj(a.id);}},'✕'))));
+    });
+    t.append(tbb); ab.append(t);
+  }
+  ap.append(ab); body.append(ap);
+  return {bar,body};
+}
+function openAdjust(){
+  const a={id:uid('A'),property:VIEW.prop||S.properties[0].code,date:today(),amount:null,note:''};
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const propSel=el('select',{onchange:e=>a.property=e.target.value});
+  S.properties.forEach(pr=>propSel.append(el('option',{value:pr.code,...(a.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Cash adjustment'),
+    el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'));
+  const b=el('div',{class:'sb'});
+  const f=(l,n)=>el('div',{class:'field'},el('label',{},l),n);
+  b.append(f('Property',propSel));
+  b.append(el('div',{class:'frow'},
+    f('Date',el('input',{type:'date',value:a.date,oninput:e=>a.date=e.target.value})),
+    f('Amount (+ in / − out)',el('input',{type:'number',placeholder:'0',oninput:e=>a.amount=e.target.value===''?null:+e.target.value}))));
+  b.append(f('Note',el('input',{placeholder:'e.g. distribution, large invoice, transfer',oninput:e=>a.note=e.target.value})));
+  b.append(el('div',{style:'display:flex;gap:8px;margin-top:8px'}, el('div',{style:'flex:1'}),
+    el('button',{class:'btn accent',onclick:()=>{if(a.amount==null){toast('Enter an amount.');return;}scrim.remove();addAdj(a);}},'Save adjustment')));
+  sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+}
+
+/* =========================================================
+   DATA / UPLOAD
+========================================================= */
+function viewData(){
+  const bar=topbar('Data','Upload & Data');
+  const body=el('div',{class:'grid',style:'grid-template-columns:1fr 1fr'});
+
+  body.append(uploadPanel('General ledger','GL', 'Pulls SP account spend by property & category. Confirms work completed and vendors paid.',
+    'gl', S.meta.glPeriod?`Loaded · ${S.meta.glPeriod} · ${S.gl.length} lines`:'No GL loaded'));
+  body.append(uploadPanel('Cash cushion report','Cushion','Updates each property’s cash position, SP budget/spend and loan terms.',
+    'cushion', S.meta.cashAsOf?`Loaded · as of ${S.meta.cashAsOf}`:'No cushion loaded'));
+
+  // backup panel
+  const bk=el('div',{class:'panel',style:'grid-column:1/-1'});
+  bk.append(el('div',{class:'ph'}, el('h3',{},'Backup & restore')));
+  const bb=el('div',{class:'pad'});
+  bb.append(el('p',{style:'color:var(--ink-3);margin-top:0;font-size:13px'},
+    'Data is saved to the shared database for everyone on the team. Export a JSON backup to keep a safe copy or move data between environments; importing a backup replaces ALL current data.'));
+  const rowb=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap'});
+  rowb.append(
+    el('button',{class:'btn pri',onclick:exportBackup},'⬇ Export backup (.json)'),
+    (()=>{const lbl=el('label',{class:'btn'},'⬆ Import backup');const inp=el('input',{type:'file',accept:'.json',style:'display:none',onchange:e=>importBackup(e.target.files[0])});lbl.append(inp);return lbl;})(),
+    el('button',{class:'btn',onclick:exportCSV},'⬇ Export projects (.csv)'),
+    el('div',{style:'flex:1'}),
+    el('button',{class:'btn danger',onclick:()=>{if(confirm('Reset everything to the seeded starter data? This affects ALL users and cannot be undone.')){resetSeed();}}},'Reset to starter data'));
+  bb.append(rowb);
+  bk.append(bb); body.append(bk);
+
+  // counts
+  const stats=el('div',{class:'panel',style:'grid-column:1/-1'});
+  stats.append(el('div',{class:'ph'}, el('h3',{},'What’s loaded')));
+  const sg=el('div',{class:'pad',style:'display:grid;grid-template-columns:repeat(4,1fr);gap:14px'});
+  const stat=(l,v)=>el('div',{}, el('div',{class:'kpi'}, el('div',{class:'lab'},l), el('div',{class:'val'},v)));
+  sg.append(stat('Properties',S.properties.length),stat('Projects',S.projects.length),
+    stat('GL lines',S.gl.length),stat('Cash adjustments',S.cashAdjustments.length));
+  stats.append(sg); body.append(stats);
+  return {bar,body};
+}
+function uploadPanel(title,tag,desc,kind,status){
+  const p=el('div',{class:'panel'});
+  p.append(el('div',{class:'ph'}, el('h3',{},title), el('div',{class:'sp'}), el('span',{class:'chip'},status)));
+  const pad=el('div',{class:'pad'});
+  pad.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:13px'},desc));
+  const drop=el('div',{class:'drop'});
+  drop.append(el('div',{style:'font-size:26px'},'⇪'), el('div',{class:'big'},`Drop the ${tag} .xlsx here`),
+    el('div',{style:'color:var(--ink-3);font-size:12.5px'},'or click to choose a file'));
+  const inp=el('input',{type:'file',accept:'.xlsx,.xls',style:'display:none',onchange:e=>{if(e.target.files[0])uploadImport(e.target.files[0],kind);}});
+  drop.append(inp);
+  drop.addEventListener('click',()=>inp.click());
+  drop.addEventListener('dragover',e=>{e.preventDefault();drop.classList.add('hot');});
+  drop.addEventListener('dragleave',()=>drop.classList.remove('hot'));
+  drop.addEventListener('drop',e=>{e.preventDefault();drop.classList.remove('hot');const f=e.dataTransfer.files[0];if(f)uploadImport(f,kind);});
+  pad.append(drop); p.append(pad); return p;
+}
+async function uploadImport(file,kind){
+  if(!file)return;
+  const fd=new FormData(); fd.append('file',file);
+  toast('Uploading…');
+  try{
+    const r=await fetch('/api/import/'+kind,{method:'POST',body:fd});
+    if(!r.ok){ let msg; try{msg=(await r.json()).error;}catch(e){ msg='Could not read that file.'; } toast(msg||'Could not read that file.'); return; }
+    const data=await r.json();
+    if(kind==='gl') glPreview(data); else cushionPreview(data);
+  }catch(e){ toast('Upload failed: '+e.message); }
+}
+
+/* ---- GL parser ---- */
+function glPreview(data){
+  const {token,count,period,byProperty}=data;
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Confirm general ledger import'),
+    el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'),
+    el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('POST','/import/gl/confirm',{token}); scrim.remove(); await afterWrite(`Imported ${count} ledger lines`); }catch(e){ toast('Import failed: '+e.message); } }},`Import ${count} lines`));
+  const b=el('div',{class:'sb'});
+  b.append(el('p',{style:'margin-top:0;color:var(--ink-3)'},`Found ${count} SP ledger lines${period?` for ${period}`:''}. This replaces the current ledger. Spend by property:`));
+  const t=el('table',{class:'tbl'});t.append(el('thead',{},tr(th('Property'),th('Net spend','r'))));
+  const tbb=el('tbody');Object.keys(byProperty).sort().forEach(k=>tbb.append(tr(td(k),tdn(byProperty[k],1))));
+  t.append(tbb);b.append(el('div',{class:'panel',style:'overflow:auto'},t));
+  sheet.append(head,b);scrim.append(sheet);document.body.append(scrim);
+}
+function cushionPreview(data){
+  const {token,count,asOf,found}=data;
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Confirm cash cushion import'),
+    el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'),
+    el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('POST','/import/cushion/confirm',{token}); scrim.remove(); await afterWrite('Cash cushion updated'); }catch(e){ toast('Import failed: '+e.message); } }},'Apply update'));
+  const b=el('div',{class:'sb'});
+  b.append(el('p',{style:'margin-top:0;color:var(--ink-3)'},`Matched ${count} properties · as of ${asOf}. Mid-month adjustments are preserved and continue to layer on top.`));
+  const t=el('table',{class:'tbl'});t.append(el('thead',{},tr(th('Property'),th('Cash','r'),th('SP budget','r'),th('SP spent','r'),th('Loan','r'),th('Matures','r'))));
+  const tbb=el('tbody');Object.keys(found).sort().forEach(k=>{const c=found[k];tbb.append(tr(td(k),tdn(c.cash,1),tdn(c.spBudget,1),tdn(c.spSpent,1),tdn(c.loanAmount,1),td(c.loanDue||'—','r')));});
+  t.append(tbb);b.append(el('div',{class:'panel',style:'overflow:auto'},t));
+  sheet.append(head,b);scrim.append(sheet);document.body.append(scrim);
+}
+
+/* ---- backup ---- */
+function exportBackup(){ const a=el('a',{href:'/api/export/backup.json'}); document.body.append(a); a.click(); a.remove(); toast('Backup downloading…'); }
+function importBackup(file){ if(!file)return; const fr=new FileReader(); fr.onload=async e=>{ try{ const d=JSON.parse(e.target.result); if(!d.properties||!d.projects)throw 0; await restoreBackup(d); }catch(err){ toast('That file is not a valid backup.'); } }; fr.readAsText(file); }
+function exportCSV(){ const a=el('a',{href:'/api/export/projects.csv'}); document.body.append(a); a.click(); a.remove(); toast('Projects CSV downloading…'); }
+
+/* ---------- tiny table builders ---------- */
+function tr(...kids){return el('tr',{},...kids);}
+function th(t,cls){return el('th',{class:cls==='r'?'r':''},t);}
+function td(c,cls){return el('td',{class:cls==='r'?'r':''},c&&c.nodeType?c:document.createTextNode(c==null?'':c));}
+function tdn(n,money){return el('td',{class:'num r'},money?fmt(n):(n==null?'—':String(n)));}
+
+/* ---------- toast ---------- */
+let _toastT;function toast(msg){let t=$('.toast');if(t)t.remove();t=el('div',{class:'toast'},msg);document.body.append(t);clearTimeout(_toastT);_toastT=setTimeout(()=>t.remove(),2400);}
+
+start();

@@ -1,0 +1,44 @@
+{
+  "name": "nd-sp-tracker",
+  "version": "1.0.0",
+  "private": true,
+  "description": "North Dakota Special-Projects / Capex Tracker — hosted multi-user version",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "build:client": "esbuild shared/domain.ts --bundle --format=esm --outfile=public/domain.js",
+    "build:server": "tsc -p tsconfig.json",
+    "build": "npm run build:client && npm run build:server",
+    "migrate": "tsx src/migrate.ts",
+    "seed": "tsx src/seed.ts",
+    "migrate:prod": "node dist/src/migrate.js",
+    "seed:prod": "node dist/src/seed.js",
+    "dev": "tsx watch src/server.ts",
+    "start": "node dist/src/migrate.js && node dist/src/server.js",
+    "test": "vitest run",
+    "postinstall": "npm run build:client"
+  },
+  "dependencies": {
+    "connect-pg-simple": "^9.0.1",
+    "dotenv": "^16.4.5",
+    "express": "^4.21.2",
+    "express-session": "^1.18.1",
+    "multer": "^1.4.5-lts.1",
+    "pg": "^8.13.1",
+    "xlsx": "^0.18.5"
+  },
+  "devDependencies": {
+    "@types/connect-pg-simple": "^7.0.3",
+    "@types/express": "^4.17.21",
+    "@types/express-session": "^1.18.0",
+    "@types/multer": "^1.4.12",
+    "@types/node": "^22.10.2",
+    "@types/pg": "^8.11.10",
+    "esbuild": "^0.24.2",
+    "tsx": "^4.19.2",
+    "typescript": "^5.7.2",
+    "vitest": "^2.1.8"
+  }
+}

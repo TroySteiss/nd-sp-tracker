@@ -1,8 +1,7 @@
 import { Router, type Request, type Response } from 'express';
 import multer from 'multer';
 import { randomUUID } from 'node:crypto';
-import { mkdirSync, createReadStream, existsSync, readFileSync, writeFileSync } from 'node:fs';
-import { join, extname } from 'node:path';
+import { extname } from 'node:path';
 import type pg from 'pg';
 import { pool, query, tx, assembleState, rowToProject } from './db.js';
 import { loadStateInto } from './seed.js';
@@ -12,17 +11,18 @@ import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, type Project, type AppS
 
 export const api = Router();
 
-const UPLOAD_DIR = process.env.UPLOAD_DIR || './data/uploads';
-mkdirSync(UPLOAD_DIR, { recursive: true });
-
 const memUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 25 * 1024 * 1024 } });
-const diskUpload = multer({
-  storage: multer.diskStorage({
-    destination: (_req, _file, cb) => cb(null, UPLOAD_DIR),
-    filename: (_req, file, cb) => cb(null, `${randomUUID()}${extname(file.originalname) || '.pdf'}`),
-  }),
-  limits: { fileSize: 25 * 1024 * 1024 },
-});
+
+// Files are stored in Postgres (so they persist across redeploys with no volume).
+async function storeFile(name: string, mime: string, buffer: Buffer): Promise<string> {
+  const key = `${randomUUID()}${extname(name) || ''}`;
+  await query('insert into files(key,name,mime,size,bytes) values($1,$2,$3,$4,$5)', [key, name, mime || 'application/octet-stream', buffer.length, buffer]);
+  return key;
+}
+async function readFile(key: string): Promise<{ name: string; mime: string; bytes: Buffer } | null> {
+  const r = await query<{ name: string; mime: string; bytes: Buffer }>('select name,mime,bytes from files where key=$1', [key]);
+  return r.rows[0] || null;
+}
 
 const nnull = (v: any): number | null => (v == null || v === '' || isNaN(Number(v)) ? null : Number(v));
 const dnull = (v: any): string | null => {
@@ -106,30 +106,30 @@ api.delete('/projects/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- bid file upload / download ---------- */
-api.post('/projects/:id/bids/:slot/file', diskUpload.single('file'), async (req, res) => {
+/* ---------- bid file upload / download (stored in Postgres) ---------- */
+api.post('/projects/:id/bids/:slot/file', memUpload.single('file'), async (req, res) => {
   const f = req.file;
   if (!f) return res.status(400).json({ error: 'no file' });
-  res.json({ fileKey: f.filename, fileName: f.originalname, fileSize: f.size });
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  res.json({ fileKey: key, fileName: f.originalname, fileSize: f.size });
 });
 
-api.get('/bids/file/:key', (req, res) => {
-  const key = req.params.key.replace(/[^a-zA-Z0-9._-]/g, '');
-  const full = join(UPLOAD_DIR, key);
-  if (!existsSync(full)) return res.status(404).send('not found');
+api.get('/bids/file/:key', async (req, res) => {
+  const r = await readFile(req.params.key);
+  if (!r) return res.status(404).send('not found');
+  res.setHeader('Content-Type', r.mime || 'application/octet-stream');
   res.setHeader('Content-Disposition', 'inline');
-  createReadStream(full).pipe(res);
+  res.send(r.bytes);
 });
 
 // Download a stored file (used for generated contracts). ?name sets the filename.
-api.get('/files/:key', (req, res) => {
-  const key = req.params.key.replace(/[^a-zA-Z0-9._-]/g, '');
-  const full = join(UPLOAD_DIR, key);
-  if (!existsSync(full)) return res.status(404).send('not found');
-  const name = String(req.query.name || key).replace(/[^a-zA-Z0-9._ -]/g, '');
-  res.setHeader('Content-Type', 'application/pdf');
+api.get('/files/:key', async (req, res) => {
+  const r = await readFile(req.params.key);
+  if (!r) return res.status(404).send('not found');
+  const name = String(req.query.name || r.name || 'file').replace(/[^a-zA-Z0-9._ -]/g, '');
+  res.setHeader('Content-Type', r.mime || 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
-  createReadStream(full).pipe(res);
+  res.send(r.bytes);
 });
 
 /* ---------- Generate Independent Contractor Agreement (spec: Contract_Generation_Workflow) ---------- */
@@ -153,19 +153,21 @@ api.post('/projects/:id/contract', async (req, res) => {
   const attachments: BidAttachment[] = [];
   for (const bd of bidsRows) {
     if (!bd.file_key) continue;
-    const full = join(UPLOAD_DIR, bd.file_key);
-    if (existsSync(full)) attachments.push({ buffer: readFileSync(full), name: bd.file_name || bd.file_key });
+    const fr = await readFile(bd.file_key);
+    if (fr) attachments.push({ buffer: fr.bytes, name: bd.file_name || bd.file_key });
   }
 
   let pdf: Uint8Array;
   try { pdf = await buildContract(vars, attachments); }
   catch (e: any) { return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) }); }
 
-  // Filename: [CODE]_[Unit?]_[ContractorCamel]_[MMDDYYYY]_Unexecuted.pdf
+  // Filename: [CONTRACT_CODE]_[Unit?]_[ContractorCamel]_[MMDDYYYY]_Unexecuted.pdf
+  const propRow = (await query('select contract_code from properties where code=$1', [proj.property_code])).rows[0];
+  const code = (propRow?.contract_code || proj.property_code);
   const unit = b.unit ? `Unit${String(b.unit).replace(/[^0-9A-Za-z]/g, '')}_` : '';
-  const fileName = `${proj.property_code}_${unit}${camel(vars.contractorName)}_${mmddyyyy(vars.effectiveDate)}_Unexecuted.pdf`;
-  const fileKey = `${randomUUID()}.pdf`;
-  writeFileSync(join(UPLOAD_DIR, fileKey), Buffer.from(pdf));
+  const fileName = `${code}_${unit}${camel(vars.contractorName)}_${mmddyyyy(vars.effectiveDate)}_Unexecuted.pdf`;
+  const fileKey = await storeFile(fileName, 'application/pdf', Buffer.from(pdf));
+  const total = nnull(String(vars.contractTotal).replace(/[^0-9.\-]/g, ''));
 
   await tx(async (c) => {
     // attach the contract to the project
@@ -180,6 +182,12 @@ api.post('/projects/:id/contract', async (req, res) => {
     }
     await c.query('update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
       [fileKey, fileName, JSON.stringify(steps), proj.id]);
+    // record the contract in the contracts table
+    await c.query(
+      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [uid('C'), proj.id, proj.property_code, fileName, vars.ownerEntity, vars.contractorName, total, dnull(vars.effectiveDate), dnull(vars.termEndDate), b.scope || proj.name || '', fileKey]
+    );
     // remember legal fields on the property for next time
     if (b.rememberProperty !== false) {
       await c.query('update properties set owner_entity=$1, address=$2, owner_notice_addr=$3 where code=$4',

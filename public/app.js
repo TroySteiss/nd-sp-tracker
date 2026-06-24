@@ -53,6 +53,7 @@ let VIEW={tab:'dashboard',prop:null};
 let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
 let DASH={region:'',props:[],cat:'',hidePlanned:false,discSort:'cost',discProp:''};  // dashboard controls
+let CFILT={prop:''};  // contracts view filter
 const PCOLOR={
   /* Minot — shades of blue */
   CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
@@ -251,6 +252,7 @@ function rail(){
   nav.append(item('dashboard','◧','Dashboard'));
   nav.append(item('projects','▤','Projects',counts.active));
   nav.append(item('inhouse','🛠','In-house',S.projects.filter(isInHouse).length||null));
+  nav.append(item('contracts','▦','Contracts',(S.contracts||[]).length||null));
   nav.append(el('div',{class:'grp'},'Properties'));
   ['Minot','Williston'].forEach(reg=>{
     nav.append(el('div',{class:'grp',style:'padding-top:6px'},reg));
@@ -274,7 +276,7 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,property:viewProperty,cash:viewCash,data:viewData};
+  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   m.append(bar,el('div',{class:'content'},body));
   return m;
@@ -285,6 +287,78 @@ function topbar(crumb,title,...actions){
   const tt=el('div',{class:'tt'}, el('div',{class:'crumb'},crumb), el('h2',{},title));
   t.append(menu,tt,el('div',{class:'sp'}),...actions);
   return t;
+}
+
+/* =========================================================
+   CONTRACTS
+========================================================= */
+function viewContracts(){
+  const usd=n=>(n==null||n==='')?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  let list=(S.contracts||[]).slice();
+  if(CFILT.prop) list=list.filter(c=>c.property===CFILT.prop);
+  list.sort((a,b)=>String(a.effectiveDate||'').localeCompare(String(b.effectiveDate||''))||String(a.outputFilename||'').localeCompare(String(b.outputFilename||'')));
+  const total=list.reduce((a,c)=>a+(Number(c.total)||0),0);
+
+  const propSel=el('select',{onchange:e=>{CFILT.prop=e.target.value;render();}},
+    el('option',{value:''},'All properties'),
+    ...S.properties.map(p=>el('option',{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
+  const bar=topbar('Pipeline','Contracts', propSel);
+
+  const body=el('div',{class:'grid'});
+
+  // KPIs
+  const kpiBox=(lab,val)=>el('div',{class:'kpi'}, el('div',{class:'lab'},lab), el('div',{class:'val'},val));
+  const kpis=el('div',{class:'grid kpis',style:'grid-template-columns:repeat(3,1fr)'});
+  kpis.append(kpiBox('Contracts',String(list.length)), kpiBox('Total value',usd(total)), kpiBox('Properties',String(new Set(list.map(c=>c.property)).size)));
+  body.append(kpis);
+
+  // By-property breakdown
+  const byProp={};
+  (S.contracts||[]).forEach(c=>{const k=c.property;(byProp[k]=byProp[k]||{n:0,t:0});byProp[k].n++;byProp[k].t+=Number(c.total)||0;});
+  const bpPanel=el('div',{class:'panel'});
+  bpPanel.append(el('div',{class:'ph'}, el('h3',{},'Contracts by property')));
+  const bpt=el('table',{class:'tbl'});
+  bpt.append(el('thead',{},tr(th('Property'),th('# Contracts','r'),th('Total value','r'))));
+  const bptb=el('tbody');
+  Object.keys(byProp).sort((a,b)=>byProp[b].t-byProp[a].t).forEach(code=>{
+    bptb.append(el('tr',{class:'clickrow',onclick:()=>{CFILT.prop=code;render();}},
+      td(el('span',{},propChip(code),' ',PROP(code)?PROP(code).name:code)),
+      el('td',{class:'num r'},String(byProp[code].n)),
+      el('td',{class:'num r'},usd(byProp[code].t))));
+  });
+  bpt.append(bptb);
+  bpPanel.append(el('div',{style:'overflow:auto'},bpt));
+  body.append(bpPanel);
+
+  // Main contracts table
+  const panel=el('div',{class:'panel'});
+  panel.append(el('div',{class:'ph'}, el('h3',{},'All contracts'), el('div',{class:'sp'}), el('span',{class:'chip'},`${list.length} shown`)));
+  if(!list.length){
+    panel.append(el('div',{class:'empty'}, el('div',{class:'big'},'No contracts yet'), 'Generate a contract from a project’s Bids panel, or they’ll appear here once added.'));
+  } else {
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('#'),th('Contract'),th('Property'),th('Owner entity'),th('Contractor'),th('Total','r'),th('Effective'),th('Term end'),th('Scope'))));
+    const tb=el('tbody');
+    list.forEach((c,i)=>{
+      const fileCell = c.fileKey
+        ? el('a',{href:`/api/files/${c.fileKey}?name=${encodeURIComponent(c.outputFilename||'contract.pdf')}`,title:'Download'}, c.outputFilename)
+        : el('span',{title:'Tracking record — PDF not stored in app',style:'color:var(--ink-2)'}, c.outputFilename);
+      tb.append(tr(
+        el('td',{class:'num'},String(i+1)),
+        td(fileCell),
+        td(propChip(c.property)),
+        td(c.ownerEntity||'—'),
+        td(c.contractor||'—'),
+        el('td',{class:'num r'},usd(c.total)),
+        td(fmtDate(c.effectiveDate)),
+        td(fmtDate(c.termEnd)),
+        td(c.scope||'—')));
+    });
+    t.append(tb);
+    panel.append(el('div',{style:'overflow:auto'},t));
+  }
+  body.append(panel);
+  return {bar,body};
 }
 
 /* =========================================================
@@ -975,7 +1049,7 @@ function openProject(id,preset){
       ownerEntity:prop.ownerEntity||'', contractorName:(approved.contractor||p.contractor||''),
       propertyName:prop.name||'', propertyAddr:prop.address||'',
       ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:'',
-      contractTotal:usd(total), unit:''
+      contractTotal:usd(total), unit:'', scope:p.name||''
     };
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
     const sheet=el('div',{class:'sheet'});
@@ -984,13 +1058,22 @@ function openProject(id,preset){
     const bb=el('div',{class:'sb'});
     bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Pre-filled from the property and approved bid. Owner entity and addresses are saved to the property for next time.'));
     const f=(label,key,opts={})=>el('div',{class:'field'},el('label',{},label),el('input',{value:data[key]||'',placeholder:opts.ph||'',oninput:e=>data[key]=e.target.value}));
-    bb.append(el('div',{class:'frow'}, f('Effective date (MM/DD/YYYY)','effectiveDate'), f('Term end date (MM/DD/YYYY)','termEndDate')));
+    const sect=t=>bb.append(el('div',{style:'font-family:var(--disp);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:18px 0 8px;border-bottom:1px solid var(--line-2);padding-bottom:5px'},t));
+    // --- Property ---
+    sect('Property');
+    bb.append(f('Property name','propertyName'));
     bb.append(f('Owner entity (legal)','ownerEntity',{ph:'e.g. MIMG CCXXXI South Pointe Sub, LLC'}));
-    bb.append(el('div',{class:'frow'}, f('Contractor name','contractorName'), f('Contract total','contractTotal')));
     bb.append(f('Property address','propertyAddr',{ph:'street, city, ST ZIP'}));
     bb.append(f('Owner notice address','ownerNoticeAddr',{ph:'usually same as property'}));
+    // --- Contract ---
+    sect('Contract');
+    bb.append(el('div',{class:'frow'}, f('Effective date (MM/DD/YYYY)','effectiveDate'), f('Term end date (MM/DD/YYYY)','termEndDate')));
+    bb.append(el('div',{class:'frow'}, f('Contract total','contractTotal'), f('Unit # (optional)','unit',{ph:'e.g. 201'})));
+    bb.append(f('Scope of work','scope',{ph:'e.g. HVAC replacement — Unit 316'}));
+    // --- Contractor ---
+    sect('Contractor');
+    bb.append(f('Contractor name','contractorName'));
     bb.append(f('Contractor address','contractorAddr'));
-    bb.append(el('div',{class:'frow'}, f('Unit # (optional)','unit',{ph:'e.g. 201'}), el('div',{})));
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{
       if(!data.ownerEntity||!data.contractorName||!data.contractTotal){ err.textContent='Owner entity, contractor name and contract total are required.'; return; }

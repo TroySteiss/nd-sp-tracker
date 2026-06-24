@@ -63,6 +63,22 @@ export interface Property {
   ownerEntity?: string;
   address?: string;
   ownerNoticeAddr?: string;
+  contractCode?: string;
+}
+
+export interface ContractRecord {
+  id: string;
+  projectId?: string | null;
+  property: string;
+  outputFilename: string;
+  ownerEntity?: string;
+  contractor?: string;
+  total?: number | null;
+  effectiveDate?: string;
+  termEnd?: string;
+  scope?: string;
+  fileKey?: string | null;
+  createdAt?: string;
 }
 
 export interface CashSnapshot {
@@ -112,6 +128,7 @@ export interface AppState {
   cashAdjustments: CashAdjustment[];
   gl: GLLine[];
   projects: Project[];
+  contracts?: ContractRecord[];
 }
 
 /* ---------- Lifecycle (the 12 steps from the workflow brief) ---------- */

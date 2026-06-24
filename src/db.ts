@@ -94,7 +94,7 @@ export function rowToCash(r: any): CashSnapshot {
 
 /* ---------- Assemble the full state blob (GET /api/state) ---------- */
 export async function assembleState(): Promise<AppState> {
-  const [props, projs, bids, notes, cash, adj, gl, meta] = await Promise.all([
+  const [props, projs, bids, notes, cash, adj, gl, meta, contracts] = await Promise.all([
     query('select * from properties order by code'),
     query('select * from projects order by id'),
     query('select * from bids order by project_id, slot'),
@@ -103,6 +103,7 @@ export async function assembleState(): Promise<AppState> {
     query('select * from cash_adjustments order by date'),
     query('select * from gl_lines order by id'),
     query('select * from app_meta where id=1'),
+    query('select * from contracts order by effective_date, created_at'),
   ]);
 
   const bidsByProject = new Map<string, Bid[]>();
@@ -118,7 +119,9 @@ export async function assembleState(): Promise<AppState> {
     notesByProject.set(n.project_id, arr);
   }
 
-  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '' }));
+  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', contractCode: r.contract_code ?? r.code }));
+
+  const contractRecords = contracts.rows.map((r) => ({ id: r.id, projectId: r.project_id, property: r.property_code, outputFilename: r.output_filename, ownerEntity: r.owner_entity ?? '', contractor: r.contractor ?? '', total: r.total, effectiveDate: r.effective_date ? d(r.effective_date) : '', termEnd: r.term_end ? d(r.term_end) : '', scope: r.scope ?? '', fileKey: r.file_key, createdAt: r.created_at ? new Date(r.created_at).toISOString() : '' }));
   const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || []));
 
   const cashMap: Record<string, CashSnapshot> = {};
@@ -130,5 +133,5 @@ export async function assembleState(): Promise<AppState> {
   const m = meta.rows[0] || {};
   const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '' };
 
-  return { meta: metaObj, properties, cash: cashMap, cashAdjustments, gl: glLines, projects };
+  return { meta: metaObj, properties, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords };
 }

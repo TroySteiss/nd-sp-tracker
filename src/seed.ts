@@ -23,14 +23,17 @@ const nnull = (v: any): number | null => (v == null || v === '' || isNaN(Number(
  * (authoritative), not the imported blob.
  */
 export async function loadStateInto(client: pg.PoolClient, state: AppState): Promise<void> {
-  await client.query('truncate gl_lines, cash_adjustments, cash_snapshots, progress_notes, bids, projects, properties restart identity cascade');
+  await client.query('truncate contracts, files, gl_lines, cash_adjustments, cash_snapshots, progress_notes, bids, projects, properties restart identity cascade');
+  const projectIds = new Set((state.projects || []).map((p) => p.id));
 
-  // properties — authoritative reference (name/budget/units may come from the blob)
+  // properties — authoritative reference (name/budget/units/legal fields may come from the blob)
   for (const ref of PROPERTIES) {
-    const fromBlob = (state.properties || []).find((p) => p.code === ref.code);
+    const fromBlob: any = (state.properties || []).find((p) => p.code === ref.code) || {};
     await client.query(
-      `insert into properties(code,name,region,manager,color,sp_budget,units) values($1,$2,$3,$4,$5,$6,$7)`,
-      [ref.code, fromBlob?.name || ref.name, ref.region, ref.manager, pcolor(ref.code), nnull(fromBlob?.spBudget) ?? 0, fromBlob?.units ?? 0]
+      `insert into properties(code,name,region,manager,color,sp_budget,units,owner_entity,address,owner_notice_addr,contract_code)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [ref.code, fromBlob.name || ref.name, ref.region, ref.manager, pcolor(ref.code), nnull(fromBlob.spBudget) ?? 0, fromBlob.units ?? 0,
+       fromBlob.ownerEntity || '', fromBlob.address || '', fromBlob.ownerNoticeAddr || '', fromBlob.contractCode || ref.code]
     );
   }
 
@@ -64,6 +67,16 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     }
   }
 
+  // contracts (tracking records; project_id only kept if the project exists)
+  for (const ct of (state as any).contracts || []) {
+    const link = ct.projectId && projectIds.has(ct.projectId) ? ct.projectId : null;
+    await client.query(
+      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [ct.id, link, ct.property, ct.outputFilename || '', ct.ownerEntity || '', ct.contractor || '', nnull(ct.total), dnull(ct.effectiveDate), dnull(ct.termEnd), ct.scope || '', ct.fileKey || null]
+    );
+  }
+
   // cash snapshots
   for (const code of Object.keys(state.cash || {})) {
     const c = state.cash[code];
@@ -84,7 +97,6 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
   }
 
   // gl lines — drop links to projects that no longer exist (e.g. purged SP-COMPLETE archive)
-  const projectIds = new Set((state.projects || []).map((p) => p.id));
   for (const g of state.gl || []) {
     const link = g.linkedProjectId && projectIds.has(g.linkedProjectId) ? g.linkedProjectId : null;
     await client.query(

@@ -16,7 +16,11 @@
       "region": "Minot",
       "manager": "Holly Haman",
       "spBudget": 120000,
-      "units": 341
+      "units": 341,
+      "ownerEntity": "MIMG CCXXXI Commons Sub, LLC",
+      "contractCode": "CLND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "SPND",
@@ -24,7 +28,11 @@
       "region": "Minot",
       "manager": "Holly Haman",
       "spBudget": 135000,
-      "units": 196
+      "units": 196,
+      "ownerEntity": "MIMG CCXXXI South Pointe Sub, LLC",
+      "contractCode": "SPND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "TPND",
@@ -32,7 +40,11 @@
       "region": "Minot",
       "manager": "Holly Haman",
       "spBudget": 0,
-      "units": 0
+      "units": 0,
+      "ownerEntity": "",
+      "contractCode": "TPND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "TCND",
@@ -40,7 +52,11 @@
       "region": "Minot",
       "manager": "Holly Haman",
       "spBudget": 72000,
-      "units": 104
+      "units": 104,
+      "ownerEntity": "MIMG CCXXXI Chateau Sub, LLC",
+      "contractCode": "TCND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "WYND",
@@ -48,7 +64,11 @@
       "region": "Minot",
       "manager": "Holly Haman",
       "spBudget": 140000,
-      "units": 276
+      "units": 276,
+      "ownerEntity": "",
+      "contractCode": "WYND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "BCND",
@@ -56,7 +76,11 @@
       "region": "Williston",
       "manager": "Brittanee Purdue",
       "spBudget": 295000,
-      "units": 558
+      "units": 558,
+      "ownerEntity": "MIMG CCLIV Bison Crossing Sub, LLC",
+      "contractCode": "BCND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "ECND",
@@ -64,7 +88,11 @@
       "region": "Williston",
       "manager": "Brittanee Purdue",
       "spBudget": 200000,
-      "units": 360
+      "units": 360,
+      "ownerEntity": "MIMG CCLIV Elk Crossing Sub, LLC",
+      "contractCode": "ECND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "FHND",
@@ -72,7 +100,11 @@
       "region": "Williston",
       "manager": "Brittanee Purdue",
       "spBudget": 140000,
-      "units": 350
+      "units": 350,
+      "ownerEntity": "MIMG CCLX Fair Hills Sub, LLC",
+      "contractCode": "FHND",
+      "address": "",
+      "ownerNoticeAddr": ""
     },
     {
       "code": "PHND",
@@ -80,7 +112,11 @@
       "region": "Williston",
       "manager": "Brittanee Purdue",
       "spBudget": 125000,
-      "units": 202
+      "units": 202,
+      "ownerEntity": "MIMG CCLX Plantation Sub, LLC",
+      "contractCode": "PHND",
+      "address": "",
+      "ownerNoticeAddr": ""
     }
   ],
   "cash": {
@@ -4405,6 +4441,216 @@
       "notes": "",
       "onHold": false,
       "noContract": false
+    }
+  ],
+  "contracts": [
+    {
+      "id": "C001",
+      "projectId": null,
+      "property": "SPND",
+      "outputFilename": "SPND_Unit316_KevinsPlumbing_06082026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI South Pointe Sub, LLC",
+      "contractor": "Kevin's Plumbing and Heating, Inc.",
+      "total": 5925,
+      "effectiveDate": "2026-06-08",
+      "termEnd": "2026-07-08",
+      "scope": "HVAC replacement — Unit 316 (Q2747)",
+      "fileKey": null
+    },
+    {
+      "id": "C002",
+      "projectId": null,
+      "property": "BCND",
+      "outputFilename": "BCND_LandscapeElements_06092026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLIV Bison Crossing Sub, LLC",
+      "contractor": "Landscape Elements ND LLC",
+      "total": 4980,
+      "effectiveDate": "2026-06-09",
+      "termEnd": "2026-07-09",
+      "scope": "Office landscaping — Estimate 4312",
+      "fileKey": null
+    },
+    {
+      "id": "C003",
+      "projectId": null,
+      "property": "PHND",
+      "outputFilename": "PHND_SummitFire_06092026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLX Plantation Sub, LLC",
+      "contractor": "Summit Fire Protection Co",
+      "total": 5580,
+      "effectiveDate": "2026-06-09",
+      "termEnd": "2026-07-09",
+      "scope": "Annual fire inspections (6 buildings)",
+      "fileKey": null
+    },
+    {
+      "id": "C004",
+      "projectId": null,
+      "property": "CLND",
+      "outputFilename": "CLND_LegendLawn_06092026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI Commons Sub, LLC",
+      "contractor": "Legend Lawn Maintenance LLC",
+      "total": 5655,
+      "effectiveDate": "2026-06-09",
+      "termEnd": "2026-07-09",
+      "scope": "Hydroseed repair — Landing Bldg 1910B",
+      "fileKey": null
+    },
+    {
+      "id": "C005",
+      "projectId": null,
+      "property": "ECND",
+      "outputFilename": "ECND_AEYRoofing_06112026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLIV Elk Crossing Sub, LLC",
+      "contractor": "AEY Roofing Contractors",
+      "total": 8985,
+      "effectiveDate": "2026-06-11",
+      "termEnd": "2026-07-13",
+      "scope": "Roof repairs all buildings + lift",
+      "fileKey": null
+    },
+    {
+      "id": "C006",
+      "projectId": null,
+      "property": "BCND",
+      "outputFilename": "BCND_KeyTrak_07012026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLIV Bison Crossing Sub, LLC",
+      "contractor": "KeyTrak Inc",
+      "total": 29493.54,
+      "effectiveDate": "2026-07-01",
+      "termEnd": "2027-06-30",
+      "scope": "KeyTrak EDGE 600 key control system",
+      "fileKey": null
+    },
+    {
+      "id": "C007",
+      "projectId": null,
+      "property": "SPND",
+      "outputFilename": "SPND_Unit201_KevinsPlumbing_06122026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI South Pointe Sub, LLC",
+      "contractor": "Kevin's Plumbing and Heating, Inc.",
+      "total": 5925,
+      "effectiveDate": "2026-06-12",
+      "termEnd": "2027-06-30",
+      "scope": "HVAC replacement — Unit 201 (Q2760)",
+      "fileKey": null
+    },
+    {
+      "id": "C008",
+      "projectId": null,
+      "property": "BCND",
+      "outputFilename": "BCND_DeckedOut_06152026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLIV Bison Crossing Sub, LLC",
+      "contractor": "Decked Out LLC",
+      "total": 4000,
+      "effectiveDate": "2026-06-15",
+      "termEnd": "2027-07-15",
+      "scope": "Deck post replacement + reattachment (4304 16th Ave W)",
+      "fileKey": null
+    },
+    {
+      "id": "C009",
+      "projectId": null,
+      "property": "SPND",
+      "outputFilename": "SPND_KevinsPlumbing_06152026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI South Pointe Sub, LLC",
+      "contractor": "Kevin's Plumbing and Heating, Inc.",
+      "total": 11850,
+      "effectiveDate": "2026-06-15",
+      "termEnd": "2027-07-15",
+      "scope": "HVAC replacement — Units 201 & 306 (2 bids combined)",
+      "fileKey": null
+    },
+    {
+      "id": "C010",
+      "projectId": null,
+      "property": "CLND",
+      "outputFilename": "CLND_LegendLawn_06182026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI Commons Sub, LLC",
+      "contractor": "Legend Lawn Maintenance LLC",
+      "total": 29100,
+      "effectiveDate": "2026-06-18",
+      "termEnd": "2027-08-19",
+      "scope": "French drain install — Commons (#1051 $13,500) + Landing (#1050 $15,600)",
+      "fileKey": null
+    },
+    {
+      "id": "C011",
+      "projectId": null,
+      "property": "TCND",
+      "outputFilename": "TCND_ToddFerm_06182026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI Chateau Sub, LLC",
+      "contractor": "Todd Ferm Construction LLC",
+      "total": 27830,
+      "effectiveDate": "2026-06-18",
+      "termEnd": "2027-08-19",
+      "scope": "Concrete — curb, gutter, sidewalk, entry replacement (Estimate #1020)",
+      "fileKey": null
+    },
+    {
+      "id": "C012",
+      "projectId": null,
+      "property": "CLND",
+      "outputFilename": "CLND_BechtoldPaving_06222026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI Commons Sub, LLC",
+      "contractor": "Bechtold Paving Inc",
+      "total": 14300,
+      "effectiveDate": "2026-06-22",
+      "termEnd": "2026-08-22",
+      "scope": "Storm drain corrections — manhole/gate valve/asphalt patching",
+      "fileKey": null
+    },
+    {
+      "id": "C013",
+      "projectId": null,
+      "property": "SPND",
+      "outputFilename": "SPND_ToddFerm_06222026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCXXXI South Pointe Sub, LLC",
+      "contractor": "Todd Ferm Construction LLC",
+      "total": 30700,
+      "effectiveDate": "2026-06-22",
+      "termEnd": "2026-08-22",
+      "scope": "Concrete — 6 patios, 2 approaches, sidewalk R&R (Estimate #1019)",
+      "fileKey": null
+    },
+    {
+      "id": "C014",
+      "projectId": null,
+      "property": "ECND",
+      "outputFilename": "ECND_LandscapeElements_06232026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLIV Elk Crossing Sub, LLC",
+      "contractor": "Landscape Elements ND LLC",
+      "total": 5200,
+      "effectiveDate": "2026-06-23",
+      "termEnd": "2026-08-23",
+      "scope": "Parking lot line striping — Estimate 4318",
+      "fileKey": null
+    },
+    {
+      "id": "C015",
+      "projectId": null,
+      "property": "FHND",
+      "outputFilename": "FHND_TheLineGuys_06232026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLX Fair Hills Sub, LLC",
+      "contractor": "The Line Guys LLP",
+      "total": 7618,
+      "effectiveDate": "2026-06-23",
+      "termEnd": "2026-08-23",
+      "scope": "Parking lot striping — 157 spaces, 12 ADA, curb/fire lane (Estimate #109)",
+      "fileKey": null
+    },
+    {
+      "id": "C016",
+      "projectId": null,
+      "property": "PHND",
+      "outputFilename": "PHND_TopTierServices_06232026_Unexecuted.pdf",
+      "ownerEntity": "MIMG CCLX Plantation Sub, LLC",
+      "contractor": "Top Tier Services LLC",
+      "total": 8770,
+      "effectiveDate": "2026-06-23",
+      "termEnd": "2026-08-23",
+      "scope": "Parking lot sweep & restriping",
+      "fileKey": null
     }
   ]
 }

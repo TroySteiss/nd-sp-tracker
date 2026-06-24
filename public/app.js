@@ -1232,12 +1232,39 @@ function viewProperty(){
   cashPanel.append(el('div',{class:'ph'}, el('h3',{},'Cash position'), el('div',{class:'sp'}), el('span',{class:'chip'},`snapshot ${c.asOfDate||S.meta.cashAsOf||'—'}`)));
   const sl=el('div',{class:'pad stat-list'});
   const row=(k,v,cls,sub)=>el('div',{class:'sl'+(cls?' '+cls:'')}, el('span',{class:'k'},k,sub?el('span',{class:'sl-sub'},sub):null), el('span',{class:'v'+(typeof v==='number'&&v<0?' neg':'')},typeof v==='number'?fmt(v):v));
+  // Projected cash with an expandable, line-by-line breakdown by status.
+  const projCashRow=(()=>{
+    const mini=(k,v,o={})=>el('div',{style:`display:flex;justify-content:space-between;gap:10px;padding:2px 0;font-size:12px;${o.strong?'font-weight:600;':'color:var(--ink-2);'}${o.indent?'padding-left:16px;':''}`},
+      el('span',{},k), el('span',{class:'mono'+((typeof v==='number'&&v<0)?' neg':'')}, typeof v==='number'?fmt(v):v));
+    const grp=t=>el('div',{style:'font-size:10px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin:8px 0 2px'},t);
+    const bd=el('div',{style:'padding:8px 0 2px;border-top:1px dashed var(--line-2);margin-top:6px'});
+    bd.append(mini('Cash today',cm.cashToday,{strong:true}));
+    if(cm.outstanding.length){
+      bd.append(grp('Less — outstanding (approved, not yet paid)'));
+      cm.outstanding.forEach(p=>bd.append(mini('− '+(p.name||'(untitled)'), -(p.inHouse?ihRemaining(p):projOutflow(p)), {indent:true})));
+      bd.append(mini('Subtotal outstanding', -cm.outstandingTotal, {strong:true,indent:true}));
+    } else { bd.append(mini('Less — outstanding', 0, {indent:true})); }
+    bd.append(mini('= Projected cash', cm.projectedCash, {strong:true}));
+    if(cm.paid.length){
+      bd.append(grp('For reference — paid (already out)'));
+      cm.paid.forEach(p=>bd.append(mini(p.name||'(untitled)', (p.inHouse?ihDone(p):projOutflow(p)), {indent:true})));
+    }
+    if(cm.discussed.length){
+      bd.append(grp('For reference — discussed (not committed)'));
+      cm.discussed.forEach(p=>bd.append(mini(p.name||'(untitled)', projOutflow(p), {indent:true})));
+    }
+    const d=el('details',{});
+    d.append(el('summary',{class:'sl',style:'cursor:pointer;align-items:flex-start'},
+      el('span',{class:'k'},'Projected cash', el('span',{class:'sl-sub'},'once open work is paid · show math')),
+      el('span',{class:'v'+(cm.projectedCash<0?' neg':'')}, fmt(cm.projectedCash))), bd);
+    return d;
+  })();
   sl.append(
     row('Cash snapshot', cm.snapshot==null?'—':cm.snapshot,null,'from cushion report'),
     row('Mid-month adjustments', cm.adj),
     row('Cash today', cm.cashToday,'hl','final · actual'),
     row('Outstanding commitments', cm.outstandingTotal?-cm.outstandingTotal:0,null,'approved, not yet paid'),
-    row('Projected cash', cm.projectedCash,'big','once open work is paid'),
+    projCashRow,
     row('Spent vs SP budget', budget-(spent+cm.outstandingTotal),null,'budget less spent & committed'),
     cm.discussedTotal?row('Discussed / ideas', cm.discussedTotal,null,'not yet committed'):null,
   );

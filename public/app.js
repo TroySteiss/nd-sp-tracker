@@ -298,8 +298,8 @@ function viewContracts(){
   if(CFILT.prop) list=list.filter(c=>c.property===CFILT.prop);
   if(CFILT.q){ const q=CFILT.q.toLowerCase(); list=list.filter(c=>[c.outputFilename,c.contractor,c.ownerEntity,c.scope].some(x=>String(x||'').toLowerCase().includes(q))); }
   const sorters={
-    date_desc:(a,b)=>String(b.effectiveDate||'').localeCompare(String(a.effectiveDate||''))||String(b.outputFilename||'').localeCompare(String(a.outputFilename||'')),
-    date_asc:(a,b)=>String(a.effectiveDate||'').localeCompare(String(b.effectiveDate||''))||String(a.outputFilename||'').localeCompare(String(b.outputFilename||'')),
+    date_desc:(a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))||String(b.outputFilename||'').localeCompare(String(a.outputFilename||'')),
+    date_asc:(a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||''))||String(a.outputFilename||'').localeCompare(String(b.outputFilename||'')),
     total_desc:(a,b)=>(Number(b.total)||0)-(Number(a.total)||0),
     contractor:(a,b)=>String(a.contractor||'').localeCompare(String(b.contractor||'')),
     property:(a,b)=>String(a.property).localeCompare(String(b.property))||String(b.effectiveDate||'').localeCompare(String(a.effectiveDate||'')),
@@ -349,12 +349,10 @@ function viewContracts(){
     panel.append(el('div',{class:'empty'}, el('div',{class:'big'},'No contracts yet'), 'Generate a contract from a project’s Bids panel, or they’ll appear here once added.'));
   } else {
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('#'),th('Contract'),th('Property'),th('Owner entity'),th('Contractor'),th('Total','r'),th('Effective'),th('Term end'),th('Scope'))));
+    t.append(el('thead',{},tr(th('#'),th('Contract'),th('Property'),th('Owner entity'),th('Contractor'),th('Total','r'),th('Generated'),th('Term end'),th('Scope'))));
     const tb=el('tbody');
     list.forEach((c,i)=>{
-      const fileCell = c.fileKey
-        ? el('a',{href:`/api/files/${c.fileKey}?name=${encodeURIComponent(c.outputFilename||'contract.pdf')}`,title:'Download'}, c.outputFilename)
-        : el('span',{title:'Tracking record — PDF not stored in app',style:'color:var(--ink-2)'}, c.outputFilename);
+      const fileCell = el('span',{style:'color:var(--ink-2)'}, c.outputFilename);
       tb.append(tr(
         el('td',{class:'num'},String(i+1)),
         td(fileCell),
@@ -362,7 +360,7 @@ function viewContracts(){
         td(c.ownerEntity||'—'),
         td(c.contractor||'—'),
         el('td',{class:'num r'},usd(c.total)),
-        td(fmtDate(c.effectiveDate)),
+        td(fmtDate(c.createdAt)),
         td(fmtDate(c.termEnd)),
         td(c.scope||'—')));
     });
@@ -1214,16 +1212,18 @@ function viewProperty(){
   const remTone = remaining<0?'bad':(budget&&remaining<budget*0.15?'warn':'good');
   const cpdTone = cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));   // green >$3k · yellow $2k–$3k · red <$2k
   const projTone = cm.projectedCash<0?'bad':(cm.projectedCash<cashToday*0.25?'warn':'good');
+  const projToBudget = budget-cm.outstandingTotal-spent;   // SP budget less committed-unpaid less spent
+  const ptbTone = projToBudget<0?'bad':(budget&&projToBudget<budget*0.15?'warn':'good');
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
       hstat('SP budget (2026)', fmt(budget), 'none'),
       hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
+      hstat('Projection to budget', fmt(projToBudget), ptbTone, 'budget − committed − spent'),
       hstat('Remaining', fmt(remaining), remTone, pct(usedPct)+' used'),
       hstat('Projected cash', fmt(cm.projectedCash), projTone, 'after committed'),
-      hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count'),
-      hstat('Cash / yr of loan', cashPerYr==null?'—':fmt(cashPerYr), 'none', loanYrs!=null&&loanYrs>0?`${loanYrs.toFixed(1)} yrs to ${c.loanDue}`:'no loan maturity') ]);
+      hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 
   // LEFT: cash + loan
@@ -1281,7 +1281,8 @@ function viewProperty(){
     row('Loan matures', c.loanDue||'—'),
     row('DCR', c.dcr!=null?Number(c.dcr).toFixed(2)+'x':'—'),
     row('NOI', c.noi!=null?Number(c.noi):'—'),
-    row('Units', p.units||'—'),
+    row('Units', p.units?String(p.units):'—'),
+    row('Cash / yr of loan', cashPerYr==null?'—':cashPerYr, null, loanYrs!=null&&loanYrs>0?`${loanYrs.toFixed(1)} yrs to ${c.loanDue}`:'no loan maturity'),
   );
   loanPanel.append(sl3); left.append(loanPanel);
 

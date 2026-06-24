@@ -4455,7 +4455,8 @@
       "effectiveDate": "2026-06-08",
       "termEnd": "2026-07-08",
       "scope": "HVAC replacement — Unit 316 (Q2747)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-08"
     },
     {
       "id": "C002",
@@ -4468,7 +4469,8 @@
       "effectiveDate": "2026-06-09",
       "termEnd": "2026-07-09",
       "scope": "Office landscaping — Estimate 4312",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-09"
     },
     {
       "id": "C003",
@@ -4481,7 +4483,8 @@
       "effectiveDate": "2026-06-09",
       "termEnd": "2026-07-09",
       "scope": "Annual fire inspections (6 buildings)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-09"
     },
     {
       "id": "C004",
@@ -4494,7 +4497,8 @@
       "effectiveDate": "2026-06-09",
       "termEnd": "2026-07-09",
       "scope": "Hydroseed repair — Landing Bldg 1910B",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-09"
     },
     {
       "id": "C005",
@@ -4507,7 +4511,8 @@
       "effectiveDate": "2026-06-11",
       "termEnd": "2026-07-13",
       "scope": "Roof repairs all buildings + lift",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-11"
     },
     {
       "id": "C006",
@@ -4520,7 +4525,8 @@
       "effectiveDate": "2026-07-01",
       "termEnd": "2027-06-30",
       "scope": "KeyTrak EDGE 600 key control system",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-07-01"
     },
     {
       "id": "C007",
@@ -4533,7 +4539,8 @@
       "effectiveDate": "2026-06-12",
       "termEnd": "2027-06-30",
       "scope": "HVAC replacement — Unit 201 (Q2760)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-12"
     },
     {
       "id": "C008",
@@ -4546,7 +4553,8 @@
       "effectiveDate": "2026-06-15",
       "termEnd": "2027-07-15",
       "scope": "Deck post replacement + reattachment (4304 16th Ave W)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-15"
     },
     {
       "id": "C009",
@@ -4559,7 +4567,8 @@
       "effectiveDate": "2026-06-15",
       "termEnd": "2027-07-15",
       "scope": "HVAC replacement — Units 201 & 306 (2 bids combined)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-15"
     },
     {
       "id": "C010",
@@ -4572,7 +4581,8 @@
       "effectiveDate": "2026-06-18",
       "termEnd": "2027-08-19",
       "scope": "French drain install — Commons (#1051 $13,500) + Landing (#1050 $15,600)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-18"
     },
     {
       "id": "C011",
@@ -4585,7 +4595,8 @@
       "effectiveDate": "2026-06-18",
       "termEnd": "2027-08-19",
       "scope": "Concrete — curb, gutter, sidewalk, entry replacement (Estimate #1020)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-18"
     },
     {
       "id": "C012",
@@ -4598,7 +4609,8 @@
       "effectiveDate": "2026-06-22",
       "termEnd": "2026-08-22",
       "scope": "Storm drain corrections — manhole/gate valve/asphalt patching",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-22"
     },
     {
       "id": "C013",
@@ -4611,7 +4623,8 @@
       "effectiveDate": "2026-06-22",
       "termEnd": "2026-08-22",
       "scope": "Concrete — 6 patios, 2 approaches, sidewalk R&R (Estimate #1019)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-22"
     },
     {
       "id": "C014",
@@ -4624,7 +4637,8 @@
       "effectiveDate": "2026-06-23",
       "termEnd": "2026-08-23",
       "scope": "Parking lot line striping — Estimate 4318",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-23"
     },
     {
       "id": "C015",
@@ -4637,7 +4651,8 @@
       "effectiveDate": "2026-06-23",
       "termEnd": "2026-08-23",
       "scope": "Parking lot striping — 157 spaces, 12 ADA, curb/fire lane (Estimate #109)",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-23"
     },
     {
       "id": "C016",
@@ -4650,7 +4665,8 @@
       "effectiveDate": "2026-06-23",
       "termEnd": "2026-08-23",
       "scope": "Parking lot sweep & restriping",
-      "fileKey": null
+      "fileKey": null,
+      "createdAt": "2026-06-23"
     }
   ]
 }

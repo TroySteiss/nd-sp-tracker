@@ -71,9 +71,9 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
   for (const ct of (state as any).contracts || []) {
     const link = ct.projectId && projectIds.has(ct.projectId) ? ct.projectId : null;
     await client.query(
-      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
-      [ct.id, link, ct.property, ct.outputFilename || '', ct.ownerEntity || '', ct.contractor || '', nnull(ct.total), dnull(ct.effectiveDate), dnull(ct.termEnd), ct.scope || '', ct.fileKey || null]
+      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key,created_at)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
+      [ct.id, link, ct.property, ct.outputFilename || '', ct.ownerEntity || '', ct.contractor || '', nnull(ct.total), dnull(ct.effectiveDate), dnull(ct.termEnd), ct.scope || '', ct.fileKey || null, dnull(ct.createdAt) || dnull(ct.effectiveDate) || new Date().toISOString().slice(0, 10)]
     );
   }
 

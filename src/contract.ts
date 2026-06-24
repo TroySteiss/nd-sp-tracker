@@ -1,4 +1,4 @@
-import { PDFDocument, StandardFonts, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
+import { PDFDocument, StandardFonts, rgb, degrees, type PDFFont, type PDFPage } from 'pdf-lib';
 import AdmZip from 'adm-zip';
 
 /* =============================================================================
@@ -24,7 +24,8 @@ export interface BidAttachment { buffer: Buffer; name: string; }
 const PAGE_W = 612, PAGE_H = 792;       // US Letter
 const MARGIN = 72;                       // 1"
 const CONTENT_W = PAGE_W - 2 * MARGIN;   // 468
-const BODY_SIZE = 11, LEADING = 16;
+const BODY_SIZE = 11, LEADING = 12.5;
+const FIRST_INDENT = 28;                 // first-line paragraph indent (~0.4")
 const TOP = PAGE_H - MARGIN;             // first baseline area
 const BOTTOM = 72;                       // stop wrapping here (page number sits below)
 
@@ -58,53 +59,48 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   const space = (h: number) => { if (y - h < BOTTOM) newPage(); };
 
   // Draw a paragraph of rich text, wrapping to CONTENT_W. Supports justify + indent.
-  function paragraph(text: string, opts: { size?: number; leading?: number; gap?: number; align?: 'left' | 'center'; justify?: boolean; indent?: number } = {}) {
+  function paragraph(text: string, opts: { size?: number; leading?: number; gap?: number; align?: 'left' | 'center'; firstIndent?: number } = {}) {
     const size = opts.size ?? BODY_SIZE;
     const lead = opts.leading ?? LEADING;
     const align = opts.align ?? 'left';
-    const indent = opts.indent ?? 0;
-    const width = CONTENT_W - indent;
+    const firstIndent = opts.firstIndent ?? 0;
     const words = tokenize(text);
     const wW = (w: Word) => fontFor(w.bold).widthOfTextAtSize(w.text, size);
     const spaceW = (b: boolean) => fontFor(b).widthOfTextAtSize(' ', size);
-    if (!words.length) { y -= lead + (opts.gap ?? 6); return; }
-    // build lines
+    if (!words.length) { y -= lead + (opts.gap ?? 5); return; }
+    const limit = (li: number) => CONTENT_W - (li === 0 ? firstIndent : 0);
     const lines: Word[][] = [];
     let line: Word[] = [], lineW = 0;
     for (const w of words) {
       const add = (line.length ? spaceW(w.bold) : 0) + wW(w);
-      if (lineW + add > width && line.length) { lines.push(line); line = []; lineW = 0; }
+      if (lineW + add > limit(lines.length) && line.length) { lines.push(line); line = []; lineW = 0; }
       lineW += (line.length ? spaceW(w.bold) : 0) + wW(w);
       line.push(w);
     }
     if (line.length) lines.push(line);
     lines.forEach((ln, li) => {
       space(lead);
-      const isLast = li === lines.length - 1;
       const natural = ln.reduce((a, w, i) => a + wW(w) + (i ? spaceW(w.bold) : 0), 0);
-      let x = MARGIN + indent;
-      let extra = 0;
-      if (align === 'center') x = MARGIN + (CONTENT_W - natural) / 2;
-      else if (opts.justify && !isLast && ln.length > 1) extra = (width - natural) / (ln.length - 1);
+      let x = align === 'center' ? MARGIN + (CONTENT_W - natural) / 2 : MARGIN + (li === 0 ? firstIndent : 0);
       ln.forEach((w, i) => {
-        if (i) x += spaceW(w.bold) + (align === 'center' ? 0 : extra);
+        if (i) x += spaceW(w.bold);
         page.drawText(w.text, { x, y, size, font: fontFor(w.bold), color: rgb(0, 0, 0) });
         x += wW(w);
       });
       y -= lead;
     });
-    y -= (opts.gap ?? 6);
+    y -= (opts.gap ?? 5);
   }
 
-  // A numbered section: "N. **Title**. body" (number not bold), justified. Extra
-  // paragraphs render below (used by section 4 sub-clauses and section 13 addresses).
+  // A numbered section: "N. **Title.** body" with a first-line indent. Extra paragraphs
+  // (section 4 sub-clauses, section 13 addresses) render below, also indented.
   function section(n: number, title: string, paras: string[]) {
     if (paras[0] === '') {
-      paragraph(`${n}. **${title}.**`, { gap: 4 });
-      for (let i = 1; i < paras.length; i++) paragraph(paras[i], { gap: 8 });
+      paragraph(`${n}. **${title}.**`, { firstIndent: FIRST_INDENT, gap: 3 });
+      for (let i = 1; i < paras.length; i++) paragraph(paras[i], { firstIndent: FIRST_INDENT, gap: 5 });
     } else {
-      paragraph(`${n}. **${title}.** ${paras[0]}`, { gap: paras.length > 1 ? 4 : 8 });
-      for (let i = 1; i < paras.length; i++) paragraph(paras[i], { gap: 6 });
+      paragraph(`${n}. **${title}.** ${paras[0]}`, { firstIndent: FIRST_INDENT, gap: paras.length > 1 ? 3 : 5 });
+      for (let i = 1; i < paras.length; i++) paragraph(paras[i], { firstIndent: FIRST_INDENT, gap: 5 });
     }
   }
 
@@ -112,16 +108,17 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   paragraph('**INDEPENDENT CONTRACTOR AGREEMENT**', { size: 13, leading: 22, align: 'center', gap: 16 });
 
   // ---------- Preamble ----------
-  for (const para of preambleParas(vars)) paragraph(para, { gap: 10 });
+  for (const para of preambleParas(vars)) paragraph(para, { firstIndent: FIRST_INDENT, gap: 8 });
 
   // ---------- Numbered sections 1–25 ----------
   buildSections(vars).forEach((s, i) => section(i + 1, s.title, s.paras));
 
-  // ---------- Signature block ----------
-  space(180);
-  paragraph('IN WITNESS WHEREOF, the parties hereto have executed this Agreement as of the Effective Date.', { gap: 18 });
+  // ---------- Signature block (kept with the body; only breaks if it truly won't fit) ----------
+  y -= 8;
+  space(108);
+  paragraph('IN WITNESS WHEREOF, the parties hereto have executed this Agreement as of the Effective Date.', { gap: 10 });
   signatureBlock(page, y, roman, bold, vars);
-  y -= 150;
+  y -= 108;
 
   // ---------- Exhibit A & B (bid embedded) ----------
   await exhibitAB(doc, vars, attachments, roman, bold);
@@ -149,11 +146,11 @@ function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFon
   const colL = MARGIN, colR = MARGIN + CONTENT_W / 2 + 10;
   const line = (x: number, yy: number, label: string, f = roman) => page.drawText(label, { x, y: yy, size: 10, font: f, color: rgb(0, 0, 0) });
   let yy = top;
-  line(colL, yy, `Owner: ${v.ownerEntity}`, bold); line(colR, yy, `Contractor: ${v.contractorName}`, bold); yy -= 26;
-  line(colL, yy, 'By: __________________,'); line(colR, yy, 'By: __________________'); yy -= 14;
-  line(colL, yy, 'as Agent for and on behalf of Owner'); yy -= 22;
-  line(colL, yy, 'Name: ________________'); line(colR, yy, 'Name: ________________'); yy -= 22;
-  line(colL, yy, 'Title: _________________'); line(colR, yy, 'Title: _________________'); yy -= 22;
+  line(colL, yy, `Owner: ${v.ownerEntity}`, bold); line(colR, yy, `Contractor: ${v.contractorName}`, bold); yy -= 22;
+  line(colL, yy, 'By: __________________,'); line(colR, yy, 'By: __________________'); yy -= 12;
+  line(colL, yy, 'as Agent for and on behalf of Owner'); yy -= 18;
+  line(colL, yy, 'Name: ________________'); line(colR, yy, 'Name: ________________'); yy -= 18;
+  line(colL, yy, 'Title: _________________'); line(colR, yy, 'Title: _________________'); yy -= 18;
   line(colL, yy, 'Date: _________________'); line(colR, yy, 'Date: _________________');
 }
 
@@ -187,6 +184,30 @@ function expandAttachments(attachments: BidAttachment[]): BidAttachment[] {
   return out;
 }
 
+// Place one bid item (embedded PDF page or image) into a box, top-aligned and centered,
+// shrunk to fit and rotated upright to undo any page /Rotate.
+function placeItem(target: PDFPage, item: any, x: number, top: number, maxW: number, maxH: number) {
+  if (item.type === 'img') {
+    const f = fitBox(item.img.width, item.img.height, maxW, maxH);
+    target.drawImage(item.img, { x: x + (maxW - f.w) / 2, y: top - f.h, width: f.w, height: f.h });
+    return;
+  }
+  const ep = item.ep;
+  const rot = ((item.rot % 360) + 360) % 360;
+  const a = (360 - rot) % 360;                 // CCW angle to display upright
+  const landscape = a === 90 || a === 270;
+  const vw = landscape ? ep.height : ep.width; // upright (visual) dims
+  const vh = landscape ? ep.width : ep.height;
+  const s = Math.min(maxW / vw, maxH / vh, 1);
+  const uW = ep.width * s, uH = ep.height * s; // unrotated drawn dims
+  const dw = landscape ? uH : uW, dh = landscape ? uW : uH;
+  const left = x + (maxW - dw) / 2, bottom = top - dh;
+  if (a === 0) target.drawPage(ep, { x: left, y: bottom, width: uW, height: uH });
+  else if (a === 90) target.drawPage(ep, { x: left + uH, y: bottom, width: uW, height: uH, rotate: degrees(90) });
+  else if (a === 180) target.drawPage(ep, { x: left + uW, y: bottom + uH, width: uW, height: uH, rotate: degrees(180) });
+  else target.drawPage(ep, { x: left, y: bottom + uW, width: uW, height: uH, rotate: degrees(270) });
+}
+
 function fitBox(w: number, h: number, maxW: number, maxH: number) {
   const s = Math.min(maxW / w, maxH / h, 1);
   return { w: w * s, h: h * s };
@@ -201,28 +222,30 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
   let yy = TOP;
   center('EXHIBIT A & B', yy, 13, bold); yy -= 20;
   center('CONTRACT PRICE & SCOPE', yy, 11, bold); yy -= 18;
-  center(`CONTRACT TOTAL: ${vars.contractTotal}`, yy, 12, bold); yy -= 28;
+  center(`CONTRACT TOTAL: ${vars.contractTotal}`, yy, 12, bold); yy -= 16;
 
-  const atts = expandAttachments(attachments);
-  if (!atts.length) { center('[ Bid document attached separately ]', yy, 10, roman); return; }
-  center('Bid documents follow.', yy, 10, roman);
-
-  // Bid PDFs are copied page-for-page (preserving native size + rotation, so they're
-  // never sideways); image bids are placed one per page.
-  for (const att of atts) {
+  // Gather bid pages/images in order (PDF pages embedded so we can scale + rotate upright).
+  const items: any[] = [];
+  for (const att of expandAttachments(attachments)) {
     const kind = detectKind(att.buffer);
     try {
       if (kind === 'pdf') {
         const src = await PDFDocument.load(att.buffer, { ignoreEncryption: true });
-        const pages = await doc.copyPages(src, src.getPageIndices());
-        for (const pg of pages) doc.addPage(pg);
-      } else if (kind === 'jpg' || kind === 'png') {
-        const img = kind === 'jpg' ? await doc.embedJpg(att.buffer) : await doc.embedPng(att.buffer);
-        const p = doc.addPage([PAGE_W, PAGE_H]);
-        const f = fitBox(img.width, img.height, CONTENT_W, PAGE_H - 2 * MARGIN);
-        p.drawImage(img, { x: (PAGE_W - f.w) / 2, y: (PAGE_H - f.h) / 2, width: f.w, height: f.h });
-      }
+        const idxs = src.getPageIndices();
+        const eps = await doc.embedPages(src.getPages());
+        eps.forEach((ep, i) => items.push({ type: 'pdf', ep, rot: src.getPage(idxs[i]).getRotation().angle }));
+      } else if (kind === 'jpg') { items.push({ type: 'img', img: await doc.embedJpg(att.buffer) }); }
+      else if (kind === 'png') { items.push({ type: 'img', img: await doc.embedPng(att.buffer) }); }
     } catch { /* skip unreadable attachment */ }
+  }
+  if (!items.length) { center('[ Bid document attached separately ]', yy - 14, 10, roman); return; }
+
+  // First bid page sits on the header page, directly under CONTRACT TOTAL.
+  placeItem(header, items[0], MARGIN, yy - 6, CONTENT_W, (yy - 6) - BOTTOM);
+  // Any further pages each get their own full page.
+  for (let i = 1; i < items.length; i++) {
+    const pg = doc.addPage([PAGE_W, PAGE_H]);
+    placeItem(pg, items[i], MARGIN, PAGE_H - MARGIN, CONTENT_W, PAGE_H - 2 * MARGIN);
   }
 }
 

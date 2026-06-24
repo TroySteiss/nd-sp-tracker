@@ -39,6 +39,7 @@ data.contracts = [
 ].map(([id, property, outputFilename, contractor, total, effectiveDate, termEnd, scope]) => ({
   id, projectId: null, property, outputFilename,
   ownerEntity: OWNER[property] || '', contractor, total, effectiveDate, termEnd, scope, fileKey: null,
+  createdAt: effectiveDate,
 }));
 
 writeFileSync(path, JSON.stringify(data, null, 2), 'utf8');

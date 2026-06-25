@@ -116,7 +116,7 @@ function isComplete(p){ if(p.inHouse){ const t=Number(p.totalToComplete)||0,d=Nu
 function propChip(code,extra){ return el('span',{class:'chip pchip'+(extra?' '+extra:''),style:`background:${pcolor(code)};color:#fff`},code); }
 /* Interest-income / cash-sweep lines posted into the SP GL: excluded from matching & flags,
    but used to estimate the monthly interest income. */
-const isInterestGL=g=>/interest|int\s*inc|cash\s*sweep|\bsweep\b/i.test(`${g.category||''} ${g.vendor||''} ${g.remarks||''} ${g.account||''}`);
+const isInterestGL=g=>/interest|cash\s*sweep/i.test(`${g.category||''} ${g.account||''}`);
 function glSpentFor(code,cat){ return S.gl.filter(g=>g.property===code && (cat==null||g.category===cat)).reduce((a,g)=>a+(Number(g.amount)||0),0); }
 function cashAdjFor(code){ return S.cashAdjustments.filter(a=>a.property===code).reduce((a,b)=>a+(Number(b.amount)||0),0); }
 function effectiveCash(code){ const c=S.cash[code]; const base=c&&c.cash!=null?Number(c.cash):0; return base+cashAdjFor(code); }
@@ -198,12 +198,12 @@ function auditModel(code){
   const gls=S.gl.filter(g=>g.property===code);
   const glTotal=gls.reduce((a,g)=>a+(Number(g.amount)||0),0);
   const linkedIds=new Set(gls.map(g=>g.linkedProjectId).filter(Boolean));
-  const unplanned=gls.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId);   // posted, >$5k, not tied to a project
+  const unplanned=gls.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId && !isInterestGL(g));   // posted, >$5k, not tied (interest income excluded)
   const paid=projForProp(code).filter(isPaidP);
   const paidNoGL=paid.filter(p=>!linkedIds.has(p.id));                                     // marked paid but no GL backing
   return {gls,glTotal,unplanned,paid,paidNoGL,linkedCount:linkedIds.size};
 }
-function unplannedAll(){ return S.gl.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId); }
+function unplannedAll(){ return S.gl.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId && !isInterestGL(g)); }
 /* Rough GL→project match scoring, so tying out is point-and-click rather than hunting. */
 function glMatchScore(g,p){
   let score=0; const reasons=[];
@@ -1228,8 +1228,11 @@ function viewProperty(){
   const madePct = p.accretionPct!=null?Number(p.accretionPct):cushMade;
   const capitalDollars = (c.capital!=null?Number(c.capital):0)*1000;
   const accretion = ((madePct-sentPct)/100)/4*capitalDollars*qtrsLeft;
-  // avg monthly interest income: manual editable for now (auto-from-GL pending the identification rule)
-  const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : 0;
+  // avg monthly interest income: auto-averaged from the interest-income GL lines (manual override wins)
+  const intLines = S.gl.filter(g=>g.property===code && isInterestGL(g));
+  const periodMonths = (()=>{ const ms=new Set(S.gl.map(g=>String(g.date||'').slice(0,7)).filter(Boolean)); return Math.max(1, ms.size); })();
+  const autoAvgInt = intLines.length ? Math.abs(intLines.reduce((a,g)=>a+(Number(g.amount)||0),0))/periodMonths : 0;
+  const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : autoAvgInt;
   const projTotalSpend = spent + cm.outstandingTotal;          // spent to date + committed (not yet paid)
   const accrTileVal = accretion;                               // accretion alone — does not include cash
   const intTileVal = projTotalSpend - avgInt*monthsLeft;       // projected total spend, net of interest income
@@ -1429,6 +1432,7 @@ function viewProperty(){
 /* GL link cell: shows the linked project or a Match button with a best-guess hint. */
 function glLinkCell(g,code){
   const cell=el('div',{class:'gl-link'});
+  if(isInterestGL(g)){ cell.append(el('span',{class:'chip',title:'Interest income — excluded from matching; feeds the interest projection'},'interest income')); return cell; }
   if(g.linkedProjectId){
     const pr=S.projects.find(x=>x.id===g.linkedProjectId);
     cell.append(el('button',{class:'gl-linked',title:pr?('Re-match · '+pr.name):'',onclick:()=>openGLMatch(g,code)}, '🔗 '+(pr?pr.name.slice(0,20):'(missing)')));

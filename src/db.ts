@@ -89,6 +89,7 @@ export function rowToCash(r: any): CashSnapshot {
     cash: r.cash, adjCash: r.adj_cash, spBudget: r.sp_budget, spSpent: r.sp_spent, spRemaining: r.sp_remaining,
     noi: r.noi, ds: r.ds, dcr: r.dcr, marketValue: r.market_value, loanAmount: r.loan_amount, ltv: r.ltv,
     loanDue: r.loan_due ?? '', loanRate: r.loan_rate, ioEnd: r.io_end ?? '',
+    capital: r.capital, returnEarned: r.return_earned, returnSent: r.return_sent,
   };
 }
 
@@ -119,7 +120,7 @@ export async function assembleState(): Promise<AppState> {
     notesByProject.set(n.project_id, arr);
   }
 
-  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', contractCode: r.contract_code ?? r.code }));
+  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', contractCode: r.contract_code ?? r.code, accretionPct: r.accretion_pct, avgMonthlyInterest: r.avg_monthly_interest ?? 0 }));
 
   const contractRecords = contracts.rows.map((r) => ({ id: r.id, projectId: r.project_id, property: r.property_code, outputFilename: r.output_filename, ownerEntity: r.owner_entity ?? '', contractor: r.contractor ?? '', total: r.total, effectiveDate: r.effective_date ? d(r.effective_date) : '', termEnd: r.term_end ? d(r.term_end) : '', scope: r.scope ?? '', fileKey: r.file_key, createdAt: r.created_at ? new Date(r.created_at).toISOString() : '' }));
   const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || []));

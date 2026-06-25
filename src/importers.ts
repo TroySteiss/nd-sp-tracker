@@ -73,7 +73,15 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
     noi: hcols['noi'], ds: hcols['ds'], dcr: hcols['dcr'], marketValue: find('new market value', 'market value'),
     loanAmount: find('loan amount'), ltv: hcols['ltv'], loanDue: find('loan due'), loanRate: find('loan rate'),
     ioEnd: find('interst only end', 'interest only end'),
+    capital: find('capital'), returnEarned: find('earnings before sp'),
   };
+
+  // "return sent" = the most recent COMPLETED quarter's distribution % (e.g. "QT 1 2026 Distribution %").
+  let returnSentCol = -1, sentRank = -1;
+  for (const k in hcols) {
+    const m = k.match(/qt\s*([1-4]).*(20\d\d).*distribution/);
+    if (m) { const rank = (+m[2]) * 4 + (+m[1]); if (rank > sentRank) { sentRank = rank; returnSentCol = hcols[k]; } }
+  }
 
   let asOf = fallbackAsOf;
   for (const k in hcols) { const m = k.match(/(\d{1,2}\/\d{1,2}\/\d{4})/); if (k.includes('cash and cash') && m) { asOf = m[1]; break; } }
@@ -95,6 +103,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
         spSpent: num(r, col.spSpent), spRemaining: num(r, col.spRemaining), noi: num(r, col.noi), ds: num(r, col.ds),
         dcr: num(r, col.dcr), marketValue: num(r, col.marketValue), loanAmount: num(r, col.loanAmount), ltv: num(r, col.ltv),
         loanDue: str(r, col.loanDue), loanRate: num(r, col.loanRate), ioEnd: str(r, col.ioEnd),
+        capital: num(r, col.capital), returnEarned: num(r, col.returnEarned), returnSent: num(r, returnSentCol),
         units: num(r, col.units),
       };
     }

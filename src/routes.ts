@@ -229,6 +229,15 @@ api.delete('/cash-adjustments/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
+/* ---------- property settings (editable accretion % + avg monthly interest) ---------- */
+api.patch('/properties/:code/settings', async (req, res) => {
+  const code = req.params.code.toUpperCase();
+  const b = req.body || {};
+  await query('update properties set accretion_pct=$1, avg_monthly_interest=$2 where code=$3',
+    [nnull(b.accretionPct), nnull(b.avgMonthlyInterest) ?? 0, code]);
+  res.json({ ok: true });
+});
+
 /* ---------- GL link / partial ---------- */
 api.patch('/gl/:id/link', async (req, res) => {
   const { linkedProjectId, partial } = req.body || {};
@@ -297,14 +306,15 @@ api.post('/import/cushion/confirm', async (req, res) => {
       const v = found[code];
       // cushion import upserts snapshot + property sp_budget/units; must NOT touch cash_adjustments (spec §8.2)
       await c.query(
-        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end)
-         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
          on conflict (property_code) do update set as_of_date=excluded.as_of_date,cash=excluded.cash,adj_cash=excluded.adj_cash,
            sp_budget=excluded.sp_budget,sp_spent=excluded.sp_spent,sp_remaining=excluded.sp_remaining,noi=excluded.noi,ds=excluded.ds,
            dcr=excluded.dcr,market_value=excluded.market_value,loan_amount=excluded.loan_amount,ltv=excluded.ltv,loan_due=excluded.loan_due,
-           loan_rate=excluded.loan_rate,io_end=excluded.io_end`,
+           loan_rate=excluded.loan_rate,io_end=excluded.io_end,capital=excluded.capital,return_earned=excluded.return_earned,return_sent=excluded.return_sent`,
         [code, dnull(asOf), nnull(v.cash), nnull(v.adjCash), nnull(v.spBudget), nnull(v.spSpent), nnull(v.spRemaining),
-         nnull(v.noi), nnull(v.ds), nnull(v.dcr), nnull(v.marketValue), nnull(v.loanAmount), nnull(v.ltv), v.loanDue || '', nnull(v.loanRate), v.ioEnd || '']
+         nnull(v.noi), nnull(v.ds), nnull(v.dcr), nnull(v.marketValue), nnull(v.loanAmount), nnull(v.ltv), v.loanDue || '', nnull(v.loanRate), v.ioEnd || '',
+         nnull(v.capital), nnull(v.returnEarned), nnull(v.returnSent)]
       );
       if (v.spBudget != null) await c.query('update properties set sp_budget=$1 where code=$2', [Number(v.spBudget), code]);
       if (v.units != null && v.units) await c.query('update properties set units=$1 where code=$2', [Number(v.units), code]);

@@ -582,9 +582,9 @@ function attentionPanel(title,list){
 }
 function legendItem(color,label){ return el('span',{}, el('span',{class:'dot',style:`background:${color}`}), label); }
 /* Conditional-format tile for the property sticky header. tone: good|warn|bad|none */
-function hstat(label,valueText,tone,sub){
-  return el('div',{class:'hstat tone-'+(tone||'none')},
-    el('div',{class:'hs-lab'},label),
+function hstat(label,valueText,tone,sub,onClick){
+  return el('div',{class:'hstat tone-'+(tone||'none')+(onClick?' hs-click':''),...(onClick?{onclick:onClick,style:'cursor:pointer',title:'Click for details'}:{})},
+    el('div',{class:'hs-lab'},label,onClick?el('span',{style:'opacity:.5;font-weight:400'},'  ›'):null),
     el('div',{class:'hs-val mono'},valueText),
     sub?el('div',{class:'hs-sub'},sub):null);
 }
@@ -1214,15 +1214,67 @@ function viewProperty(){
   const projTone = cm.projectedCash<0?'bad':(cm.projectedCash<cashToday*0.25?'warn':'good');
   const projToBudget = budget-cm.outstandingTotal-spent;   // SP budget less committed-unpaid less spent
   const ptbTone = projToBudget<0?'bad':(budget&&projToBudget<budget*0.15?'warn':'good');
+
+  // --- annual accretion + interest projection ---
+  const asOf = c.asOfDate || S.meta.cashAsOf || '';
+  const moOf = (()=>{ const iso=String(asOf).match(/^(\d{4})-(\d{2})/); const us=String(asOf).match(/^(\d{1,2})\//); return iso?+iso[2]:(us?+us[1]:0); })();
+  const qtrsLeft = moOf?Math.max(0,5-Math.ceil(moOf/3)):0;   // count current quarter (Q2 -> 3)
+  const monthsLeft = moOf?Math.max(0,12-moOf):0;
+  const sentPct = c.returnSent!=null?Number(c.returnSent):0;
+  const cushMade = c.returnEarned!=null?Number(c.returnEarned):0;
+  const madePct = p.accretionPct!=null?Number(p.accretionPct):cushMade;
+  const capitalDollars = (c.capital!=null?Number(c.capital):0)*1000;
+  const accretion = ((madePct-sentPct)/100)/4*capitalDollars*qtrsLeft;
+  const avgInt = p.avgMonthlyInterest!=null?Number(p.avgMonthlyInterest):0;
+  const accrTileVal = cm.projectedCash + accretion;
+  const intTileVal = cm.projectedCash + avgInt*monthsLeft;
+
+  async function saveSettings(accretionPct,avgMonthlyInterest){ try{ await API.send('PATCH','/properties/'+code+'/settings',{accretionPct,avgMonthlyInterest}); await afterWrite('Saved'); }catch(e){ toast('Save failed: '+e.message); } }
+  const detRow=(k,v)=>el('div',{style:'display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--line-2);font-size:13px'}, el('span',{},k), el('span',{class:'mono'+((typeof v==='number'&&v<0)?' neg':''),style:'font-weight:600'}, typeof v==='number'?fmt(v):v));
+  function openAccretion(){
+    let edited=madePct;
+    const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Annual accretion · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+    const b=el('div',{class:'sb'});
+    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Accretion grows the cash position but never affects SP budget or spend. Estimate = (return earned − return sent) ÷ 4 × capital × quarters remaining in the year.'));
+    const body=el('div',{});
+    const redraw=()=>{ body.innerHTML=''; const acc=((edited-sentPct)/100)/4*capitalDollars*qtrsLeft;
+      body.append(detRow('Return earned (editable)', edited.toFixed(2)+'%'), detRow('Return sent — last quarter', sentPct.toFixed(2)+'%'),
+        detRow('Spread', (edited-sentPct).toFixed(2)+'%'), detRow('Capital', fmt(capitalDollars)), detRow('Quarters remaining', String(qtrsLeft)),
+        detRow('Accretion estimate', acc), detRow('Projected cash', cm.projectedCash), detRow('Cash incl. accretion', cm.projectedCash+acc)); };
+    redraw();
+    const inp=el('input',{type:'number',step:'0.01',value:String(madePct),style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
+    b.append(el('div',{class:'field'}, el('label',{},'Actual return % — defaults to cushion projection'), inp), body,
+      el('div',{style:'display:flex;gap:8px;margin-top:12px'}, el('div',{style:'flex:1'}),
+        el('button',{class:'btn',onclick:()=>{edited=cushMade;inp.value=String(cushMade);redraw();}},'Reset to cushion'),
+        el('button',{class:'btn accent',onclick:async()=>{scrim.remove();await saveSettings(edited,avgInt);}},'Save')));
+    sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+  }
+  function openInterest(){
+    let edited=avgInt;
+    const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Projection with interest · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+    const b=el('div',{class:'sb'});
+    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'A monthly interest-income sweep is posted to the SP GLs. Enter the average monthly amount; the projection adds it for the remaining months of the calendar year.'));
+    const body=el('div',{});
+    const redraw=()=>{ body.innerHTML=''; body.append(detRow('Avg monthly interest', edited), detRow('Months remaining', String(monthsLeft)), detRow('Projected interest', edited*monthsLeft), detRow('Projected cash', cm.projectedCash), detRow('Projected cash + interest', cm.projectedCash+edited*monthsLeft)); };
+    redraw();
+    const inp=el('input',{type:'number',step:'1',value:String(avgInt),style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
+    b.append(el('div',{class:'field'}, el('label',{},'Average monthly interest income ($)'), inp), body,
+      el('div',{style:'display:flex;gap:8px;margin-top:12px'}, el('div',{style:'flex:1'}),
+        el('button',{class:'btn accent',onclick:async()=>{scrim.remove();await saveSettings(p.accretionPct!=null?Number(p.accretionPct):null,edited);}},'Save')));
+    sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+  }
+
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
-      hstat('SP budget (2026)', fmt(budget), 'none'),
+      hstat('Annual accretion', fmt(accrTileVal), 'good', `incl. ${fmt(accretion,false)} accretion`, openAccretion),
       hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Projection to budget', fmt(projToBudget), ptbTone, 'budget − committed − spent'),
-      hstat('Remaining', fmt(remaining), remTone, pct(usedPct)+' used'),
       hstat('Projected cash', fmt(cm.projectedCash), projTone, 'after committed'),
+      hstat('Projection w/ interest', fmt(intTileVal), 'good', `+${fmt(avgInt*monthsLeft,false)} interest`, openInterest),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 
@@ -1265,6 +1317,9 @@ function viewProperty(){
     row('Cash today', cm.cashToday,'hl','final · actual'),
     row('Outstanding commitments', cm.outstandingTotal?-cm.outstandingTotal:0,null,'approved, not yet paid'),
     projCashRow,
+    row('SP budget (2026)', budget,null,'annual capex budget'),
+    row('Spent to date', spent,null,'posted per GL'),
+    row('Remaining', remaining,null,pct(usedPct)+' of budget used'),
     row('Spent vs SP budget', budget-(spent+cm.outstandingTotal),null,'budget less spent & committed'),
     cm.discussedTotal?row('Discussed / ideas', cm.discussedTotal,null,'not yet committed'):null,
   );

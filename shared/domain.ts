@@ -64,6 +64,32 @@ export interface Property {
   address?: string;
   ownerNoticeAddr?: string;
   contractCode?: string;
+  accretionPct?: number | null;       // editable override of cushion return_earned
+  avgMonthlyInterest?: number | null; // editable avg monthly interest-income sweep
+}
+
+/** Quarters remaining in the calendar year, counting the current quarter, from an as-of date (MM/DD/YYYY or YYYY-MM-DD). */
+export function quartersRemaining(asOf: string | undefined): number {
+  if (!asOf) return 0;
+  let mo = 0;
+  const a = String(asOf);
+  const iso = a.match(/^(\d{4})-(\d{2})-(\d{2})/); const us = a.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/);
+  if (iso) mo = +iso[2]; else if (us) mo = +us[1]; else return 0;
+  return Math.max(0, 5 - Math.ceil(mo / 3)); // count current quarter: Q2 -> 3
+}
+/** Months remaining in the calendar year (excluding the as-of month). */
+export function monthsRemaining(asOf: string | undefined): number {
+  if (!asOf) return 0;
+  const a = String(asOf);
+  const iso = a.match(/^(\d{4})-(\d{2})/); const us = a.match(/^(\d{1,2})\//);
+  const mo = iso ? +iso[2] : us ? +us[1] : 0;
+  return Math.max(0, 12 - mo);
+}
+/** Annual accretion estimate (dollars): (made% - sent%)/100 / 4 * capital$ * quartersRemaining. */
+export function accretionEstimate(opts: { madePct: number | null | undefined; sentPct: number | null | undefined; capitalThousands: number | null | undefined; asOf: string | undefined }): number {
+  const made = Number(opts.madePct) || 0, sent = Number(opts.sentPct) || 0;
+  const cap = (Number(opts.capitalThousands) || 0) * 1000;
+  return ((made - sent) / 100) / 4 * cap * quartersRemaining(opts.asOf);
 }
 
 export interface ContractRecord {
@@ -97,6 +123,9 @@ export interface CashSnapshot {
   loanDue?: string;
   loanRate?: number | null;
   ioEnd?: string;
+  capital?: number | null;        // $000s from cushion
+  returnEarned?: number | null;   // "Earnings before SP & AM Adj" %
+  returnSent?: number | null;     // latest completed quarter distribution %
 }
 
 export interface CashAdjustment {

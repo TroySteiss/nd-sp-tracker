@@ -1228,10 +1228,10 @@ function viewProperty(){
   const madePct = p.accretionPct!=null?Number(p.accretionPct):cushMade;
   const capitalDollars = (c.capital!=null?Number(c.capital):0)*1000;
   const accretion = ((madePct-sentPct)/100)/4*capitalDollars*qtrsLeft;
-  // avg monthly interest income: auto-averaged from the interest-income GL lines (manual override wins)
+  // avg monthly interest income = mean of the interest-income postings (manual override wins)
   const intLines = S.gl.filter(g=>g.property===code && isInterestGL(g));
-  const periodMonths = (()=>{ const ms=new Set(S.gl.map(g=>String(g.date||'').slice(0,7)).filter(Boolean)); return Math.max(1, ms.size); })();
-  const autoAvgInt = intLines.length ? Math.abs(intLines.reduce((a,g)=>a+(Number(g.amount)||0),0))/periodMonths : 0;
+  const intTotal = intLines.reduce((a,g)=>a+Math.abs(Number(g.amount)||0),0);
+  const autoAvgInt = intLines.length ? intTotal/intLines.length : 0;
   const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : autoAvgInt;
   const projTotalSpend = spent + cm.outstandingTotal;          // spent to date + committed (not yet paid)
   const accrTileVal = accretion;                               // accretion alone — does not include cash
@@ -1263,12 +1263,20 @@ function viewProperty(){
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
     const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Projection with interest · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
     const b=el('div',{class:'sb'});
-    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'A monthly interest-income sweep is posted to the SP GLs. Enter the average monthly amount; the projection adds it for the remaining months of the calendar year.'));
+    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Interest-income sweeps posted to the SP GL are averaged per posting (override below). The projection reduces projected total spend by that average for the remaining months of the year.'));
     const body=el('div',{});
-    const redraw=()=>{ body.innerHTML=''; body.append(detRow('Avg monthly interest', edited), detRow('Months remaining', String(monthsLeft)), detRow('Projected interest', edited*monthsLeft), detRow('Projected cash', cm.projectedCash), detRow('Projected cash + interest', cm.projectedCash+edited*monthsLeft)); };
+    const redraw=()=>{ body.innerHTML=''; body.append(
+      detRow('Interest postings (GL)', String(intLines.length)),
+      detRow('Total interest income', intTotal),
+      detRow('Average per posting', intLines.length?intTotal/intLines.length:0),
+      detRow('Avg monthly interest (used)', edited),
+      detRow('Months remaining', String(monthsLeft)),
+      detRow('Projected interest', edited*monthsLeft),
+      detRow('Projected total spend', projTotalSpend),
+      detRow('Projected spend net interest', projTotalSpend-edited*monthsLeft)); };
     redraw();
-    const inp=el('input',{type:'number',step:'1',value:String(avgInt),style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
-    b.append(el('div',{class:'field'}, el('label',{},'Average monthly interest income ($)'), inp), body,
+    const inp=el('input',{type:'number',step:'1',value:String(Math.round(avgInt)),style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
+    b.append(el('div',{class:'field'}, el('label',{},'Avg monthly interest — blank/0 uses the GL average'), inp), body,
       el('div',{style:'display:flex;gap:8px;margin-top:12px'}, el('div',{style:'flex:1'}),
         el('button',{class:'btn accent',onclick:async()=>{scrim.remove();await saveSettings(p.accretionPct!=null?Number(p.accretionPct):null,edited);}},'Save')));
     sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);

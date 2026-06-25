@@ -1282,14 +1282,16 @@ function viewProperty(){
     sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
   }
 
+  const fy=(asOf||today()).slice(0,4);
+  const spendTone=v=>v>budget?'bad':(budget&&v>budget*0.85?'warn':'good');   // projected spend vs SP budget
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
-      hstat('Annual accretion', fmt(accrTileVal), accretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${qtrsLeft}q left`, openAccretion),
       hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
-      hstat('Projection to budget', fmt(projToBudget), ptbTone, 'budget − committed − spent'),
-      hstat('Projection w/ interest', fmt(intTileVal), 'none', `proj. spend net ${fmt(avgInt*monthsLeft,false)} int.`, openInterest),
+      hstat(`Proj ${fy} Spend`, fmt(projTotalSpend), spendTone(projTotalSpend), 'spent + committed'),
+      hstat('Proj Spend w Interest', fmt(intTileVal), spendTone(intTileVal), `net ${fmt(avgInt*monthsLeft,false)} interest`, openInterest),
+      hstat('Annual accretion', fmt(accrTileVal), accretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${qtrsLeft}q left`, openAccretion),
       hstat('Projected cash', fmt(cm.projectedCash), projTone, 'after committed'),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});

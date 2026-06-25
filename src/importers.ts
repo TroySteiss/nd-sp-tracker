@@ -95,7 +95,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
 
   const found: Record<string, CashSnapshot & { units?: number | null }> = {};
   for (let i = hr + 1; i < rows.length; i++) {
-    const pc = str(rows[i], col.pcode).toLowerCase();
+    const pc = str(rows[i], col.pcode).toLowerCase().replace(/[^a-z]/g, ''); // tolerate stray punctuation e.g. "tpnd."
     if (known.has(pc)) {
       const r = rows[i]; const code = pc.toUpperCase();
       found[code] = {

@@ -114,6 +114,9 @@ function stepsTotal(p){ return appKeys(p).length; }
 function isComplete(p){ if(p.inHouse){ const t=Number(p.totalToComplete)||0,d=Number(p.amountCompleted)||0; return t>0&&d>=t; } return !!(p.steps&&p.steps.completed); }
 /* consistent per-property colour chip (matches dashboard bubbles + pipeline) */
 function propChip(code,extra){ return el('span',{class:'chip pchip'+(extra?' '+extra:''),style:`background:${pcolor(code)};color:#fff`},code); }
+/* Interest-income / cash-sweep lines posted into the SP GL: excluded from matching & flags,
+   but used to estimate the monthly interest income. */
+const isInterestGL=g=>/interest|int\s*inc|cash\s*sweep|\bsweep\b/i.test(`${g.category||''} ${g.vendor||''} ${g.remarks||''} ${g.account||''}`);
 function glSpentFor(code,cat){ return S.gl.filter(g=>g.property===code && (cat==null||g.category===cat)).reduce((a,g)=>a+(Number(g.amount)||0),0); }
 function cashAdjFor(code){ return S.cashAdjustments.filter(a=>a.property===code).reduce((a,b)=>a+(Number(b.amount)||0),0); }
 function effectiveCash(code){ const c=S.cash[code]; const base=c&&c.cash!=null?Number(c.cash):0; return base+cashAdjFor(code); }
@@ -1225,9 +1228,11 @@ function viewProperty(){
   const madePct = p.accretionPct!=null?Number(p.accretionPct):cushMade;
   const capitalDollars = (c.capital!=null?Number(c.capital):0)*1000;
   const accretion = ((madePct-sentPct)/100)/4*capitalDollars*qtrsLeft;
-  const avgInt = p.avgMonthlyInterest!=null?Number(p.avgMonthlyInterest):0;
-  const accrTileVal = cm.projectedCash + accretion;
-  const intTileVal = cm.projectedCash + avgInt*monthsLeft;
+  // avg monthly interest income: manual editable for now (auto-from-GL pending the identification rule)
+  const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : 0;
+  const projTotalSpend = spent + cm.outstandingTotal;          // spent to date + committed (not yet paid)
+  const accrTileVal = accretion;                               // accretion alone — does not include cash
+  const intTileVal = projTotalSpend - avgInt*monthsLeft;       // projected total spend, net of interest income
 
   async function saveSettings(accretionPct,avgMonthlyInterest){ try{ await API.send('PATCH','/properties/'+code+'/settings',{accretionPct,avgMonthlyInterest}); await afterWrite('Saved'); }catch(e){ toast('Save failed: '+e.message); } }
   const detRow=(k,v)=>el('div',{style:'display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--line-2);font-size:13px'}, el('span',{},k), el('span',{class:'mono'+((typeof v==='number'&&v<0)?' neg':''),style:'font-weight:600'}, typeof v==='number'?fmt(v):v));
@@ -1270,11 +1275,11 @@ function viewProperty(){
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
-      hstat('Annual accretion', fmt(accrTileVal), 'good', `incl. ${fmt(accretion,false)} accretion`, openAccretion),
+      hstat('Annual accretion', fmt(accrTileVal), accretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${qtrsLeft}q left`, openAccretion),
       hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Projection to budget', fmt(projToBudget), ptbTone, 'budget − committed − spent'),
+      hstat('Projection w/ interest', fmt(intTileVal), 'none', `proj. spend net ${fmt(avgInt*monthsLeft,false)} int.`, openInterest),
       hstat('Projected cash', fmt(cm.projectedCash), projTone, 'after committed'),
-      hstat('Projection w/ interest', fmt(intTileVal), 'good', `+${fmt(avgInt*monthsLeft,false)} interest`, openInterest),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 

@@ -1403,18 +1403,17 @@ function viewProperty(){
   const autoAvgInt = intLines.length ? intTotal/intLines.length : 0;
   const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : autoAvgInt;
   const projTotalSpend = spent + cm.outstandingTotal;          // spent to date + committed (not yet paid)
-  const accrTileVal = accretion;
-
-  // Distribution deduction: anticipated distributions for the current partial quarter + remaining full quarters
-  const monthsAccrued = moOf ? ((moOf-1)%3)+1 : 0;   // months elapsed into the current quarter (Apr=1,May=2,Jun=3)
+  // Current quarter full distribution (the actual cash going out this quarter)
   const currentQtr = moOf ? Math.ceil(moOf/3) : 0;
-  const monthlyDist = (sentPct/100/12)*capitalDollars;
-  const quarterlyDistDefault = monthlyDist*3;
+  const currentQtrDistDefault = (sentPct/100/4)*capitalDollars;
   const distQtrs = p.distributionQuarters||{};
-  const currentQtrDist = monthlyDist*monthsAccrued;
-  let futureQtrsDist=0;
-  for(let q=currentQtr+1;q<=4;q++){ futureQtrsDist+=(distQtrs['Q'+q]!=null?Number(distQtrs['Q'+q]):quarterlyDistDefault); }
-  const totalDistDeduction = currentQtrDist+futureQtrsDist;
+  const currentQtrDist = distQtrs['current']!=null ? Number(distQtrs['current']) : currentQtrDistDefault;
+
+  // Future quarters: add NET accretion only (earned − sent); distributions are funded by earnings so net = spread
+  const futureQtrs = Math.max(0, qtrsLeft-1);
+  const netAccretionPerQtr = ((madePct-sentPct)/100/4)*capitalDollars;
+  const futureAccretion = netAccretionPerQtr*futureQtrs;
+  const accrTileVal = futureAccretion;
 
   const inclAccretion = p.includeAccretionInProj!==false;
   const inclReturns = p.includeReturnsInProj!==false;
@@ -1422,8 +1421,11 @@ function viewProperty(){
   // Proj Remaining Spend w Interest = outstanding net of future interest income
   const projRemainingSpendInt = cm.outstandingTotal - avgInt*monthsLeft;
 
-  // Proj YYYY end Cash
-  const projEndCash = cashToday - projRemainingSpendInt + (inclAccretion?accretion:0) - (inclReturns?totalDistDeduction:0);
+  // Proj YYYY end Cash = cash − current Q distribution + future Q net accretion − remaining SP spend
+  const projEndCash = cashToday
+    - projRemainingSpendInt
+    - (inclReturns ? currentQtrDist : 0)
+    + (inclAccretion ? futureAccretion : 0);
   const projEndTone = projEndCash<0?'bad':(projEndCash<cashToday*0.25?'warn':'good');
   const cpd = p.units ? projEndCash/Number(p.units) : null;
   const cpdTone = cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));
@@ -1439,10 +1441,10 @@ function viewProperty(){
     const b=el('div',{class:'sb'});
     b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Accretion grows the cash position but never affects SP budget or spend. Estimate = (return earned − return sent) ÷ 4 × capital × quarters remaining in the year.'));
     const body=el('div',{});
-    const redraw=()=>{ body.innerHTML=''; const acc=((edited-sentPct)/100)/4*capitalDollars*qtrsLeft;
+    const redraw=()=>{ body.innerHTML=''; const acc=((edited-sentPct)/100/4)*capitalDollars*futureQtrs;
       body.append(detRow('Return earned (editable)', edited.toFixed(2)+'%'), detRow('Return sent — last quarter', sentPct.toFixed(2)+'%'),
-        detRow('Spread', (edited-sentPct).toFixed(2)+'%'), detRow('Capital', fmt(capitalDollars)), detRow('Quarters remaining', String(qtrsLeft)),
-        detRow('Accretion estimate', acc)); };
+        detRow('Spread', (edited-sentPct).toFixed(2)+'%'), detRow('Capital', fmt(capitalDollars)), detRow('Future quarters (after current Q)', String(futureQtrs)),
+        detRow('Net accretion (in Proj end Cash)', acc)); };
     redraw();
     const inp=el('input',{type:'number',step:'0.01',value:String(madePct),style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
     const inclChk=el('input',{type:'checkbox',id:'incl-acc',checked:editedIncl,style:'margin-right:6px',onchange:e=>{editedIncl=e.target.checked;}});
@@ -1478,44 +1480,32 @@ function viewProperty(){
   }
   function openReturns(){
     let editedIncl=p.includeReturnsInProj!==false;
-    let editedQtrs=Object.assign({},p.distributionQuarters||{});
+    let editedAmt=currentQtrDist;
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
-    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Anticipated distributions · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Q'+currentQtr+' distribution · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
     const b=el('div',{class:'sb'});
-    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Projected end-year cash is reduced by anticipated distributions for the current partial quarter and any remaining full quarters. Current quarter deduction is auto-calculated from months elapsed; adjust future quarters below.'));
-    const inclChk=el('input',{type:'checkbox',id:'incl-ret',checked:editedIncl,style:'margin-right:6px',onchange:e=>{editedIncl=e.target.checked;redraw();}});
+    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Current quarter distribution is deducted from Proj end Cash. Future quarters add net accretion (earned − sent) only — distributions are funded by earnings so the net effect is the spread.'));
+    const inclChk=el('input',{type:'checkbox',id:'incl-ret',checked:editedIncl,style:'margin-right:6px',onchange:e=>{editedIncl=e.target.checked;}});
     b.append(el('div',{style:'display:flex;align-items:center;gap:6px;margin-bottom:14px'}, inclChk, el('label',{for:'incl-ret',style:'font-size:13px;cursor:pointer'},'Include in Proj end Cash')));
-    b.append(detRow('Return rate (cushion sent)',sentPct.toFixed(2)+'%'));
+    b.append(detRow('Return rate sent (cushion)',sentPct.toFixed(2)+'%'));
     b.append(detRow('Capital',fmt(capitalDollars)));
-    b.append(detRow('Monthly distribution',currentQtrDist/monthsAccrued||0));
-    b.append(detRow(`Q${currentQtr} partial (${monthsAccrued} of 3 months)`,currentQtrDist));
-    const qBody=el('div',{});
-    const summary=el('div',{style:'margin-top:8px'});
-    const redraw=()=>{
-      qBody.innerHTML=''; summary.innerHTML='';
-      let total=currentQtrDist;
-      for(let q=currentQtr+1;q<=4;q++){
-        const def=Math.round(quarterlyDistDefault);
-        const stored=editedQtrs['Q'+q]!=null?editedQtrs['Q'+q]:def;
-        const qi=el('input',{type:'number',step:'1',value:String(Math.round(stored)),
-          style:'width:130px;padding:6px 8px;border:1px solid var(--line);border-radius:6px',
-          oninput:(e=>{const qk='Q'+q;editedQtrs[qk]=parseFloat(e.target.value)||0;redraw();}),
-          onclick:e=>e.stopPropagation()});
-        qBody.append(el('div',{class:'field',style:'margin-bottom:8px'},el('label',{style:'font-size:13px'},`Q${q} full-quarter distribution ($)`),qi));
-        total+=stored;
-      }
-      summary.append(detRow('Total distribution deduction',total));
-    };
-    redraw();
-    b.append(qBody,summary,
+    b.append(detRow('Default Q'+currentQtr+' distribution',currentQtrDistDefault));
+    b.append(detRow('Future quarters (Q'+Math.min(currentQtr+1,4)+'…Q4) net accretion',futureAccretion));
+    const inp=el('input',{type:'number',step:'1',value:String(Math.round(editedAmt)),
+      style:'width:160px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',
+      oninput:e=>{editedAmt=parseFloat(e.target.value)||0;}});
+    b.append(el('div',{class:'field',style:'margin-top:10px'},el('label',{},'Q'+currentQtr+' distribution override ($)'),inp),
       el('div',{style:'display:flex;gap:8px;margin-top:14px'},el('div',{style:'flex:1'}),
-        el('button',{class:'btn',onclick:()=>{editedQtrs={};redraw();}},'Reset to defaults'),
-        el('button',{class:'btn accent',onclick:async()=>{scrim.remove();await saveSettings(allSettings({includeReturnsInProj:editedIncl,distributionQuarters:editedQtrs}));}},'Save')));
+        el('button',{class:'btn',onclick:()=>{editedAmt=currentQtrDistDefault;inp.value=String(Math.round(editedAmt));}},'Reset to default'),
+        el('button',{class:'btn accent',onclick:async()=>{
+          const newQtrs=Object.assign({},p.distributionQuarters||{});
+          if(Math.abs(editedAmt-currentQtrDistDefault)<1){delete newQtrs['current'];}else{newQtrs['current']=editedAmt;}
+          scrim.remove();await saveSettings(allSettings({includeReturnsInProj:editedIncl,distributionQuarters:newQtrs}));}},'Save')));
     sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
   }
 
   const fy=(asOf||today()).slice(0,4);
-  const projEndSub=[`less ${fmt(projRemainingSpendInt,false)} remaining`].concat(inclAccretion?[`+ ${fmt(accretion,false)} accretion`]:[]).concat(inclReturns?[`− ${fmt(totalDistDeduction,false)} distrib`]:[]).join(' · ');
+  const projEndSub=[inclReturns?`− ${fmt(currentQtrDist,false)} Q${currentQtr} distrib`:null, inclAccretion&&futureAccretion?`+ ${fmt(futureAccretion,false)} accretion`:null].filter(Boolean).join(' · ')||'after committed';
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
@@ -1523,7 +1513,7 @@ function viewProperty(){
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
       hstat('Proj Remaining Spend w Interest', fmt(projRemainingSpendInt), 'none', `net ${fmt(avgInt*monthsLeft,false)} interest income`, openInterest),
       hstat(`Proj ${fy} end Cash`, fmt(projEndCash), projEndTone, projEndSub, openReturns),
-      hstat('Annual accretion', fmt(accrTileVal), accretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${qtrsLeft}q left${inclAccretion?'':' · excl.'}`, openAccretion),
+      hstat('Annual accretion', fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units (proj end cash)`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 

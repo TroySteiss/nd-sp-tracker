@@ -506,42 +506,79 @@ function viewDashboard(){
   });
   fwrap.append(fn); funnel.append(fwrap); body.append(funnel);
 
-  /* Portfolio table */
+  /* Portfolio summary tiles */
   const tp=el('div',{class:'panel'});
-  tp.append(el('div',{class:'ph'}, el('h3',{},'Portfolio — budget, spend & cash'), el('div',{class:'sp'}),
+  tp.append(el('div',{class:'ph'}, el('h3',{},'Portfolio summary'), el('div',{class:'sp'}),
     el('span',{class:'chip'},`as of ${S.meta&&S.meta.cashAsOf||'—'}`)));
-  const tbl=el('table',{class:'tbl'});
-  tbl.append(el('thead',{},tr(
-    th('Property'),th('Units','r'),th('SP budget','r'),th('Spent','r'),th('Remaining','r'),th('% used','r'),
-    th('Open plan','r'),th('Active','r'),th('Cash','r'),th('Loan matures','r'))));
-  const tb=el('tbody');
+  const calcProjStats=pr=>{
+    const code=pr.code, c=S.cash[code]||{}, cm=cashModel(code);
+    const spent=glSpentFor(code);
+    const cashToday=cm.cashToday;
+    const asOf=c.asOfDate||S.meta.cashAsOf||'';
+    const moOf=(()=>{const iso=String(asOf).match(/^(\d{4})-(\d{2})/);const us=String(asOf).match(/^(\d{1,2})\//);return iso?+iso[2]:(us?+us[1]:0);})();
+    const qtrsLeft=moOf?Math.max(0,5-Math.ceil(moOf/3)):0;
+    const monthsLeft=moOf?Math.max(0,12-moOf):0;
+    const monthsAccrued=moOf?((moOf-1)%3)+1:0;
+    const sentPct=c.returnSent!=null?Number(c.returnSent):0;
+    const madePct=pr.accretionPct!=null?Number(pr.accretionPct):(c.returnEarned!=null?Number(c.returnEarned):0);
+    const capitalDollars=(c.capital!=null?Number(c.capital):0)*1000;
+    const intLines=S.gl.filter(g=>g.property===code&&isInterestGL(g));
+    const autoAvgInt=intLines.length?intLines.reduce((a,g)=>a+Math.abs(Number(g.amount)||0),0)/intLines.length:0;
+    const avgInt=(pr.avgMonthlyInterest!=null&&Number(pr.avgMonthlyInterest)>0)?Number(pr.avgMonthlyInterest):autoAvgInt;
+    const distQtrs=pr.distributionQuarters||{};
+    const effectiveSentPct=distQtrs['rate']!=null?Number(distQtrs['rate']):sentPct;
+    const currentQtrDist=distQtrs['current']!=null?Number(distQtrs['current']):(effectiveSentPct/100/12)*capitalDollars*monthsAccrued;
+    const futureQtrs=Math.max(0,qtrsLeft-1);
+    const futureAccretion=((madePct-effectiveSentPct)/100/4)*capitalDollars*futureQtrs;
+    const projRemainingSpendInt=cm.outstandingTotal-avgInt*monthsLeft;
+    const inclAccretion=pr.includeAccretionInProj!==false;
+    const inclReturns=pr.includeReturnsInProj!==false;
+    const projEndCash=cashToday-projRemainingSpendInt-(inclReturns?currentQtrDist:0)+(inclAccretion?futureAccretion:0);
+    const cpd=pr.units?projEndCash/Number(pr.units):null;
+    return {spent,cashToday,projRemainingSpendInt,futureAccretion,projEndCash,cpd,
+            units:Number(pr.units)||0,madePct,effectiveSentPct,futureQtrs,inclAccretion};
+  };
+  const summaryWrap=el('div',{style:'overflow:auto'});
   regions.filter(r=>!DASH.region||r===DASH.region).forEach(reg=>{
-    const regProps=props.filter(p=>p.region===reg); if(!regProps.length)return;
-    tb.append(el('tr',{class:'grp'}, el('td',{colspan:10}, `${reg} — ${PROP(regProps[0].code).manager}`)));
-    let bB=0,bS=0,bR=0;
-    regProps.forEach(p=>{
-      const c=S.cash[p.code]||{};
-      const budget=Number(p.spBudget)||0;
-      const spent=glSpentFor(p.code)|| (c.spSpent!=null?Number(c.spSpent):0);
-      const rem=budget-spent; bB+=budget;bS+=spent;bR+=rem;
-      const used=budget?spent/budget:0;
-      const actv=projForProp(p.code).filter(x=>!isComplete(x)&&phase(x)!=='note').length;
-      const row=el('tr',{class:'clickrow',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;render();}},
-        td(el('div',{style:'display:flex;align-items:center;gap:8px'}, el('span',{class:'pl-dot',style:'background:'+pcolor(p.code)}), el('div',{}, el('strong',{},p.code), el('div',{style:'font-size:11px;color:var(--ink-3)'},p.name)))),
-        tdn(p.units), tdn(budget,1), tdn(spent,1),
-        td(el('span',{class:rem<0?'mono neg':'mono'},fmt(rem)),'r'),
-        td(barCell(used),'r'),
-        tdn(estAdditional(p.code),1), tdn(actv),
-        tdn(effectiveCash(p.code),1),
-        td(el('span',{class:'mono',style:'font-size:12px'}, c.loanDue||'—'),'r'));
-      tb.append(row);
+    const regProps=props.filter(q=>q.region===reg); if(!regProps.length)return;
+    const regData=regProps.map(pr=>({pr,s:calcProjStats(pr)}));
+    summaryWrap.append(el('div',{style:'padding:5px 14px;font-size:11.5px;font-weight:600;color:var(--ink-3);background:var(--surface-2);border-bottom:1px solid var(--line)'},
+      `${reg} — ${PROP(regProps[0].code).manager}`));
+    regData.forEach(({pr,s})=>{
+      const endTone=s.projEndCash<0?'bad':(s.projEndCash<s.cashToday*0.25?'warn':'good');
+      const cpdTone=s.cpd==null?'none':(s.cpd>=3000?'good':(s.cpd>=2000?'warn':'bad'));
+      summaryWrap.append(el('div',{style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
+        el('div',{style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',
+          onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
+          el('div',{style:'display:flex;align-items:center;gap:6px'},
+            el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}),
+            el('strong',{style:'font-size:12px'},pr.code)),
+          el('div',{style:'font-size:10.5px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},pr.name)),
+        el('div',{class:'headstats',style:'flex:1'},
+          hstat('Spent to date', fmt(s.spent), 'none', ''),
+          hstat('Current cash', fmt(s.cashToday), 'none', ''),
+          hstat('Proj Remaining Spend', fmt(s.projRemainingSpendInt), 'none', ''),
+          hstat('Annual accretion', fmt(s.futureAccretion), s.futureAccretion>=0?'good':'bad', `${(s.madePct-s.effectiveSentPct).toFixed(1)}% · ${s.futureQtrs}q${s.inclAccretion?'':' excl.'}`),
+          hstat('Proj End Cash', fmt(s.projEndCash), endTone, ''),
+          hstat('$/door', s.cpd==null?'—':fmt(s.cpd), cpdTone, ''))));
     });
-    tb.append(el('tr',{class:'sub'}, td('Subtotal'), td(''),
-      tdn(bB,1),tdn(bS,1), td(el('span',{class:bR<0?'mono neg':'mono'},fmt(bR)),'r'),
-      td(barCell(bB?bS/bB:0),'r'), td(''),td(''),td(''),td('')));
+    const tot={spent:0,cash:0,projRem:0,accretion:0,projEnd:0,units:0};
+    regData.forEach(({s})=>{tot.spent+=s.spent;tot.cash+=s.cashToday;tot.projRem+=s.projRemainingSpendInt;tot.accretion+=s.futureAccretion;tot.projEnd+=s.projEndCash;tot.units+=s.units;});
+    const totCpd=tot.units?tot.projEnd/tot.units:null;
+    const totEndTone=tot.projEnd<0?'bad':(tot.projEnd<tot.cash*0.25?'warn':'good');
+    const totCpdTone=totCpd==null?'none':(totCpd>=3000?'good':(totCpd>=2000?'warn':'bad'));
+    summaryWrap.append(el('div',{style:'display:flex;align-items:stretch;border-bottom:2px solid var(--line);background:var(--surface-2)'},
+      el('div',{style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)'},
+        el('span',{style:'font-size:11px;font-weight:600;color:var(--ink-3)'},'Subtotal')),
+      el('div',{class:'headstats',style:'flex:1'},
+        hstat('Spent to date', fmt(tot.spent), 'none', ''),
+        hstat('Current cash', fmt(tot.cash), 'none', ''),
+        hstat('Proj Remaining Spend', fmt(tot.projRem), 'none', ''),
+        hstat('Annual accretion', fmt(tot.accretion), tot.accretion>=0?'good':'bad', ''),
+        hstat('Proj End Cash', fmt(tot.projEnd), totEndTone, ''),
+        hstat('$/door', totCpd==null?'—':fmt(totCpd), totCpdTone, ''))));
   });
-  tbl.append(tb);
-  tp.append(el('div',{style:'overflow:auto'},tbl));
+  tp.append(summaryWrap);
   body.append(tp);
 
   /* Needs attention */
@@ -1548,8 +1585,8 @@ function viewProperty(){
     [ hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
       hstat('Proj Remaining Spend w Interest', fmt(projRemainingSpendInt), 'none', `net ${fmt(avgInt*monthsLeft,false)} interest income`, openInterest),
+      hstat('Annual accretion', fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-effectiveSentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
       hstat(`Proj ${fy} end Cash`, fmt(projEndCash), projEndTone, projEndSub, openReturns),
-      hstat('Annual accretion', fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-sentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units (proj end cash)`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 

@@ -1383,8 +1383,7 @@ function viewProperty(){
   const cashPerYr=(loanYrs!=null&&loanYrs>0)?cashToday/loanYrs:null;
   // conditional formatting
   const remTone = remaining<0?'bad':(budget&&remaining<budget*0.15?'warn':'good');
-  const cpdTone = cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));   // green >$3k · yellow $2k–$3k · red <$2k
-  // projEndTone declared after projEndCash below
+  // cpdTone and projEndTone declared after projEndCash below
   const projToBudget = budget-cm.outstandingTotal-spent;   // SP budget less committed-unpaid less spent
   const ptbTone = projToBudget<0?'bad':(budget&&projToBudget<budget*0.15?'warn':'good');
 
@@ -1427,6 +1426,7 @@ function viewProperty(){
   const projEndCash = cashToday - projRemainingSpendInt + (inclAccretion?accretion:0) - (inclReturns?totalDistDeduction:0);
   const projEndTone = projEndCash<0?'bad':(projEndCash<cashToday*0.25?'warn':'good');
   const cpd = p.units ? projEndCash/Number(p.units) : null;
+  const cpdTone = cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));
 
   async function saveSettings(s){ try{ await API.send('PATCH','/properties/'+code+'/settings',s); await afterWrite('Saved'); }catch(e){ toast('Save failed: '+e.message); } }
   const allSettings=(overrides={})=>Object.assign({accretionPct:p.accretionPct??null,avgMonthlyInterest:avgInt,includeAccretionInProj:p.includeAccretionInProj!==false,includeReturnsInProj:p.includeReturnsInProj!==false,distributionQuarters:p.distributionQuarters||{}},overrides);

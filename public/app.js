@@ -1395,7 +1395,7 @@ function viewProperty(){
   const sentPct = c.returnSent!=null?Number(c.returnSent):0;
   const cushMade = c.returnEarned!=null?Number(c.returnEarned):0;
   const madePct = p.accretionPct!=null?Number(p.accretionPct):cushMade;
-  const capitalDollars = c.capital!=null?Number(c.capital):0;
+  const capitalDollars = (c.capital!=null?Number(c.capital):0)*1000;   // stored in $K
   const accretion = ((madePct-sentPct)/100)/4*capitalDollars*qtrsLeft;
   // avg monthly interest income = mean of the interest-income postings (manual override wins)
   const intLines = S.gl.filter(g=>g.property===code && isInterestGL(g));

@@ -239,7 +239,7 @@ function render(){
 function rail(){
   const counts={
     projects:S.projects.length,
-    active:S.projects.filter(p=>!isComplete(p)).length,
+    active:S.projects.filter(p=>!isComplete(p)&&phase(p)!=='note').length,
   };
   const r=el('div',{class:'rail'+(VIEW.railOpen?' open':'')});
   const brand=el('div',{class:'brand'},

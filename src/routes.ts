@@ -325,6 +325,96 @@ api.post('/import/cushion/confirm', async (req, res) => {
   res.json({ ok: true, count: Object.keys(found).length });
 });
 
+/* ---------- Executed contract upload ---------- */
+api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req, res) => {
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  const projRow = await query('select * from projects where id=$1', [req.params.id]);
+  if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
+  const proj = projRow.rows[0];
+  const lwSigned = req.body?.lwSigned === 'true' || req.body?.lwSigned === true;
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  let steps = { ...(proj.steps || {}), signed: true, contractSaved: true };
+  if (lwSigned) { steps = { ...steps, lienWaiver: true, lienSaved: true }; }
+  await query(
+    'update projects set executed_contract_file_key=$1, executed_contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
+    [key, f.originalname, JSON.stringify(steps), proj.id]
+  );
+  res.json({ fileKey: key, fileName: f.originalname, steps });
+});
+
+/* ---------- Lien waiver upload ---------- */
+api.post('/projects/:id/lien-waiver', memUpload.single('file'), async (req, res) => {
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  const projRow = await query('select steps from projects where id=$1', [req.params.id]);
+  if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
+  const steps = JSON.stringify({ ...(projRow.rows[0].steps || {}), lienWaiver: true, lienSaved: true });
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  await query(
+    'update projects set lien_waiver_file_key=$1, lien_waiver_file_name=$2, steps=$3, updated_at=now() where id=$4',
+    [key, f.originalname, steps, req.params.id]
+  );
+  res.json({ fileKey: key, fileName: f.originalname });
+});
+
+/* ---------- Contractor directory ---------- */
+import * as XLSX from 'xlsx';
+
+api.get('/contractors', async (_req, res) => {
+  const r = await query('select * from contractors order by name');
+  res.json(r.rows.map((c) => ({ id: c.id, name: c.name, address: c.address ?? '', phone: c.phone ?? '', email: c.email ?? '', category: c.category ?? '', notes: c.notes ?? '' })));
+});
+
+api.post('/contractors', async (req, res) => {
+  const b = req.body || {};
+  if (!b.name?.trim()) return res.status(400).json({ error: 'name required' });
+  const id = uid('CTR');
+  await query(
+    'insert into contractors(id,name,address,phone,email,category,notes) values($1,$2,$3,$4,$5,$6,$7) on conflict(name) do update set address=excluded.address,phone=excluded.phone,email=excluded.email,category=excluded.category,notes=excluded.notes',
+    [id, b.name.trim(), b.address || '', b.phone || '', b.email || '', b.category || '', b.notes || '']
+  );
+  const r = await query('select * from contractors where name=$1', [b.name.trim()]);
+  res.json(r.rows[0]);
+});
+
+api.delete('/contractors/:id', async (req, res) => {
+  await query('delete from contractors where id=$1', [req.params.id]);
+  res.json({ ok: true });
+});
+
+api.post('/contractors/import', memUpload.single('file'), async (req, res) => {
+  if (!req.file) return res.status(400).json({ error: 'no file' });
+  let wb: any;
+  try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }
+  catch { return res.status(400).json({ error: 'could not parse Excel file' }); }
+  const ws = wb.Sheets[wb.SheetNames[0]];
+  const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: '' });
+  // Find header row: look for a row where col[0] contains 'code' or col[1] contains 'name' (case-insensitive)
+  let dataStart = 0;
+  for (let i = 0; i < Math.min(10, rows.length); i++) {
+    const r = rows[i];
+    if (String(r[1] || '').toLowerCase().includes('name') || String(r[0] || '').toLowerCase().includes('code')) {
+      dataStart = i + 1; break;
+    }
+  }
+  const imported: string[] = [];
+  for (let i = dataStart; i < rows.length; i++) {
+    const r = rows[i];
+    const name = String(r[1] || '').trim();
+    if (!name || name.toLowerCase() === 'name') continue;
+    const address = String(r[3] || '').trim();
+    const phone = String(r[4] || '').trim();
+    const id = uid('CTR');
+    await query(
+      'insert into contractors(id,name,address,phone) values($1,$2,$3,$4) on conflict(name) do update set address=excluded.address,phone=excluded.phone',
+      [id, name, address, phone]
+    );
+    imported.push(name);
+  }
+  res.json({ count: imported.length });
+});
+
 /* ---------- exports ---------- */
 api.get('/export/backup.json', async (_req, res) => {
   const state = await assembleState();

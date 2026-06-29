@@ -269,6 +269,7 @@ function rail(){
   nav.append(el('div',{class:'grp'},'Money'));
   nav.append(item('cash','$','Cash & Loans'));
   nav.append(item('data','⇪','Upload & Data'));
+  nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
 
   const foot=el('div',{class:'foot'},
     el('div',{class:'row'}, el('span',{},'GL period'), el('span',{class:'mono'},S.meta&&S.meta.glPeriod?S.meta.glPeriod:'—')),
@@ -279,11 +280,23 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData};
+  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   m.append(bar,el('div',{class:'content'},body));
   return m;
 }
+// Add drag-and-drop to any element. Calls onFile(File) on drop or input change.
+// Returns the hidden file input so callers can still trigger .click() on it.
+function addDrop(target, accept, onFile){
+  const inp=document.createElement('input'); inp.type='file'; inp.accept=accept; inp.style.display='none';
+  inp.addEventListener('change',e=>{if(inp.files[0])onFile(inp.files[0]);});
+  target.append(inp);
+  target.addEventListener('dragover',e=>{e.preventDefault();target.classList.add('hot');});
+  target.addEventListener('dragleave',e=>{if(!target.contains(e.relatedTarget))target.classList.remove('hot');});
+  target.addEventListener('drop',e=>{e.preventDefault();target.classList.remove('hot');const f=e.dataTransfer.files[0];if(f)onFile(f);});
+  return inp;
+}
+
 function topbar(crumb,title,...actions){
   const t=el('div',{class:'topbar'});
   const menu=el('button',{class:'btn ghost sm menu-btn',onclick:()=>{VIEW.railOpen=!VIEW.railOpen;render();}},'☰');
@@ -883,6 +896,10 @@ function openProject(id,preset){
   const core=el('div',{class:'panel pad'});
   const f=(label,node)=>el('div',{class:'field'}, el('label',{},label), node);
   const inp=(key,attrs={})=>{const n=el('input',{value:p[key]==null?'':p[key],...attrs,oninput:e=>p[key]=attrs.type==='number'?(e.target.value===''?null:+e.target.value):e.target.value});return n;};
+  // Contractor autocomplete helpers — always allow free-text; datalist just suggests known contractors.
+  const makeDl=(dlId)=>{const dl=el('datalist',{id:dlId});(S.contractors||[]).forEach(c=>dl.append(el('option',{value:c.name})));document.body.append(dl);return dl;};
+  const ctrInp=(key,dlId,attrs={})=>{const dl=makeDl(dlId);const n=el('input',{value:p[key]||'',list:dlId,...attrs,oninput:e=>p[key]=e.target.value});scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
+  const ctrInpRaw=(val,placeholder,handler,dlId)=>{const dl=makeDl(dlId);const n=el('input',{value:val,placeholder,list:dlId,oninput:handler});scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
   // Entering a cost figure promotes a bare note into a planned project — tick "Planned".
   const costInp=(key)=>{const n=inp(key,{type:'number',placeholder:key==='actualCost'?'from GL':'0'});
     n.addEventListener('input',()=>{
@@ -901,7 +918,7 @@ function openProject(id,preset){
   core.append(el('div',{class:'frow'}, f('Property',propSel), f('Category',catSel)));
   core.append(f('Plan / scope / comments',el('textarea',{oninput:e=>p.plan=e.target.value},p.plan||'')));
   core.append(el('div',{class:'frow'},
-    f('Contractor',inp('contractor',{placeholder:'Awarded / leading contractor'})),
+    f('Contractor',ctrInp('contractor','contractor-dl-proj',{placeholder:'Awarded / leading contractor'})),
     f('Current action item',inp('actionItem',{placeholder:'Next step / who owns it'}))));
   core.append(el('div',{class:'frow3'},
     f('Date added',inp('dateAdded',{type:'date'})),
@@ -1019,7 +1036,7 @@ function openProject(id,preset){
         drawBids(); drawSteps();
       }}, bd.approved?'✓ Approved':'Approve')));
     slot.append(el('div',{class:'bs-row'},
-      el('input',{value:bd.contractor||'',placeholder:'Contractor / vendor',oninput:e=>{bd.contractor=e.target.value;refreshMeta();}}),
+      ctrInpRaw(bd.contractor||'','Contractor / vendor',e=>{bd.contractor=e.target.value;refreshMeta();},'contractor-dl-bid'+i),
       el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;refreshMeta();}})));
     const fileRow=el('div',{class:'bs-file'});
     if(bd.fileKey){
@@ -1029,9 +1046,10 @@ function openProject(id,preset){
         el('div',{style:'flex:1'}),
         el('button',{class:'btn ghost sm',onclick:()=>{bd.fileKey=null;bd.fileName=null;bd.fileSize=null;drawBids();}},'✕ Remove'));
     } else {
-      const inp=el('input',{type:'file',accept:'.pdf,.png,.jpg,.jpeg,.zip',style:'display:none',onchange:e=>{if(e.target.files[0])attachBid(bd,e.target.files[0]);}});
+      fileRow.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:4px 8px;transition:background .15s;';
       const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
-      fileRow.append(lbl,inp);
+      const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f));
+      fileRow.append(lbl);
     }
     slot.append(fileRow);
     return slot;
@@ -1048,6 +1066,83 @@ function openProject(id,preset){
     if(!hasFile){ btn.disabled=true; btn.title='Attach a bid document to a slot first'; btn.style.opacity='.5'; btn.style.cursor='default'; }
     genRow.append(btn, el('span',{class:'bs-meta'}, hasFile?'Builds the Independent Contractor Agreement with the bid embedded (Exhibits A–D).':'Attach a bid document to enable.'));
     if(p.contractFileKey){ genRow.append(el('div',{style:'flex:1'}), el('a',{class:'btn ghost sm',href:'/api/files/'+p.contractFileKey+'?name='+encodeURIComponent(p.contractFileName||'contract.pdf')},'⬇ '+(p.contractFileName||'contract.pdf'))); }
+
+    // --- Executed contract upload ---
+    const execSection=el('div',{style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
+    const execLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Executed Contract');
+    execSection.append(execLabel);
+    if(p.executedContractFileKey){
+      execSection.append(
+        el('span',{class:'bs-meta',style:'margin-left:8px;color:var(--green,#2a7a2a)'},'✓ Filed'),
+        el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.executedContractFileKey+'?name='+encodeURIComponent(p.executedContractFileName||'executed.pdf')},'⬇ '+(p.executedContractFileName||'executed.pdf'))
+      );
+    } else {
+      execSection.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:6px 10px;transition:background .15s;';
+      const execBtn=el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>execInput.click()},'⬆ Upload Executed');
+      execSection.append(execBtn);
+      const execInput=addDrop(execSection,'.pdf,application/pdf',async file=>{
+        execBtn.disabled=true; execBtn.textContent='Uploading…';
+
+        // LW dialog before upload
+        const lwScrim=el('div',{class:'scrim modal-center',style:'z-index:2000'});
+        const lwSheet=el('div',{class:'sheet',style:'max-width:380px'});
+        lwSheet.append(el('div',{class:'sh'},el('h2',{style:'font-size:15px;flex:1'},'Lien Waiver Signed with Contract?')));
+        const lwBody=el('div',{class:'sb'});
+        lwBody.append(el('p',{style:'margin:0 0 16px;color:var(--ink-2);font-size:13px'},'Was the lien waiver signed and returned together with the executed contract?'));
+        const doUpload=async(lwSigned)=>{
+          lwScrim.remove();
+          const fd=new FormData(); fd.append('file',file); fd.append('lwSigned',String(lwSigned));
+          try{
+            const r=await fetch('/api/projects/'+p.id+'/executed-contract',{method:'POST',body:fd});
+            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';return;}
+            const out=await r.json();
+            p.executedContractFileKey=out.fileKey; p.executedContractFileName=out.fileName;
+            Object.assign(p.steps,out.steps);
+            drawSteps(); refreshGen();
+            if(!lwSigned) showLwUpload();
+            toast('Executed contract filed'+(lwSigned?' · Lien waiver marked received':''));
+          }catch(e){toast('Upload failed: '+e.message);execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';}
+        };
+        lwBody.append(el('div',{style:'display:flex;gap:8px;justify-content:flex-end'},
+          el('button',{class:'btn ghost',onclick:()=>{lwScrim.remove();execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';}},'Cancel'),
+          el('button',{class:'btn',onclick:()=>doUpload(false)},'No'),
+          el('button',{class:'btn accent',onclick:()=>doUpload(true)},'Yes')));
+        lwSheet.append(lwBody); lwScrim.append(lwSheet); document.body.append(lwScrim);
+      });
+    }
+    genRow.after(execSection);
+
+    // --- Lien waiver upload section (shown when LW not yet received) ---
+    function showLwUpload(){
+      const existing=genRow.parentElement&&genRow.parentElement.querySelector('.lw-upload-section');
+      if(existing)return;
+      const lwSection=el('div',{class:'lw-upload-section',style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
+      const lwLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Lien Waiver');
+      if(p.lienWaiverFileKey){
+        lwSection.append(lwLabel,
+          el('span',{class:'bs-meta',style:'margin-left:8px;color:var(--green,#2a7a2a)'},'✓ Filed'),
+          el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.lienWaiverFileKey+'?name='+encodeURIComponent(p.lienWaiverFileName||'lien-waiver.pdf')},'⬇ '+(p.lienWaiverFileName||'lien-waiver.pdf')));
+      } else {
+        lwSection.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:6px 10px;transition:background .15s;';
+        const lwBtn=el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>lwInput.click()},'⬆ Upload Lien Waiver');
+        lwSection.append(lwLabel, lwBtn);
+        const lwInput=addDrop(lwSection,'.pdf,application/pdf',async file=>{
+          lwBtn.disabled=true; lwBtn.textContent='Uploading…';
+          const fd=new FormData(); fd.append('file',file);
+          try{
+            const r=await fetch('/api/projects/'+p.id+'/lien-waiver',{method:'POST',body:fd});
+            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');lwBtn.disabled=false;lwBtn.textContent='⬆ Upload Lien Waiver';return;}
+            const out=await r.json();
+            p.lienWaiverFileKey=out.fileKey; p.lienWaiverFileName=out.fileName;
+            p.steps.lienWaiver=true; p.steps.lienSaved=true;
+            drawSteps(); refreshGen(); toast('Lien waiver filed');
+          }catch(e){toast('Upload failed: '+e.message);lwBtn.disabled=false;lwBtn.textContent='⬆ Upload Lien Waiver';}
+        });
+      }
+      execSection.after(lwSection);
+    }
+    // Show LW section if executed is filed but LW not yet received (or already have LW file)
+    if(p.executedContractFileKey && (!p.steps.lienWaiver || p.lienWaiverFileKey)) showLwUpload();
   }
 
   function openContractDialog(){
@@ -1056,7 +1151,9 @@ function openProject(id,preset){
     const total=p.actualCost!=null?p.actualCost:(approved.amount!=null?approved.amount:(p.anticipatedCost!=null?p.anticipatedCost:0));
     const usd=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     const isoToMdy=iso=>{const m=String(iso||'').split('-');return m.length===3?`${m[1]}/${m[2]}/${m[0]}`:'';};
+    const mdyToIso=mdy=>{const m=String(mdy||'').split('/');return m.length===3?`${m[2]}-${m[0].padStart(2,'0')}-${m[1].padStart(2,'0')}`:'';};
     const plusDays=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;};
+    const plusDaysIso=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
     const data={
       effectiveDate:isoToMdy(today()), termEndDate:plusDays(60),
       ownerEntity:prop.ownerEntity||'', contractorName:(approved.contractor||p.contractor||''),
@@ -1080,12 +1177,20 @@ function openProject(id,preset){
     bb.append(f('Owner notice address','ownerNoticeAddr',{ph:'usually same as property'}));
     // --- Contract ---
     sect('Contract');
-    bb.append(el('div',{class:'frow'}, f('Effective date (MM/DD/YYYY)','effectiveDate'), f('Term end date (MM/DD/YYYY)','termEndDate')));
+    const dateFld=(label,key,initIso)=>{const inp=el('input',{type:'date',value:initIso,onchange:e=>data[key]=isoToMdy(e.target.value),oninput:e=>data[key]=isoToMdy(e.target.value)});return el('div',{class:'field'},el('label',{},label),inp);};
+    bb.append(el('div',{class:'frow'}, dateFld('Start date','effectiveDate',today()), dateFld('End date','termEndDate',plusDaysIso(60))));
     bb.append(el('div',{class:'frow'}, f('Contract total','contractTotal'), f('Unit # (optional)','unit',{ph:'e.g. 201'})));
     bb.append(f('Scope of work','scope',{ph:'e.g. HVAC replacement — Unit 316'}));
     // --- Contractor ---
     sect('Contractor');
-    bb.append(f('Contractor name','contractorName'));
+    const ctrDl=el('datalist',{id:'contract-gen-dl'});(S.contractors||[]).forEach(c=>ctrDl.append(el('option',{value:c.name})));document.body.append(ctrDl);
+    scrim.addEventListener('remove',()=>ctrDl.remove(),{once:true});
+    const ctrNameInp=el('input',{value:data.contractorName||'',list:'contract-gen-dl',oninput:e=>{
+      data.contractorName=e.target.value;
+      const match=(S.contractors||[]).find(c=>c.name.toLowerCase()===e.target.value.toLowerCase());
+      if(match&&match.address&&!data.contractorAddr)data.contractorAddr=match.address;
+    }});
+    bb.append(el('div',{class:'field'},el('label',{},'Contractor name'),ctrNameInp));
     bb.append(f('Contractor address','contractorAddr'));
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{
@@ -1622,7 +1727,7 @@ function viewData(){
   const rowb=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap'});
   rowb.append(
     el('button',{class:'btn pri',onclick:exportBackup},'⬇ Export backup (.json)'),
-    (()=>{const lbl=el('label',{class:'btn'},'⬆ Import backup');const inp=el('input',{type:'file',accept:'.json',style:'display:none',onchange:e=>importBackup(e.target.files[0])});lbl.append(inp);return lbl;})(),
+    (()=>{const lbl=el('button',{class:'btn',onclick:()=>inp.click()},'⬆ Import backup');const inp=addDrop(lbl,'.json',f=>importBackup(f));return lbl;})(),
     el('button',{class:'btn',onclick:exportCSV},'⬇ Export projects (.csv)'),
     el('div',{style:'flex:1'}),
     el('button',{class:'btn danger',onclick:()=>{if(confirm('Reset everything to the seeded starter data? This affects ALL users and cannot be undone.')){resetSeed();}}},'Reset to starter data'));
@@ -1710,5 +1815,76 @@ function tdn(n,money){return el('td',{class:'num r'},money?fmt(n):(n==null?'—'
 
 /* ---------- toast ---------- */
 let _toastT;function toast(msg){let t=$('.toast');if(t)t.remove();t=el('div',{class:'toast'},msg);document.body.append(t);clearTimeout(_toastT);_toastT=setTimeout(()=>t.remove(),2400);}
+
+/* ---------- Contractor directory ---------- */
+function viewDirectory(){
+  const bar=topbar('Directory','Contractor Directory');
+  const body=el('div',{class:'panel pad',style:'max-width:900px'});
+
+  // Import banner
+  const importRow=el('div',{style:'display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;border:2px dashed var(--line-2);border-radius:6px;padding:10px;transition:background .15s'});
+  const importBtn=el('button',{class:'btn accent sm',onclick:()=>xlsxInput.click()},'⬆ Import from Excel');
+  importRow.append(importBtn,
+    el('span',{style:'font-size:12px;color:var(--ink-3)'},'Import Vendor Directory Excel or drop it here. Existing names are updated, not duplicated.'));
+  const xlsxInput=addDrop(importRow,'.xlsx,.xls',async file=>{
+    importBtn.disabled=true; importBtn.textContent='Importing…';
+    const fd=new FormData(); fd.append('file',file);
+    try{
+      const r=await fetch('/api/contractors/import',{method:'POST',body:fd});
+      const j=await r.json();
+      if(!r.ok){toast(j.error||'Import failed');return;}
+      await afterWrite(`Imported ${j.count} contractors`);
+    }catch(e){toast('Import failed: '+e.message);}
+    finally{importBtn.disabled=false;importBtn.textContent='⬆ Import from Excel';}
+  });
+  body.append(importRow);
+
+  // Add single contractor
+  const addRow=el('div',{style:'display:flex;gap:8px;margin-bottom:16px;flex-wrap:wrap'});
+  const nameInp=el('input',{placeholder:'Contractor name',style:'flex:2;min-width:160px'});
+  const addrInp=el('input',{placeholder:'Address',style:'flex:3;min-width:160px'});
+  const phoneInp=el('input',{placeholder:'Phone',style:'flex:1;min-width:100px'});
+  const addBtn=el('button',{class:'btn sm',onclick:async()=>{
+    const name=nameInp.value.trim();
+    if(!name){toast('Name is required');return;}
+    addBtn.disabled=true;
+    try{
+      const r=await fetch('/api/contractors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name,address:addrInp.value.trim(),phone:phoneInp.value.trim()})});
+      if(!r.ok){const j=await r.json().catch(()=>({}));toast(j.error||'Failed');return;}
+      nameInp.value=''; addrInp.value=''; phoneInp.value='';
+      await afterWrite('Contractor added');
+    }catch(e){toast('Failed: '+e.message);}
+    finally{addBtn.disabled=false;}
+  }},'Add');
+  addRow.append(nameInp,addrInp,phoneInp,addBtn);
+  body.append(el('div',{style:'font-size:11px;font-weight:600;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);margin-bottom:6px'},'Add contractor'),addRow);
+
+  // Contractor table
+  const ctrs=S.contractors||[];
+  if(!ctrs.length){
+    body.append(el('div',{class:'empty'},el('div',{class:'big'},'No contractors yet'),'Import the Vendor Directory Excel or add one above.'));
+  } else {
+    const tbl=el('table',{class:'tbl',style:'width:100%'});
+    tbl.append(el('thead',{},tr(th('Name'),th('Address'),th('Phone'),th(''))));
+    const tbody=el('tbody');
+    ctrs.forEach(c=>{
+      const row=tr(
+        td(c.name),
+        td(c.address||'—'),
+        td(c.phone||'—'),
+        el('td',{class:'r'},el('button',{class:'btn ghost sm',onclick:async()=>{
+          if(!confirm(`Remove "${c.name}" from the directory?`))return;
+          await fetch('/api/contractors/'+c.id,{method:'DELETE'});
+          await afterWrite('Contractor removed');
+        }},'Remove'))
+      );
+      tbody.append(row);
+    });
+    tbl.append(tbody);
+    body.append(el('div',{style:'overflow-x:auto'},tbl));
+  }
+
+  return {bar,body};
+}
 
 start();

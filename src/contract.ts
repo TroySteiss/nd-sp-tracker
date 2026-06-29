@@ -39,7 +39,7 @@ function tokenize(s: string): Word[] {
     if (part === '**') { bold = !bold; continue; }
     if (!part) continue;
     for (const w of part.split(/(\s+)/)) {
-      if (w === '') continue;
+      if (!w || /^\s+$/.test(w)) continue;
       words.push({ text: w, bold });
     }
   }
@@ -304,7 +304,7 @@ function buildSections(v: ContractVars): { title: string; paras: string[] }[] {
   return [
     { title: 'Services and Scope of Work', paras: [S('Contractor shall perform all work and/or services described in the Exhibit A; furnish all labor, materials, equipment, tools, supervision, machinery, and supplies necessary to perform all work described in Exhibit A; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in Exhibit A (collectively, the "Work"). Exhibits A and B are incorporated herein and made part of this Agreement (collectively, the "Exhibits").')] },
     { title: 'Notification by Contractor', paras: [S('Contractor will notify Owner if any problems, questions, or complications arise that will alter the scope of Work. All changes and/or deviations in the Work must be presented by Contractor to Owner and agreed upon in writing in accordance with this Agreement.')] },
-    { title: 'Term', paras: [S('This Agreement shall remain in effect until {TERM_END_DATE} unless sooner terminated in accordance with this Agreement.')] },
+    { title: 'Term', paras: [S('This Agreement shall commence on {EFFECTIVE_DATE} and remain in effect until {TERM_END_DATE} unless sooner terminated in accordance with this Agreement.')] },
     { title: 'Payment for Services and Contract Price', paras: [
       '',
       S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price"). The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),

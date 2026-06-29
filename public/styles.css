@@ -164,6 +164,7 @@ table{border-collapse:collapse;width:100%}
 /* upload */
 .drop{border:2px dashed var(--line);border-radius:12px;padding:30px;text-align:center;background:var(--panel-2);transition:.12s}
 .drop.hot{border-color:var(--wheat);background:var(--wheat-soft)}
+.hot{border-color:var(--wheat)!important;background:var(--wheat-soft,#fffbf0)!important}
 .drop .big{font-family:var(--disp);font-weight:600;font-size:15px;margin:8px 0 3px}
 
 /* misc */

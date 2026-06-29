@@ -78,6 +78,10 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     noContractSet: !!r.no_contract_set,
     contractFileKey: r.contract_file_key ?? null,
     contractFileName: r.contract_file_name ?? null,
+    executedContractFileKey: r.executed_contract_file_key ?? null,
+    executedContractFileName: r.executed_contract_file_name ?? null,
+    lienWaiverFileKey: r.lien_waiver_file_key ?? null,
+    lienWaiverFileName: r.lien_waiver_file_name ?? null,
     bids,
     progressNotes: notes,
   };
@@ -95,7 +99,7 @@ export function rowToCash(r: any): CashSnapshot {
 
 /* ---------- Assemble the full state blob (GET /api/state) ---------- */
 export async function assembleState(): Promise<AppState> {
-  const [props, projs, bids, notes, cash, adj, gl, meta, contracts] = await Promise.all([
+  const [props, projs, bids, notes, cash, adj, gl, meta, contracts, ctrs] = await Promise.all([
     query('select * from properties order by code'),
     query('select * from projects order by id'),
     query('select * from bids order by project_id, slot'),
@@ -105,6 +109,7 @@ export async function assembleState(): Promise<AppState> {
     query('select * from gl_lines order by id'),
     query('select * from app_meta where id=1'),
     query('select * from contracts order by effective_date, created_at'),
+    query('select * from contractors order by name').catch(() => ({ rows: [] })),
   ]);
 
   const bidsByProject = new Map<string, Bid[]>();
@@ -134,5 +139,7 @@ export async function assembleState(): Promise<AppState> {
   const m = meta.rows[0] || {};
   const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '' };
 
-  return { meta: metaObj, properties, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords };
+  const contractors = ctrs.rows.map((r: any) => ({ id: r.id, name: r.name, address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '', category: r.category ?? '', notes: r.notes ?? '' }));
+
+  return { meta: metaObj, properties, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors };
 }

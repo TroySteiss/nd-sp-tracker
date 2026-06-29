@@ -51,6 +51,20 @@ export interface Project {
   noContractSet?: boolean;
   contractFileKey?: string | null;
   contractFileName?: string | null;
+  executedContractFileKey?: string | null;
+  executedContractFileName?: string | null;
+  lienWaiverFileKey?: string | null;
+  lienWaiverFileName?: string | null;
+}
+
+export interface Contractor {
+  id: string;
+  name: string;
+  address?: string;
+  phone?: string;
+  email?: string;
+  category?: string;
+  notes?: string;
 }
 
 export interface Property {
@@ -158,6 +172,7 @@ export interface AppState {
   gl: GLLine[];
   projects: Project[];
   contracts?: ContractRecord[];
+  contractors?: Contractor[];
 }
 
 /* ---------- Lifecycle (the 12 steps from the workflow brief) ---------- */

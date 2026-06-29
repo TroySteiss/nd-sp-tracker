@@ -288,6 +288,29 @@ function mainCol(){
 }
 // Add drag-and-drop to any element. Calls onFile(File) on drop or input change.
 // Returns the hidden file input so callers can still trigger .click() on it.
+async function openPdfViewer(source, fileName){
+  let url, revokeOnClose=false;
+  if(typeof source==='string'){url=source;}
+  else{url=URL.createObjectURL(source);revokeOnClose=true;}
+  let targetPage=null;
+  try{
+    const res=await fetch(url);
+    const buf=await res.arrayBuffer();
+    const txt=new TextDecoder('latin1').decode(buf);
+    const counts=[...txt.matchAll(/\/Count\s+(\d+)/g)].map(m=>parseInt(m[1]));
+    if(counts.length){const tot=Math.max(...counts);if(tot>1)targetPage=tot-1;}
+  }catch(e){}
+  const close=()=>{overlay.remove();if(revokeOnClose)URL.revokeObjectURL(url);};
+  const overlay=el('div',{class:'scrim',style:'z-index:2100;display:flex;flex-direction:column;padding:0'});
+  const hdr=el('div',{style:'display:flex;align-items:center;gap:8px;padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--line-2);flex-shrink:0'});
+  hdr.append(
+    el('span',{style:'font-weight:600;font-size:14px;flex:1'},fileName||'Contract'),
+    el('button',{class:'btn ghost sm',onclick:close},'✕ Close'));
+  const frame=el('iframe',{src:url+(targetPage?'#page='+targetPage:''),style:'flex:1;border:none;width:100%'});
+  overlay.append(hdr,frame);
+  document.body.append(overlay);
+}
+
 function addDrop(target, accept, onFile){
   const inp=document.createElement('input'); inp.type='file'; inp.accept=accept; inp.style.display='none';
   inp.addEventListener('change',e=>{if(inp.files[0])onFile(inp.files[0]);});
@@ -1110,7 +1133,8 @@ function openProject(id,preset){
         const lwSheet=el('div',{class:'sheet',style:'max-width:380px'});
         lwSheet.append(el('div',{class:'sh'},el('h2',{style:'font-size:15px;flex:1'},'Lien Waiver Signed with Contract?')));
         const lwBody=el('div',{class:'sb'});
-        lwBody.append(el('p',{style:'margin:0 0 16px;color:var(--ink-2);font-size:13px'},'Was the lien waiver signed and returned together with the executed contract?'));
+        lwBody.append(el('p',{style:'margin:0 0 8px;color:var(--ink-2);font-size:13px'},'Was the lien waiver signed and returned together with the executed contract?'));
+        lwBody.append(el('div',{style:'margin:0 0 14px'},el('button',{class:'btn ghost sm',onclick:()=>openPdfViewer(file,file.name)},'👁 Preview file')));
         const doUpload=async(lwSigned)=>{
           lwScrim.remove();
           const fd=new FormData(); fd.append('file',file); fd.append('lwSigned',String(lwSigned));
@@ -1140,14 +1164,17 @@ function openProject(id,preset){
       if(existing)return;
       const lwSection=el('div',{class:'lw-upload-section',style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
       const lwLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Lien Waiver');
+      const execUrl='/api/files/'+p.executedContractFileKey+'?name='+encodeURIComponent(p.executedContractFileName||'contract.pdf');
+      const mkViewBtn=()=>el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>openPdfViewer(execUrl,p.executedContractFileName||'Executed Contract')},'👁 View contract');
       if(p.lienWaiverFileKey){
         lwSection.append(lwLabel,
           el('span',{class:'bs-meta',style:'margin-left:8px;color:var(--green,#2a7a2a)'},'✓ Filed'),
-          el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.lienWaiverFileKey+'?name='+encodeURIComponent(p.lienWaiverFileName||'lien-waiver.pdf')},'⬇ '+(p.lienWaiverFileName||'lien-waiver.pdf')));
+          el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.lienWaiverFileKey+'?name='+encodeURIComponent(p.lienWaiverFileName||'lien-waiver.pdf')},'⬇ '+(p.lienWaiverFileName||'lien-waiver.pdf')),
+          mkViewBtn());
       } else {
         lwSection.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:6px 10px;transition:background .15s;';
         const lwBtn=el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>lwInput.click()},'⬆ Upload Lien Waiver');
-        lwSection.append(lwLabel, lwBtn);
+        lwSection.append(lwLabel, lwBtn, mkViewBtn());
         const lwInput=addDrop(lwSection,'.pdf,application/pdf',async file=>{
           lwBtn.disabled=true; lwBtn.textContent='Uploading…';
           const fd=new FormData(); fd.append('file',file);

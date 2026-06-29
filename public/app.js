@@ -896,10 +896,25 @@ function openProject(id,preset){
   const core=el('div',{class:'panel pad'});
   const f=(label,node)=>el('div',{class:'field'}, el('label',{},label), node);
   const inp=(key,attrs={})=>{const n=el('input',{value:p[key]==null?'':p[key],...attrs,oninput:e=>p[key]=attrs.type==='number'?(e.target.value===''?null:+e.target.value):e.target.value});return n;};
-  // Contractor autocomplete helpers — always allow free-text; datalist just suggests known contractors.
+  // Contractor validation helpers.
+  const ctrKnown=(val)=>(S.contractors||[]).some(c=>c.name.trim().toLowerCase()===val.trim().toLowerCase());
+  const ctrWarn=async(inp,val)=>{
+    const parent=inp.closest('.field')||inp.parentElement; if(!parent)return;
+    parent.querySelectorAll('.ctr-warn').forEach(w=>w.remove());
+    if(!val||!val.trim()||ctrKnown(val))return;
+    const warn=el('div',{class:'ctr-warn',style:'font-size:11px;color:var(--rust);margin-top:3px;display:flex;gap:6px;align-items:center'},
+      el('span',{},'⚠ Not in contractor directory'),
+      el('button',{class:'btn ghost sm',style:'font-size:10px;padding:1px 6px',onclick:async e=>{
+        e.preventDefault();
+        const r=await fetch('/api/contractors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:val.trim()})});
+        if(r.ok){const j=await r.json();S.contractors=[...(S.contractors||[]),j];warn.remove();toast('Added "'+val.trim()+'" to contractor directory');}
+        else toast('Failed to add contractor');
+      }},'Add to directory'));
+    parent.append(warn);
+  };
   const makeDl=(dlId)=>{const dl=el('datalist',{id:dlId});(S.contractors||[]).forEach(c=>dl.append(el('option',{value:c.name})));document.body.append(dl);return dl;};
-  const ctrInp=(key,dlId,attrs={})=>{const dl=makeDl(dlId);const n=el('input',{value:p[key]||'',list:dlId,...attrs,oninput:e=>p[key]=e.target.value});scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
-  const ctrInpRaw=(val,placeholder,handler,dlId)=>{const dl=makeDl(dlId);const n=el('input',{value:val,placeholder,list:dlId,oninput:handler});scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
+  const ctrInp=(key,dlId,attrs={})=>{const dl=makeDl(dlId);const n=el('input',{value:p[key]||'',list:dlId,...attrs,oninput:e=>{p[key]=e.target.value;}});n.addEventListener('blur',()=>ctrWarn(n,p[key]));scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
+  const ctrInpRaw=(val,placeholder,handler,dlId)=>{const dl=makeDl(dlId);const n=el('input',{value:val,placeholder,list:dlId,oninput:e=>{handler(e);ctrWarn(n,e.target.value);}});n.addEventListener('blur',()=>ctrWarn(n,n.value));scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
   // Entering a cost figure promotes a bare note into a planned project — tick "Planned".
   const costInp=(key)=>{const n=inp(key,{type:'number',placeholder:key==='actualCost'?'from GL':'0'});
     n.addEventListener('input',()=>{
@@ -1185,12 +1200,28 @@ function openProject(id,preset){
     sect('Contractor');
     const ctrDl=el('datalist',{id:'contract-gen-dl'});(S.contractors||[]).forEach(c=>ctrDl.append(el('option',{value:c.name})));document.body.append(ctrDl);
     scrim.addEventListener('remove',()=>ctrDl.remove(),{once:true});
+    const genCtrKnown=(val)=>(S.contractors||[]).some(c=>c.name.trim().toLowerCase()===val.trim().toLowerCase());
+    const genCtrWarn=async(val)=>{
+      ctrNameField.querySelectorAll('.ctr-warn').forEach(w=>w.remove());
+      if(!val||!val.trim()||genCtrKnown(val))return;
+      const warn=el('div',{class:'ctr-warn',style:'font-size:11px;color:var(--rust);margin-top:3px;display:flex;gap:6px;align-items:center'},
+        el('span',{},'⚠ Not in contractor directory'),
+        el('button',{class:'btn ghost sm',style:'font-size:10px;padding:1px 6px',onclick:async e=>{
+          e.preventDefault();
+          const r=await fetch('/api/contractors',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name:val.trim()})});
+          if(r.ok){const j=await r.json();S.contractors=[...(S.contractors||[]),j];warn.remove();toast('Added "'+val.trim()+'" to contractor directory');}
+          else toast('Failed to add contractor');
+        }},'Add to directory'));
+      ctrNameField.append(warn);
+    };
     const ctrNameInp=el('input',{value:data.contractorName||'',list:'contract-gen-dl',oninput:e=>{
       data.contractorName=e.target.value;
       const match=(S.contractors||[]).find(c=>c.name.toLowerCase()===e.target.value.toLowerCase());
       if(match&&match.address&&!data.contractorAddr)data.contractorAddr=match.address;
     }});
-    bb.append(el('div',{class:'field'},el('label',{},'Contractor name'),ctrNameInp));
+    ctrNameInp.addEventListener('blur',()=>genCtrWarn(data.contractorName));
+    const ctrNameField=el('div',{class:'field'},el('label',{},'Contractor name'),ctrNameInp);
+    bb.append(ctrNameField);
     bb.append(f('Contractor address','contractorAddr'));
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{

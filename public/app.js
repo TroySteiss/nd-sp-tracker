@@ -33,6 +33,7 @@ const el = (t,a={},...kids)=>{const n=document.createElement(t);for(const k in a
 const fmt = (n,dash=true)=>{if(n==null||n===''||isNaN(n))return dash?'—':'';const v=Math.round(Number(n));const s=Math.abs(v).toLocaleString('en-US');return v<0?`($${s})`:`$${s}`;};
 const fmt1=(n)=>{if(n==null||isNaN(n))return '—';return '$'+Number(n).toLocaleString('en-US',{maximumFractionDigits:0});};
 const pct = (n)=>n==null||isNaN(n)?'—':(Number(n)*100).toFixed(n<0.1?1:0)+'%';
+const pctWhole = (n)=>n==null||isNaN(n)?'—':Number(n).toFixed(1).replace(/\.0$/,'')+'%';
 const esc = s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const today=()=>new Date().toISOString().slice(0,10);
 const fmtDate=(d)=>{ if(!d)return '—'; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); const dt=new Date(+m[0],+m[1]-1,+m[2]); if(isNaN(dt))return String(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
@@ -262,7 +263,7 @@ function rail(){
     S.properties.filter(p=>p.region===reg).forEach(p=>{
       const b=el('button',{class:(VIEW.tab==='property'&&VIEW.prop===p.code)?'on':'',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;VIEW.railOpen=false;render();}},
         el('span',{class:'ic',style:`color:${pcolor(p.code)}`},'●'), el('span',{},p.code),
-        el('span',{class:'ct'},String(projForProp(p.code).filter(x=>!isComplete(x)).length)));
+        el('span',{class:'ct'},String(projForProp(p.code).filter(x=>!isComplete(x)&&phase(x)!=='note').length)));
       nav.append(b);
     });
   });
@@ -661,7 +662,7 @@ function viewProjects(){
 
   // ---- filters: all selected by default; every group can select-all / clear-all ----
   const ALLPROPS=S.properties.map(p=>p.code);
-  const STAT=[['open','Open'],['note','Notes'],['discussed','Discussed'],['active','In progress'],['paid','Paid'],['inhouse','In-house'],['hold','On hold'],['done','Completed']];
+  const STAT=[['open','Open'],['note','Notes'],['discussed','Discussed'],['approved','Approved'],['contracted','Contracted'],['working','Work In Progress'],['paid','Paid / Closeout'],['inhouse','In-house'],['hold','On Hold'],['done','Completed']];
   const ALLSTAT=STAT.map(s=>s[0]);
   const ALLCATS=[...new Set(S.projects.map(p=>p.category))].sort();
   if(!Array.isArray(FILT.props))FILT.props=ALLPROPS.slice();
@@ -727,7 +728,14 @@ function viewProjects(){
     s==='open'?(!isComplete(p)&&!p.onHold):
     s==='inhouse'?isInHouse(p):
     s==='hold'?p.onHold:
-    phase(p)===s);
+    s==='note'?(phase(p)==='note'):
+    s==='discussed'?(phase(p)==='discussed'):
+    s==='approved'?(isApproved(p)&&!p.steps.contractGenerated&&!p.steps.signed&&!isComplete(p)):
+    s==='contracted'?(isApproved(p)&&(p.steps.contractGenerated||p.steps.signed)&&!p.steps.workStarted&&!isComplete(p)):
+    s==='working'?(isApproved(p)&&(p.steps.workStarted||p.steps.workCompleted)&&!isPaidP(p)&&!isComplete(p)):
+    s==='paid'?isPaidP(p):
+    s==='done'?isComplete(p):
+    false);
   list=list.filter(stMatch);
   list=list.filter(p=>inDateRange(p,FILT));
 
@@ -918,7 +926,6 @@ function openProject(id,preset){
   // Entering a cost figure promotes a bare note into a planned project — tick "Planned".
   const costInp=(key)=>{const n=inp(key,{type:'number',placeholder:key==='actualCost'?'from GL':'0'});
     n.addEventListener('input',()=>{
-      if(p[key]!=null && !isNaN(p[key]) && !p.steps.planned){ p.steps.planned=true; }
       if(!p.noContractSet){ const co=projOutflow(p); p.noContract = co>0 && co<OVER_THRESHOLD; if(p.noContract)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); }
       if(typeof drawSteps==='function')drawSteps();
       if(typeof refreshNC==='function')refreshNC();
@@ -1485,8 +1492,8 @@ function viewProperty(){
   sl3.append(
     row('Market value', c.marketValue!=null?Number(c.marketValue):'—'),
     row('Loan amount', c.loanAmount!=null?Number(c.loanAmount):'—'),
-    row('LTV', c.ltv!=null?pct(c.ltv):'—'),
-    row('Loan rate', c.loanRate!=null?pct(c.loanRate):'—'),
+    row('LTV', c.ltv!=null?pctWhole(c.ltv):'—'),
+    row('Loan rate', c.loanRate!=null?pctWhole(c.loanRate):'—'),
     row('Loan matures', c.loanDue||'—'),
     row('DCR', c.dcr!=null?Number(c.dcr).toFixed(2)+'x':'—'),
     row('NOI', c.noi!=null?Number(c.noi):'—'),
@@ -1687,8 +1694,8 @@ function viewCash(){
         td(el('span',{class:'mono'+(cmm.outstandingTotal?' neg':'')},cmm.outstandingTotal?fmt(-cmm.outstandingTotal):'—'),'r'),
         td(el('span',{class:'mono',style:'font-weight:600'},fmt(cmm.projectedCash)),'r'),
         tdn(c.spRemaining,1), tdn(c.loanAmount,1),
-        td(el('span',{class:'mono'},c.loanRate!=null?pct(c.loanRate):'—'),'r'),
-        td(el('span',{class:'mono'},c.ltv!=null?pct(c.ltv):'—'),'r'),
+        td(el('span',{class:'mono'},c.loanRate!=null?pctWhole(c.loanRate):'—'),'r'),
+        td(el('span',{class:'mono'},c.ltv!=null?pctWhole(c.ltv):'—'),'r'),
         td(el('span',{class:'mono',style:'font-size:12px'},c.loanDue||'—'),'r'),
         td(el('span',{class:'mono'},c.dcr!=null?Number(c.dcr).toFixed(2)+'x':'—'),'r')));
     });

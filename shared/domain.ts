@@ -78,8 +78,11 @@ export interface Property {
   address?: string;
   ownerNoticeAddr?: string;
   contractCode?: string;
-  accretionPct?: number | null;       // editable override of cushion return_earned
-  avgMonthlyInterest?: number | null; // editable avg monthly interest-income sweep
+  accretionPct?: number | null;
+  avgMonthlyInterest?: number | null;
+  includeAccretionInProj?: boolean | null;
+  includeReturnsInProj?: boolean | null;
+  distributionQuarters?: Record<string, number> | null;
 }
 
 /** Quarters remaining in the calendar year, counting the current quarter, from an as-of date (MM/DD/YYYY or YYYY-MM-DD). */

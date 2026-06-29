@@ -233,8 +233,13 @@ api.delete('/cash-adjustments/:id', async (req, res) => {
 api.patch('/properties/:code/settings', async (req, res) => {
   const code = req.params.code.toUpperCase();
   const b = req.body || {};
-  await query('update properties set accretion_pct=$1, avg_monthly_interest=$2 where code=$3',
-    [nnull(b.accretionPct), nnull(b.avgMonthlyInterest) ?? 0, code]);
+  await query(
+    'update properties set accretion_pct=$1, avg_monthly_interest=$2, include_accretion_in_proj=$3, include_returns_in_proj=$4, distribution_quarters=$5::jsonb where code=$6',
+    [nnull(b.accretionPct), nnull(b.avgMonthlyInterest) ?? 0,
+     b.includeAccretionInProj !== false,
+     b.includeReturnsInProj !== false,
+     JSON.stringify(b.distributionQuarters || {}),
+     code]);
   res.json({ ok: true });
 });
 

@@ -1403,9 +1403,11 @@ function viewProperty(){
   const autoAvgInt = intLines.length ? intTotal/intLines.length : 0;
   const avgInt = (p.avgMonthlyInterest!=null && Number(p.avgMonthlyInterest)>0) ? Number(p.avgMonthlyInterest) : autoAvgInt;
   const projTotalSpend = spent + cm.outstandingTotal;          // spent to date + committed (not yet paid)
-  // Current quarter full distribution (the actual cash going out this quarter)
+  // Current quarter distribution: prorated by months elapsed (May=2/3 of Q, Jun=3/3, etc.)
   const currentQtr = moOf ? Math.ceil(moOf/3) : 0;
-  const currentQtrDistDefault = (sentPct/100/4)*capitalDollars;
+  const monthsAccrued = moOf ? ((moOf-1)%3)+1 : 0;   // Apr=1, May=2, Jun=3, Jul=1, …
+  const monthlyDist = (sentPct/100/12)*capitalDollars;
+  const currentQtrDistDefault = monthlyDist*monthsAccrued;
   const distQtrs = p.distributionQuarters||{};
   const currentQtrDist = distQtrs['current']!=null ? Number(distQtrs['current']) : currentQtrDistDefault;
 

@@ -334,7 +334,7 @@ function topbar(crumb,title,...actions){
    CONTRACTS
 ========================================================= */
 function viewContracts(){
-  const usd=n=>(n==null||n===’’)?’—‘:’$’+Number(n).toLocaleString(‘en-US’,{minimumFractionDigits:2,maximumFractionDigits:2});
+  const usd=n=>(n==null||n==='')?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 
   // Build project lookup
   const projById=new Map(S.projects.map(p=>[p.id,p]));
@@ -343,19 +343,19 @@ function viewContracts(){
   const latestByProj=new Map();
   (S.contracts||[]).forEach(c=>{
     const ex=latestByProj.get(c.projectId);
-    if(!ex||String(c.createdAt||’’)>String(ex.createdAt||’’)) latestByProj.set(c.projectId,c);
+    if(!ex||String(c.createdAt||'')>String(ex.createdAt||'')) latestByProj.set(c.projectId,c);
   });
   const allDeduped=[...latestByProj.values()];
 
   // Status of a contract record
   const statusOf=c=>{
     const pr=projById.get(c.projectId);
-    if(pr&&pr.executedContractFileKey) return ‘executed’;
-    if(pr&&pr.steps&&(pr.steps.signed||pr.steps.contractSaved)) return ‘countersigned’;
-    return ‘generated’;
+    if(pr&&pr.executedContractFileKey) return 'executed';
+    if(pr&&pr.steps&&(pr.steps.signed||pr.steps.contractSaved)) return 'countersigned';
+    return 'generated';
   };
-  const ST_LABEL={executed:’Executed’,countersigned:’Signed — awaiting file’,generated:’Generated — awaiting countersign’};
-  const ST_CHIP={executed:’done’,countersigned:’good’,generated:’hold’};
+  const ST_LABEL={executed:'Executed',countersigned:'Signed — awaiting file',generated:'Generated — awaiting countersign'};
+  const ST_CHIP={executed:'done',countersigned:'good',generated:'hold'};
 
   // Planned: approved projects with no generated contract
   const projectsWithContract=new Set(latestByProj.keys());
@@ -364,56 +364,56 @@ function viewContracts(){
   // Apply property + search filters to deduped list
   let list=allDeduped.slice();
   if(CFILT.prop) list=list.filter(c=>c.property===CFILT.prop);
-  if(CFILT.q){const q=CFILT.q.toLowerCase();list=list.filter(c=>[c.outputFilename,c.contractor,c.ownerEntity,c.scope].some(x=>String(x||’’).toLowerCase().includes(q)));}
+  if(CFILT.q){const q=CFILT.q.toLowerCase();list=list.filter(c=>[c.outputFilename,c.contractor,c.ownerEntity,c.scope].some(x=>String(x||'').toLowerCase().includes(q)));}
 
   // Planned list with same property filter
   let planned=allPlanned.slice();
   if(CFILT.prop) planned=planned.filter(p=>p.property===CFILT.prop);
 
   // Status filter
-  const showPlanned=CFILT.status===’planned’;
+  const showPlanned=CFILT.status==='planned';
   if(CFILT.status&&!showPlanned) list=list.filter(c=>statusOf(c)===CFILT.status);
   if(showPlanned){list=[];} else {planned=[];}
 
   // Sort contracts list
   const sorters={
-    date_desc:(a,b)=>String(b.createdAt||’’).localeCompare(String(a.createdAt||’’)),
-    date_asc:(a,b)=>String(a.createdAt||’’).localeCompare(String(b.createdAt||’’)),
+    date_desc:(a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')),
+    date_asc:(a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')),
     total_desc:(a,b)=>(Number(b.total)||0)-(Number(a.total)||0),
-    contractor:(a,b)=>String(a.contractor||’’).localeCompare(String(b.contractor||’’)),
+    contractor:(a,b)=>String(a.contractor||'').localeCompare(String(b.contractor||'')),
     property:(a,b)=>String(a.property).localeCompare(String(b.property)),
   };
   list.sort(sorters[CFILT.sort]||sorters.date_desc);
   const total=list.reduce((a,c)=>a+(Number(c.total)||0),0);
 
   // Controls
-  const searchInp=el(‘input’,{type:’search’,placeholder:’Search contractor, scope, file…’,value:CFILT.q||’’,style:’min-width:200px’,onchange:e=>{CFILT.q=e.target.value;render();}});
-  const propSel=el(‘select’,{onchange:e=>{CFILT.prop=e.target.value;render();}},
-    el(‘option’,{value:’’},’All properties’),
-    ...S.properties.map(p=>el(‘option’,{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
-  const statusSel=el(‘select’,{onchange:e=>{CFILT.status=e.target.value;render();}},
-    el(‘option’,{value:’’,...(CFILT.status===’’?{selected:true}:{})},’All statuses’),
-    el(‘option’,{value:’executed’,...(CFILT.status===’executed’?{selected:true}:{})},’Executed’),
-    el(‘option’,{value:’countersigned’,...(CFILT.status===’countersigned’?{selected:true}:{})},’Signed — awaiting file’),
-    el(‘option’,{value:’generated’,...(CFILT.status===’generated’?{selected:true}:{})},’Generated — awaiting countersign’),
-    el(‘option’,{value:’planned’,...(CFILT.status===’planned’?{selected:true}:{})},’Planned — no contract yet’));
-  const sortSel=el(‘select’,{onchange:e=>{CFILT.sort=e.target.value;render();}},
-    ...[[‘date_desc’,’Newest first’],[‘date_asc’,’Oldest first’],[‘total_desc’,’Total (high→low)’],[‘contractor’,’Contractor (A–Z)’],[‘property’,’Property’]]
-      .map(([v,l])=>el(‘option’,{value:v,...(CFILT.sort===v?{selected:true}:{})},l)));
-  const bar=topbar(‘Pipeline’,’Contracts’, searchInp, propSel, statusSel, sortSel);
+  const searchInp=el('input',{type:'search',placeholder:'Search contractor, scope, file…',value:CFILT.q||'',style:'min-width:200px',onchange:e=>{CFILT.q=e.target.value;render();}});
+  const propSel=el('select',{onchange:e=>{CFILT.prop=e.target.value;render();}},
+    el('option',{value:''},'All properties'),
+    ...S.properties.map(p=>el('option',{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
+  const statusSel=el('select',{onchange:e=>{CFILT.status=e.target.value;render();}},
+    el('option',{value:'',...(CFILT.status===''?{selected:true}:{})},'All statuses'),
+    el('option',{value:'executed',...(CFILT.status==='executed'?{selected:true}:{})},'Executed'),
+    el('option',{value:'countersigned',...(CFILT.status==='countersigned'?{selected:true}:{})},'Signed — awaiting file'),
+    el('option',{value:'generated',...(CFILT.status==='generated'?{selected:true}:{})},'Generated — awaiting countersign'),
+    el('option',{value:'planned',...(CFILT.status==='planned'?{selected:true}:{})},'Planned — no contract yet'));
+  const sortSel=el('select',{onchange:e=>{CFILT.sort=e.target.value;render();}},
+    ...[['date_desc','Newest first'],['date_asc','Oldest first'],['total_desc','Total (high→low)'],['contractor','Contractor (A–Z)'],['property','Property']]
+      .map(([v,l])=>el('option',{value:v,...(CFILT.sort===v?{selected:true}:{})},l)));
+  const bar=topbar('Pipeline','Contracts', searchInp, propSel, statusSel, sortSel);
 
-  const body=el(‘div’,{class:’grid’});
+  const body=el('div',{class:'grid'});
 
   // KPIs — count from deduplicated list, not raw S.contracts
-  const exeCt=allDeduped.filter(c=>statusOf(c)===’executed’).length;
-  const genCt=allDeduped.filter(c=>statusOf(c)===’generated’).length;
-  const kpiBox=(lab,val,sub)=>{const d=el(‘div’,{class:’kpi’},el(‘div’,{class:’lab’},lab),el(‘div’,{class:’val’},val));if(sub)d.append(el(‘div’,{style:’font-size:11px;color:var(--ink-3);margin-top:2px’},sub));return d;};
-  const kpis=el(‘div’,{class:’grid kpis’,style:’grid-template-columns:repeat(4,1fr)’});
+  const exeCt=allDeduped.filter(c=>statusOf(c)==='executed').length;
+  const genCt=allDeduped.filter(c=>statusOf(c)==='generated').length;
+  const kpiBox=(lab,val,sub)=>{const d=el('div',{class:'kpi'},el('div',{class:'lab'},lab),el('div',{class:'val'},val));if(sub)d.append(el('div',{style:'font-size:11px;color:var(--ink-3);margin-top:2px'},sub));return d;};
+  const kpis=el('div',{class:'grid kpis',style:'grid-template-columns:repeat(4,1fr)'});
   kpis.append(
-    kpiBox(‘Active contracts’,String(allDeduped.length),`${exeCt} executed · ${genCt} generated`),
-    kpiBox(‘Total value’,usd(allDeduped.reduce((a,c)=>a+(Number(c.total)||0),0))),
-    kpiBox(‘Properties’,String(new Set(allDeduped.map(c=>c.property)).size)),
-    kpiBox(‘Awaiting contract’,String(allPlanned.length),’approved, no contract yet’));
+    kpiBox('Active contracts',String(allDeduped.length),`${exeCt} executed · ${genCt} generated`),
+    kpiBox('Total value',usd(allDeduped.reduce((a,c)=>a+(Number(c.total)||0),0))),
+    kpiBox('Properties',String(new Set(allDeduped.map(c=>c.property)).size)),
+    kpiBox('Awaiting contract',String(allPlanned.length),'approved, no contract yet'));
   body.append(kpis);
 
   // By-property breakdown — deduplicated
@@ -422,66 +422,66 @@ function viewContracts(){
     const k=c.property,st=statusOf(c);
     if(!byProp[k]) byProp[k]={exe:0,gen:0,plan:0,t:0};
     byProp[k].t+=Number(c.total)||0;
-    if(st===’executed’) byProp[k].exe++; else byProp[k].gen++;
+    if(st==='executed') byProp[k].exe++; else byProp[k].gen++;
   });
   allPlanned.forEach(p=>{const k=p.property;if(!byProp[k])byProp[k]={exe:0,gen:0,plan:0,t:0};byProp[k].plan++;});
-  const bpPanel=el(‘div’,{class:’panel’});
-  bpPanel.append(el(‘div’,{class:’ph’}, el(‘h3’,{},’Contracts by property’)));
-  const bpt=el(‘table’,{class:’tbl’});
-  bpt.append(el(‘thead’,{},tr(th(‘Property’),th(‘Executed’,’r’),th(‘Generated’,’r’),th(‘Planned’,’r’),th(‘Total value’,’r’))));
-  const bptb=el(‘tbody’);
+  const bpPanel=el('div',{class:'panel'});
+  bpPanel.append(el('div',{class:'ph'}, el('h3',{},'Contracts by property')));
+  const bpt=el('table',{class:'tbl'});
+  bpt.append(el('thead',{},tr(th('Property'),th('Executed','r'),th('Generated','r'),th('Planned','r'),th('Total value','r'))));
+  const bptb=el('tbody');
   Object.keys(byProp).sort((a,b)=>byProp[b].t-byProp[a].t).forEach(code=>{
     const d=byProp[code];
-    bptb.append(el(‘tr’,{class:’clickrow’,onclick:()=>{CFILT.prop=CFILT.prop===code?’’:code;render();}},
-      td(el(‘span’,{},propChip(code),’ ‘,PROP(code)?PROP(code).name:code)),
-      el(‘td’,{class:’num r’},d.exe||’—‘),
-      el(‘td’,{class:’num r’},d.gen||’—‘),
-      el(‘td’,{class:’num r’},d.plan||’—‘),
-      el(‘td’,{class:’num r’},usd(d.t))));
+    bptb.append(el('tr',{class:'clickrow',onclick:()=>{CFILT.prop=CFILT.prop===code?'':code;render();}},
+      td(el('span',{},propChip(code),' ',PROP(code)?PROP(code).name:code)),
+      el('td',{class:'num r'},d.exe||'—'),
+      el('td',{class:'num r'},d.gen||'—'),
+      el('td',{class:'num r'},d.plan||'—'),
+      el('td',{class:'num r'},usd(d.t))));
   });
   bpt.append(bptb);
-  bpPanel.append(el(‘div’,{style:’overflow:auto’},bpt));
+  bpPanel.append(el('div',{style:'overflow:auto'},bpt));
   body.append(bpPanel);
 
   // Main contracts table
-  const panel=el(‘div’,{class:’panel’});
+  const panel=el('div',{class:'panel'});
   const totalShown=list.length+planned.length;
-  panel.append(el(‘div’,{class:’ph’}, el(‘h3’,{},’Contracts’), el(‘div’,{class:’sp’}), el(‘span’,{class:’chip’},`${totalShown} shown`)));
+  panel.append(el('div',{class:'ph'}, el('h3',{},'Contracts'), el('div',{class:'sp'}), el('span',{class:'chip'},`${totalShown} shown`)));
   if(!totalShown){
-    panel.append(el(‘div’,{class:’empty’}, el(‘div’,{class:’big’},showPlanned?’No projects awaiting a contract.’:’No contracts yet’), showPlanned?’All approved projects have contracts generated.’:’Generate a contract from a project\’s Bids panel.’));
+    panel.append(el('div',{class:'empty'}, el('div',{class:'big'},showPlanned?'No projects awaiting a contract.':'No contracts yet'), showPlanned?'All approved projects have contracts generated.':'Generate a contract from a project\'s Bids panel.'));
   } else {
-    const t=el(‘table’,{class:’tbl’});
-    t.append(el(‘thead’,{},tr(th(‘#’),th(‘Project’),th(‘Property’),th(‘Contractor’),th(‘Total’,’r’),th(‘Status’),th(‘Eff. date’),th(‘Term end’))));
-    const tb=el(‘tbody’);
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('#'),th('Project'),th('Property'),th('Contractor'),th('Total','r'),th('Status'),th('Eff. date'),th('Term end'))));
+    const tb=el('tbody');
     let i=0;
     list.forEach(c=>{
       i++;
       const proj=projById.get(c.projectId);
       const st=statusOf(c);
-      tb.append(el(‘tr’,{class:’clickrow’,onclick:()=>{if(proj)openProject(proj.id);}},
-        el(‘td’,{class:’num’},String(i)),
-        td(el(‘div’,{style:’font-size:12px’},el(‘div’,{},proj?proj.name:(c.outputFilename||’—‘)),el(‘div’,{style:’color:var(--ink-3);font-size:11px’},c.outputFilename||’’))),
+      tb.append(el('tr',{class:'clickrow',onclick:()=>{if(proj)openProject(proj.id);}},
+        el('td',{class:'num'},String(i)),
+        td(el('div',{style:'font-size:12px'},el('div',{},proj?proj.name:(c.outputFilename||'—')),el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
         td(propChip(c.property)),
-        td(c.contractor||’—‘),
-        el(‘td’,{class:’num r’},usd(c.total)),
-        td(el(‘span’,{class:’chip ‘+(ST_CHIP[st]||’’)},ST_LABEL[st]||st)),
+        td(c.contractor||'—'),
+        el('td',{class:'num r'},usd(c.total)),
+        td(el('span',{class:'chip '+(ST_CHIP[st]||'')},ST_LABEL[st]||st)),
         td(fmtDate(c.effectiveDate)),
         td(fmtDate(c.termEnd))));
     });
     planned.forEach(pr=>{
       i++;
-      tb.append(el(‘tr’,{class:’clickrow’,onclick:()=>openProject(pr.id)},
-        el(‘td’,{class:’num’},String(i)),
-        td(el(‘div’,{style:’font-size:12px’},el(‘div’,{},pr.name),el(‘div’,{style:’color:var(--ink-3);font-size:11px’},pr.contractor||’—‘))),
+      tb.append(el('tr',{class:'clickrow',onclick:()=>openProject(pr.id)},
+        el('td',{class:'num'},String(i)),
+        td(el('div',{style:'font-size:12px'},el('div',{},pr.name),el('div',{style:'color:var(--ink-3);font-size:11px'},pr.contractor||'—'))),
         td(propChip(pr.property)),
-        td(pr.contractor||’—‘),
-        el(‘td’,{class:’num r’},usd(pr.anticipatedCost)),
-        td(el(‘span’,{class:’chip hold’},’Planned — no contract’)),
-        td(‘—‘),td(‘—‘)));
+        td(pr.contractor||'—'),
+        el('td',{class:'num r'},usd(pr.anticipatedCost)),
+        td(el('span',{class:'chip hold'},'Planned — no contract')),
+        td('—'),td('—')));
     });
     t.append(tb);
-    panel.append(el(‘div’,{style:’overflow:auto’},t));
-    if(!showPlanned&&total) panel.append(el(‘div’,{style:’padding:8px 16px;font-size:12.5px;font-weight:600;border-top:1px solid var(--line)’},`Filtered total: ${usd(total)}`));
+    panel.append(el('div',{style:'overflow:auto'},t));
+    if(!showPlanned&&total) panel.append(el('div',{style:'padding:8px 16px;font-size:12.5px;font-weight:600;border-top:1px solid var(--line)'},`Filtered total: ${usd(total)}`));
   }
   body.append(panel);
   return {bar,body};

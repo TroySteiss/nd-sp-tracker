@@ -55,7 +55,7 @@ let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
 let DASH={region:'',props:[],cat:'',hidePlanned:false,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
-let GLFILT={cat:'',match:'',hideSmall:true};  // GL ledger filters
+let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
 const PCOLOR={
   /* Minot — shades of blue */
   CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
@@ -69,7 +69,7 @@ const pcolor=code=>PCOLOR[code]||'#7a8190';
 async function boot(){ await refreshState(); render(); }
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
-function cleanBids(p){ return (p.bids||[]).map(b=>({id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:b.fileKey||null,fileName:b.fileName||null,fileSize:b.fileSize||null})); }
+function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
 async function saveProjectSilent(p){ const payload={...p,bids:cleanBids(p)}; if(S.projects.find(x=>x.id===p.id)) await API.send('PATCH','/projects/'+p.id,payload); else await API.send('POST','/projects',payload); }
 async function saveProject(p,msg,isNew){
   const payload={...p,bids:cleanBids(p)};
@@ -1015,6 +1015,9 @@ function openProject(id,preset){
   if(isNew&&preset)Object.assign(p,preset);
   p.steps=p.steps||{}; p.bids=p.bids||[]; p.progressNotes=p.progressNotes||[];
   while(p.bids.length<3) p.bids.push({id:uid('b'),contractor:'',amount:null,approved:false,file:null});
+  // Each bid holds an ordered list of files (first = scope/totals, rest = supporting docs).
+  // Normalize legacy single-file bids into the array form.
+  p.bids.forEach(bd=>{ if(!Array.isArray(bd.files)) bd.files = bd.fileKey?[{fileKey:bd.fileKey,fileName:bd.fileName,fileSize:bd.fileSize}]:[]; });
   const fileSize=n=>n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB';
   const reg=()=>PROP(p.property)?PROP(p.property).region:'';
 
@@ -1164,9 +1167,13 @@ function openProject(id,preset){
   const bidMeta=el('span',{class:'bs-meta'},'');
   const summary=el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Bids'), el('div',{class:'sp'}), bidMeta);
   const bidBody=el('div',{class:'pad'});
-  bidBody.append(el('p',{class:'bs-hint'},'Three standard slots — attach each contractor’s bid document, then approve the winner. Approving fills in the contractor and anticipated cost and advances the workflow to “Bid Approved”.'));
+  bidBody.append(el('p',{class:'bs-hint'},'Three standard slots — attach each contractor’s bid document, then approve the winner. Use ＋ Add file to attach supporting documents to a bid; the first file holds the scope & contract totals and they embed into the contract in the order shown. Approving fills in the contractor and anticipated cost and advances the workflow to “Bid Approved”.'));
   const slotsWrap=el('div',{});
   bidBody.append(slotsWrap);
+  // Keep the legacy single-file fields pointed at the first file (back-compat for hasFile checks + contract).
+  function syncBidPrimary(bd){ const f0=bd.files[0]||{}; bd.fileKey=f0.fileKey||null; bd.fileName=f0.fileName||null; bd.fileSize=f0.fileSize||null; }
+  // Label by position: first line is the scope/totals doc, the rest are supporting documents.
+  function bidFileLabel(bd,idx){ return bd.files.length<=1?'Bid document':(idx===0?'Applicable Scope & Contract Totals':'Supporting document'); }
   async function attachBid(bd,file){
     const slot=p.bids.indexOf(bd);
     const fd=new FormData(); fd.append('file',file);
@@ -1175,7 +1182,8 @@ function openProject(id,preset){
       const r=await fetch(`/api/projects/${p.id}/bids/${slot}/file`,{method:'POST',body:fd});
       if(!r.ok)throw new Error(await r.text());
       const meta=await r.json();
-      bd.fileKey=meta.fileKey; bd.fileName=meta.fileName; bd.fileSize=meta.fileSize; bd.file=null;
+      bd.files.push({fileKey:meta.fileKey,fileName:meta.fileName,fileSize:meta.fileSize}); bd.file=null;
+      syncBidPrimary(bd);
       drawBids();
     }catch(e){ toast('Upload failed: '+e.message); }
   }
@@ -1196,20 +1204,34 @@ function openProject(id,preset){
     slot.append(el('div',{class:'bs-row'},
       ctrInpRaw(bd.contractor||'','Contractor / vendor',e=>{bd.contractor=e.target.value;refreshMeta();},'contractor-dl-bid'+i),
       el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;refreshMeta();}})));
-    const fileRow=el('div',{class:'bs-file'});
-    if(bd.fileKey){
-      fileRow.append(el('span',{class:'bs-doc'},'📄'),
-        el('a',{href:'/api/bids/file/'+bd.fileKey,target:'_blank',title:'View stored bid'},bd.fileName||'bid'),
-        el('span',{class:'bs-sz'},bd.fileSize?fileSize(bd.fileSize):''),
-        el('div',{style:'flex:1'}),
-        el('button',{class:'btn ghost sm',onclick:()=>{bd.fileKey=null;bd.fileName=null;bd.fileSize=null;drawBids();}},'✕ Remove'));
+    const filesWrap=el('div',{});
+    if(bd.files.length){
+      const multi=bd.files.length>1;
+      bd.files.forEach((fl,fi)=>{
+        const row=el('div',{class:'bs-file'});
+        row.append(el('span',{class:'bs-doc'},'📄'),
+          el('div',{style:'display:flex;flex-direction:column;min-width:0;flex:1'},
+            multi?el('span',{style:'font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600'},bidFileLabel(bd,fi)):null,
+            el('div',{style:'display:flex;gap:6px;align-items:center;min-width:0'},
+              el('a',{href:'/api/bids/file/'+fl.fileKey,target:'_blank',title:'View stored file'},fl.fileName||'bid'),
+              el('span',{class:'bs-sz'},fl.fileSize?fileSize(fl.fileSize):''))),
+          el('button',{class:'btn ghost sm',title:'Remove this file',onclick:()=>{bd.files.splice(fi,1);syncBidPrimary(bd);drawBids();}},'✕'));
+        filesWrap.append(row);
+      });
+      // + add another file line
+      const addRow=el('div',{class:'bs-file',style:'margin-top:2px'});
+      const addInp=addDrop(addRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f));
+      addRow.append(el('button',{class:'btn sm ghost',onclick:()=>addInp.click(),title:'Attach another file — embeds into the contract in this order'},'＋ Add file'));
+      filesWrap.append(addRow);
     } else {
+      const fileRow=el('div',{class:'bs-file'});
       fileRow.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:4px 8px;transition:background .15s;';
       const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
       const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f));
       fileRow.append(lbl);
+      filesWrap.append(fileRow);
     }
-    slot.append(fileRow);
+    slot.append(filesWrap);
     return slot;
   }
   function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
@@ -1654,14 +1676,20 @@ function viewProperty(){
   }
 
   const fy=(asOf||today()).slice(0,4);
+  // YYYY Budget Proj = Total Budgeted − Spent to date − Outstanding Commitments + Interest Projection (if any)
+  //                  = Remaining budget − Projected outstanding spend net interest
+  const yyyyBudgetProj = budget - spent - projRemainingSpendInt;
+  const ybpTone = yyyyBudgetProj<0?'bad':(budget&&yyyyBudgetProj<budget*0.15?'warn':'good');
+  const intProj = avgInt*monthsLeft;
   const projEndSub=[inclReturns?`− ${fmt(currentQtrDist,false)} Q${currentQtr} distrib`:null, inclAccretion&&futureAccretion?`+ ${fmt(futureAccretion,false)} accretion`:null].filter(Boolean).join(' · ')||'after committed';
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
-      hstat('Proj Remaining Spend w Interest', fmt(projRemainingSpendInt), 'none', `net ${fmt(avgInt*monthsLeft,false)} interest income`, openInterest),
-      hstat('Annual accretion', fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-effectiveSentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
+      hstat(`Proj addt Expenses ${fy}`, fmt(projRemainingSpendInt), 'none', intProj?`net ${fmt(intProj,false)} interest income`:'committed, not yet paid', openInterest),
+      hstat(`${fy} Budget Proj`, fmt(yyyyBudgetProj), ybpTone, `${fmt(remaining,false)} budget less proj spend`),
+      hstat(`${fy} Remaining Accretion`, fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-effectiveSentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
       hstat(`Proj ${fy} end Cash`, fmt(projEndCash), projEndTone, projEndSub, openReturns),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units (proj end cash)`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
@@ -1797,6 +1825,8 @@ function viewProperty(){
   if(GLFILT.match==='linked') glView=glView.filter(g=>!!g.linkedProjectId);
   if(GLFILT.match==='unlinked') glView=glView.filter(g=>!g.linkedProjectId&&!isInterestGL(g));
   if(GLFILT.match==='interest') glView=glView.filter(g=>isInterestGL(g));
+  // Sweep/interest income is never budgeted SP spend — hidden by default unless explicitly viewed
+  if(GLFILT.hideInterest && GLFILT.match!=='interest') glView=glView.filter(g=>!isInterestGL(g));
   glView.sort((a,b)=>Math.abs(Number(b.amount)||0)-Math.abs(Number(a.amount)||0)||(String(a.category||'').localeCompare(String(b.category||''))));
   const gp=el('div',{class:'panel',style:'overflow:auto'});
   const glCatSel=el('select',{class:'mini-sel',onchange:e=>{GLFILT.cat=e.target.value;render();}},
@@ -1808,12 +1838,14 @@ function viewProperty(){
     el('option',{value:'linked',...(GLFILT.match==='linked'?{selected:true}:{})},'Linked'),
     el('option',{value:'interest',...(GLFILT.match==='interest'?{selected:true}:{})},'Interest income'));
   const glHideChk=el('input',{type:'checkbox',...(GLFILT.hideSmall?{checked:true}:{}),onchange:e=>{GLFILT.hideSmall=e.target.checked;render();}});
+  const glHideIntChk=el('input',{type:'checkbox',...(GLFILT.hideInterest?{checked:true}:{}),...(GLFILT.match==='interest'?{disabled:true}:{}),onchange:e=>{GLFILT.hideInterest=e.target.checked;render();}});
   gp.append(el('div',{class:'ph'}, el('h3',{},'General ledger — SP spend'), el('div',{class:'sp'}),
     el('span',{class:'chip'},`${glView.length}${glView.length!==gls.length?' of '+gls.length:''} lines`),
     el('span',{class:'chip'},fmt(glSpent))));
   gp.append(el('div',{style:'display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap'},
     glCatSel, glMatchSel,
-    el('label',{style:'display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer'}, glHideChk, 'Hide under $1,000')));
+    el('label',{style:'display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer'}, glHideChk, 'Hide under $1,000'),
+    el('label',{style:`display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer${GLFILT.match==='interest'?';opacity:.5':''}`,title:'Sweep/interest income is never budgeted SP spend'}, glHideIntChk, 'Hide interest income')));
   if(glView.length){
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},tr(th('Amount','r'),th('Category'),th('Date'),th('Vendor / description'),th('Match'))));

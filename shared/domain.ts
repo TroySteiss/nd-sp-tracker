@@ -17,7 +17,10 @@ export interface Bid {
   fileKey?: string | null;
   fileName?: string | null;
   fileSize?: number | null;
+  // Ordered list of attached files: first = scope/contract totals, rest = supporting docs.
+  files?: BidFile[];
 }
+export interface BidFile { fileKey?: string | null; fileName?: string | null; fileSize?: number | null; }
 export interface ProgressNote { id: string; date: string; note: string; }
 export interface Steps { [key: string]: boolean; }
 

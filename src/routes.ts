@@ -68,9 +68,11 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
   await client.query('delete from bids where project_id=$1', [p.id]);
   let slot = 0;
   for (const b of p.bids || []) {
+    const files = Array.isArray(b.files) && b.files.length ? b.files : (b.fileKey ? [{ fileKey: b.fileKey, fileName: b.fileName, fileSize: b.fileSize }] : []);
+    const f0 = files[0] || {};
     await client.query(
-      `insert into bids(id,project_id,slot,contractor,amount,approved,file_key,file_name,file_size) values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-      [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!b.approved, b.fileKey || null, b.fileName || null, b.fileSize || null]
+      `insert into bids(id,project_id,slot,contractor,amount,approved,file_key,file_name,file_size,files) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+      [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!b.approved, f0.fileKey || null, f0.fileName || null, f0.fileSize || null, JSON.stringify(files)]
     );
     slot++;
   }
@@ -149,12 +151,17 @@ api.post('/projects/:id/contract', async (req, res) => {
   if (!vars.ownerEntity || !vars.contractorName || !vars.contractTotal) return res.status(400).json({ error: 'ownerEntity, contractorName and contractTotal are required' });
 
   // Gather bid attachments for this project (approved first), reading files from storage.
+  // Each bid may carry multiple files in upload order: first = scope/contract totals, rest = supporting docs.
   const bidsRows = (await query('select * from bids where project_id=$1 order by approved desc, slot asc', [proj.id])).rows;
   const attachments: BidAttachment[] = [];
   for (const bd of bidsRows) {
-    if (!bd.file_key) continue;
-    const fr = await readFile(bd.file_key);
-    if (fr) attachments.push({ buffer: fr.bytes, name: bd.file_name || bd.file_key });
+    const files = Array.isArray(bd.files) && bd.files.length ? bd.files : (bd.file_key ? [{ fileKey: bd.file_key, fileName: bd.file_name }] : []);
+    for (let i = 0; i < files.length; i++) {
+      const f = files[i];
+      if (!f || !f.fileKey) continue;
+      const fr = await readFile(f.fileKey);
+      if (fr) attachments.push({ buffer: fr.bytes, name: f.fileName || f.fileKey, label: files.length > 1 ? (i === 0 ? 'Applicable Scope & Contract Totals' : 'Supporting document') : undefined });
+    }
   }
 
   let pdf: Uint8Array;

@@ -19,7 +19,7 @@ export interface ContractVars {
   contractorAddr: string;
   contractTotal: string;    // e.g. "$30,700.00"
 }
-export interface BidAttachment { buffer: Buffer; name: string; }
+export interface BidAttachment { buffer: Buffer; name: string; label?: string; }
 
 const PAGE_W = 612, PAGE_H = 792;       // US Letter
 const MARGIN = 72;                       // 1"
@@ -225,9 +225,11 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
   center(`CONTRACT TOTAL: ${vars.contractTotal}`, yy, 12, bold); yy -= 16;
 
   // Gather bid pages/images in order (PDF pages embedded so we can scale + rotate upright).
+  // The first page produced by each attachment carries that attachment's label as a caption.
   const items: any[] = [];
   for (const att of expandAttachments(attachments)) {
     const kind = detectKind(att.buffer);
+    const before = items.length;
     try {
       if (kind === 'pdf') {
         const src = await PDFDocument.load(att.buffer, { ignoreEncryption: true });
@@ -237,15 +239,26 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
       } else if (kind === 'jpg') { items.push({ type: 'img', img: await doc.embedJpg(att.buffer) }); }
       else if (kind === 'png') { items.push({ type: 'img', img: await doc.embedPng(att.buffer) }); }
     } catch { /* skip unreadable attachment */ }
+    if (att.label && items.length > before) items[before].label = att.label;
   }
   if (!items.length) { center('[ Bid document attached separately ]', yy - 14, 10, roman); return; }
 
+  // Draw an optional caption above an item; returns the new top (shifted down past the caption).
+  const caption = (pg: PDFPage, label: string | undefined, top: number) => {
+    if (!label) return top;
+    const w = bold.widthOfTextAtSize(label, 9);
+    pg.drawText(label, { x: (PAGE_W - w) / 2, y: top - 10, size: 9, font: bold, color: rgb(0, 0, 0) });
+    return top - 16;
+  };
+
   // First bid page sits on the header page, directly under CONTRACT TOTAL.
-  placeItem(header, items[0], MARGIN, yy - 6, CONTENT_W, (yy - 6) - BOTTOM);
+  let top0 = caption(header, items[0].label, yy - 6);
+  placeItem(header, items[0], MARGIN, top0, CONTENT_W, top0 - BOTTOM);
   // Any further pages each get their own full page.
   for (let i = 1; i < items.length; i++) {
     const pg = doc.addPage([PAGE_W, PAGE_H]);
-    placeItem(pg, items[i], MARGIN, PAGE_H - MARGIN, CONTENT_W, PAGE_H - 2 * MARGIN);
+    const top = caption(pg, items[i].label, PAGE_H - MARGIN);
+    placeItem(pg, items[i], MARGIN, top, CONTENT_W, top - BOTTOM);
   }
 }
 

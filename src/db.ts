@@ -115,7 +115,8 @@ export async function assembleState(): Promise<AppState> {
   const bidsByProject = new Map<string, Bid[]>();
   for (const b of bids.rows) {
     const arr = bidsByProject.get(b.project_id) || [];
-    arr.push({ id: b.id, contractor: b.contractor ?? '', amount: b.amount, approved: !!b.approved, fileKey: b.file_key, fileName: b.file_name, fileSize: b.file_size });
+    const files = Array.isArray(b.files) && b.files.length ? b.files : (b.file_key ? [{ fileKey: b.file_key, fileName: b.file_name, fileSize: b.file_size }] : []);
+    arr.push({ id: b.id, contractor: b.contractor ?? '', amount: b.amount, approved: !!b.approved, fileKey: b.file_key, fileName: b.file_name, fileSize: b.file_size, files });
     bidsByProject.set(b.project_id, arr);
   }
   const notesByProject = new Map<string, ProgressNote[]>();

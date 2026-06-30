@@ -54,7 +54,8 @@ let VIEW={tab:'dashboard',prop:null};
 let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
 let DASH={region:'',props:[],cat:'',hidePlanned:false,discSort:'cost',discProp:''};  // dashboard controls
-let CFILT={prop:'',q:'',sort:'date_desc'};  // contracts view filters + sort
+let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
+let GLFILT={cat:'',match:'',hideSmall:true};  // GL ledger filters
 const PCOLOR={
   /* Minot — shades of blue */
   CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
@@ -333,79 +334,154 @@ function topbar(crumb,title,...actions){
    CONTRACTS
 ========================================================= */
 function viewContracts(){
-  const usd=n=>(n==null||n==='')?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
-  let list=(S.contracts||[]).slice();
+  const usd=n=>(n==null||n===’’)?’—‘:’$’+Number(n).toLocaleString(‘en-US’,{minimumFractionDigits:2,maximumFractionDigits:2});
+
+  // Build project lookup
+  const projById=new Map(S.projects.map(p=>[p.id,p]));
+
+  // Deduplicate S.contracts by projectId — keep the most recent per project
+  const latestByProj=new Map();
+  (S.contracts||[]).forEach(c=>{
+    const ex=latestByProj.get(c.projectId);
+    if(!ex||String(c.createdAt||’’)>String(ex.createdAt||’’)) latestByProj.set(c.projectId,c);
+  });
+  const allDeduped=[...latestByProj.values()];
+
+  // Status of a contract record
+  const statusOf=c=>{
+    const pr=projById.get(c.projectId);
+    if(pr&&pr.executedContractFileKey) return ‘executed’;
+    if(pr&&pr.steps&&(pr.steps.signed||pr.steps.contractSaved)) return ‘countersigned’;
+    return ‘generated’;
+  };
+  const ST_LABEL={executed:’Executed’,countersigned:’Signed — awaiting file’,generated:’Generated — awaiting countersign’};
+  const ST_CHIP={executed:’done’,countersigned:’good’,generated:’hold’};
+
+  // Planned: approved projects with no generated contract
+  const projectsWithContract=new Set(latestByProj.keys());
+  const allPlanned=S.projects.filter(p=>isApproved(p)&&!p.noContract&&!p.noContractSet&&!isComplete(p)&&!p.onHold&&!projectsWithContract.has(p.id));
+
+  // Apply property + search filters to deduped list
+  let list=allDeduped.slice();
   if(CFILT.prop) list=list.filter(c=>c.property===CFILT.prop);
-  if(CFILT.q){ const q=CFILT.q.toLowerCase(); list=list.filter(c=>[c.outputFilename,c.contractor,c.ownerEntity,c.scope].some(x=>String(x||'').toLowerCase().includes(q))); }
+  if(CFILT.q){const q=CFILT.q.toLowerCase();list=list.filter(c=>[c.outputFilename,c.contractor,c.ownerEntity,c.scope].some(x=>String(x||’’).toLowerCase().includes(q)));}
+
+  // Planned list with same property filter
+  let planned=allPlanned.slice();
+  if(CFILT.prop) planned=planned.filter(p=>p.property===CFILT.prop);
+
+  // Status filter
+  const showPlanned=CFILT.status===’planned’;
+  if(CFILT.status&&!showPlanned) list=list.filter(c=>statusOf(c)===CFILT.status);
+  if(showPlanned){list=[];} else {planned=[];}
+
+  // Sort contracts list
   const sorters={
-    date_desc:(a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||''))||String(b.outputFilename||'').localeCompare(String(a.outputFilename||'')),
-    date_asc:(a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||''))||String(a.outputFilename||'').localeCompare(String(b.outputFilename||'')),
+    date_desc:(a,b)=>String(b.createdAt||’’).localeCompare(String(a.createdAt||’’)),
+    date_asc:(a,b)=>String(a.createdAt||’’).localeCompare(String(b.createdAt||’’)),
     total_desc:(a,b)=>(Number(b.total)||0)-(Number(a.total)||0),
-    contractor:(a,b)=>String(a.contractor||'').localeCompare(String(b.contractor||'')),
-    property:(a,b)=>String(a.property).localeCompare(String(b.property))||String(b.effectiveDate||'').localeCompare(String(a.effectiveDate||'')),
+    contractor:(a,b)=>String(a.contractor||’’).localeCompare(String(b.contractor||’’)),
+    property:(a,b)=>String(a.property).localeCompare(String(b.property)),
   };
   list.sort(sorters[CFILT.sort]||sorters.date_desc);
   const total=list.reduce((a,c)=>a+(Number(c.total)||0),0);
 
-  const searchInp=el('input',{type:'search',placeholder:'Search contractor, scope, file…',value:CFILT.q||'',style:'min-width:200px',onchange:e=>{CFILT.q=e.target.value;render();}});
-  const propSel=el('select',{onchange:e=>{CFILT.prop=e.target.value;render();}},
-    el('option',{value:''},'All properties'),
-    ...S.properties.map(p=>el('option',{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
-  const sortSel=el('select',{onchange:e=>{CFILT.sort=e.target.value;render();}},
-    ...[['date_desc','Newest first'],['date_asc','Oldest first'],['total_desc','Total (high→low)'],['contractor','Contractor (A–Z)'],['property','Property']]
-      .map(([v,l])=>el('option',{value:v,...(CFILT.sort===v?{selected:true}:{})},l)));
-  const bar=topbar('Pipeline','Contracts', searchInp, propSel, sortSel);
+  // Controls
+  const searchInp=el(‘input’,{type:’search’,placeholder:’Search contractor, scope, file…’,value:CFILT.q||’’,style:’min-width:200px’,onchange:e=>{CFILT.q=e.target.value;render();}});
+  const propSel=el(‘select’,{onchange:e=>{CFILT.prop=e.target.value;render();}},
+    el(‘option’,{value:’’},’All properties’),
+    ...S.properties.map(p=>el(‘option’,{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
+  const statusSel=el(‘select’,{onchange:e=>{CFILT.status=e.target.value;render();}},
+    el(‘option’,{value:’’,...(CFILT.status===’’?{selected:true}:{})},’All statuses’),
+    el(‘option’,{value:’executed’,...(CFILT.status===’executed’?{selected:true}:{})},’Executed’),
+    el(‘option’,{value:’countersigned’,...(CFILT.status===’countersigned’?{selected:true}:{})},’Signed — awaiting file’),
+    el(‘option’,{value:’generated’,...(CFILT.status===’generated’?{selected:true}:{})},’Generated — awaiting countersign’),
+    el(‘option’,{value:’planned’,...(CFILT.status===’planned’?{selected:true}:{})},’Planned — no contract yet’));
+  const sortSel=el(‘select’,{onchange:e=>{CFILT.sort=e.target.value;render();}},
+    ...[[‘date_desc’,’Newest first’],[‘date_asc’,’Oldest first’],[‘total_desc’,’Total (high→low)’],[‘contractor’,’Contractor (A–Z)’],[‘property’,’Property’]]
+      .map(([v,l])=>el(‘option’,{value:v,...(CFILT.sort===v?{selected:true}:{})},l)));
+  const bar=topbar(‘Pipeline’,’Contracts’, searchInp, propSel, statusSel, sortSel);
 
-  const body=el('div',{class:'grid'});
+  const body=el(‘div’,{class:’grid’});
 
-  // KPIs
-  const kpiBox=(lab,val)=>el('div',{class:'kpi'}, el('div',{class:'lab'},lab), el('div',{class:'val'},val));
-  const kpis=el('div',{class:'grid kpis',style:'grid-template-columns:repeat(3,1fr)'});
-  kpis.append(kpiBox('Contracts',String(list.length)), kpiBox('Total value',usd(total)), kpiBox('Properties',String(new Set(list.map(c=>c.property)).size)));
+  // KPIs — count from deduplicated list, not raw S.contracts
+  const exeCt=allDeduped.filter(c=>statusOf(c)===’executed’).length;
+  const genCt=allDeduped.filter(c=>statusOf(c)===’generated’).length;
+  const kpiBox=(lab,val,sub)=>{const d=el(‘div’,{class:’kpi’},el(‘div’,{class:’lab’},lab),el(‘div’,{class:’val’},val));if(sub)d.append(el(‘div’,{style:’font-size:11px;color:var(--ink-3);margin-top:2px’},sub));return d;};
+  const kpis=el(‘div’,{class:’grid kpis’,style:’grid-template-columns:repeat(4,1fr)’});
+  kpis.append(
+    kpiBox(‘Active contracts’,String(allDeduped.length),`${exeCt} executed · ${genCt} generated`),
+    kpiBox(‘Total value’,usd(allDeduped.reduce((a,c)=>a+(Number(c.total)||0),0))),
+    kpiBox(‘Properties’,String(new Set(allDeduped.map(c=>c.property)).size)),
+    kpiBox(‘Awaiting contract’,String(allPlanned.length),’approved, no contract yet’));
   body.append(kpis);
 
-  // By-property breakdown
+  // By-property breakdown — deduplicated
   const byProp={};
-  (S.contracts||[]).forEach(c=>{const k=c.property;(byProp[k]=byProp[k]||{n:0,t:0});byProp[k].n++;byProp[k].t+=Number(c.total)||0;});
-  const bpPanel=el('div',{class:'panel'});
-  bpPanel.append(el('div',{class:'ph'}, el('h3',{},'Contracts by property')));
-  const bpt=el('table',{class:'tbl'});
-  bpt.append(el('thead',{},tr(th('Property'),th('# Contracts','r'),th('Total value','r'))));
-  const bptb=el('tbody');
+  allDeduped.forEach(c=>{
+    const k=c.property,st=statusOf(c);
+    if(!byProp[k]) byProp[k]={exe:0,gen:0,plan:0,t:0};
+    byProp[k].t+=Number(c.total)||0;
+    if(st===’executed’) byProp[k].exe++; else byProp[k].gen++;
+  });
+  allPlanned.forEach(p=>{const k=p.property;if(!byProp[k])byProp[k]={exe:0,gen:0,plan:0,t:0};byProp[k].plan++;});
+  const bpPanel=el(‘div’,{class:’panel’});
+  bpPanel.append(el(‘div’,{class:’ph’}, el(‘h3’,{},’Contracts by property’)));
+  const bpt=el(‘table’,{class:’tbl’});
+  bpt.append(el(‘thead’,{},tr(th(‘Property’),th(‘Executed’,’r’),th(‘Generated’,’r’),th(‘Planned’,’r’),th(‘Total value’,’r’))));
+  const bptb=el(‘tbody’);
   Object.keys(byProp).sort((a,b)=>byProp[b].t-byProp[a].t).forEach(code=>{
-    bptb.append(el('tr',{class:'clickrow',onclick:()=>{CFILT.prop=code;render();}},
-      td(el('span',{},propChip(code),' ',PROP(code)?PROP(code).name:code)),
-      el('td',{class:'num r'},String(byProp[code].n)),
-      el('td',{class:'num r'},usd(byProp[code].t))));
+    const d=byProp[code];
+    bptb.append(el(‘tr’,{class:’clickrow’,onclick:()=>{CFILT.prop=CFILT.prop===code?’’:code;render();}},
+      td(el(‘span’,{},propChip(code),’ ‘,PROP(code)?PROP(code).name:code)),
+      el(‘td’,{class:’num r’},d.exe||’—‘),
+      el(‘td’,{class:’num r’},d.gen||’—‘),
+      el(‘td’,{class:’num r’},d.plan||’—‘),
+      el(‘td’,{class:’num r’},usd(d.t))));
   });
   bpt.append(bptb);
-  bpPanel.append(el('div',{style:'overflow:auto'},bpt));
+  bpPanel.append(el(‘div’,{style:’overflow:auto’},bpt));
   body.append(bpPanel);
 
   // Main contracts table
-  const panel=el('div',{class:'panel'});
-  panel.append(el('div',{class:'ph'}, el('h3',{},'All contracts'), el('div',{class:'sp'}), el('span',{class:'chip'},`${list.length} shown`)));
-  if(!list.length){
-    panel.append(el('div',{class:'empty'}, el('div',{class:'big'},'No contracts yet'), 'Generate a contract from a project’s Bids panel, or they’ll appear here once added.'));
+  const panel=el(‘div’,{class:’panel’});
+  const totalShown=list.length+planned.length;
+  panel.append(el(‘div’,{class:’ph’}, el(‘h3’,{},’Contracts’), el(‘div’,{class:’sp’}), el(‘span’,{class:’chip’},`${totalShown} shown`)));
+  if(!totalShown){
+    panel.append(el(‘div’,{class:’empty’}, el(‘div’,{class:’big’},showPlanned?’No projects awaiting a contract.’:’No contracts yet’), showPlanned?’All approved projects have contracts generated.’:’Generate a contract from a project\’s Bids panel.’));
   } else {
-    const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('#'),th('Contract'),th('Property'),th('Owner entity'),th('Contractor'),th('Total','r'),th('Generated'),th('Term end'),th('Scope'))));
-    const tb=el('tbody');
-    list.forEach((c,i)=>{
-      const fileCell = el('span',{style:'color:var(--ink-2)'}, c.outputFilename);
-      tb.append(tr(
-        el('td',{class:'num'},String(i+1)),
-        td(fileCell),
+    const t=el(‘table’,{class:’tbl’});
+    t.append(el(‘thead’,{},tr(th(‘#’),th(‘Project’),th(‘Property’),th(‘Contractor’),th(‘Total’,’r’),th(‘Status’),th(‘Eff. date’),th(‘Term end’))));
+    const tb=el(‘tbody’);
+    let i=0;
+    list.forEach(c=>{
+      i++;
+      const proj=projById.get(c.projectId);
+      const st=statusOf(c);
+      tb.append(el(‘tr’,{class:’clickrow’,onclick:()=>{if(proj)openProject(proj.id);}},
+        el(‘td’,{class:’num’},String(i)),
+        td(el(‘div’,{style:’font-size:12px’},el(‘div’,{},proj?proj.name:(c.outputFilename||’—‘)),el(‘div’,{style:’color:var(--ink-3);font-size:11px’},c.outputFilename||’’))),
         td(propChip(c.property)),
-        td(c.ownerEntity||'—'),
-        td(c.contractor||'—'),
-        el('td',{class:'num r'},usd(c.total)),
-        td(fmtDate(c.createdAt)),
-        td(fmtDate(c.termEnd)),
-        td(c.scope||'—')));
+        td(c.contractor||’—‘),
+        el(‘td’,{class:’num r’},usd(c.total)),
+        td(el(‘span’,{class:’chip ‘+(ST_CHIP[st]||’’)},ST_LABEL[st]||st)),
+        td(fmtDate(c.effectiveDate)),
+        td(fmtDate(c.termEnd))));
+    });
+    planned.forEach(pr=>{
+      i++;
+      tb.append(el(‘tr’,{class:’clickrow’,onclick:()=>openProject(pr.id)},
+        el(‘td’,{class:’num’},String(i)),
+        td(el(‘div’,{style:’font-size:12px’},el(‘div’,{},pr.name),el(‘div’,{style:’color:var(--ink-3);font-size:11px’},pr.contractor||’—‘))),
+        td(propChip(pr.property)),
+        td(pr.contractor||’—‘),
+        el(‘td’,{class:’num r’},usd(pr.anticipatedCost)),
+        td(el(‘span’,{class:’chip hold’},’Planned — no contract’)),
+        td(‘—‘),td(‘—‘)));
     });
     t.append(tb);
-    panel.append(el('div',{style:'overflow:auto'},t));
+    panel.append(el(‘div’,{style:’overflow:auto’},t));
+    if(!showPlanned&&total) panel.append(el(‘div’,{style:’padding:8px 16px;font-size:12.5px;font-weight:600;border-top:1px solid var(--line)’},`Filtered total: ${usd(total)}`));
   }
   body.append(panel);
   return {bar,body};
@@ -583,7 +659,7 @@ function viewDashboard(){
 
   /* Needs attention */
   const att=el('div',{class:'grid',style:'grid-template-columns:1fr 1fr'});
-  att.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed')),
+  att.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)),
              attentionPanel('Work done, not yet closed', active.filter(p=>p.steps.workCompleted&&!p.steps.completed)));
   body.append(att);
 
@@ -1714,20 +1790,42 @@ function viewProperty(){
 
   // GL
   const gls=S.gl.filter(g=>g.property===code);
+  const glCats=[...new Set(gls.map(g=>g.category).filter(Boolean))].sort();
+  let glView=gls.slice();
+  if(GLFILT.hideSmall) glView=glView.filter(g=>Math.abs(Number(g.amount)||0)>=1000);
+  if(GLFILT.cat) glView=glView.filter(g=>g.category===GLFILT.cat);
+  if(GLFILT.match==='linked') glView=glView.filter(g=>!!g.linkedProjectId);
+  if(GLFILT.match==='unlinked') glView=glView.filter(g=>!g.linkedProjectId&&!isInterestGL(g));
+  if(GLFILT.match==='interest') glView=glView.filter(g=>isInterestGL(g));
+  glView.sort((a,b)=>Math.abs(Number(b.amount)||0)-Math.abs(Number(a.amount)||0)||(String(a.category||'').localeCompare(String(b.category||''))));
   const gp=el('div',{class:'panel',style:'overflow:auto'});
-  gp.append(el('div',{class:'ph'}, el('h3',{},'General ledger — SP spend'), el('div',{class:'sp'}), el('span',{class:'chip'},`${gls.length} lines`), el('span',{class:'chip'},fmt(glSpent))));
-  if(gls.length){
+  const glCatSel=el('select',{class:'mini-sel',onchange:e=>{GLFILT.cat=e.target.value;render();}},
+    el('option',{value:''},'All categories'),
+    ...glCats.map(cat=>el('option',{value:cat,...(GLFILT.cat===cat?{selected:true}:{})},cat)));
+  const glMatchSel=el('select',{class:'mini-sel',onchange:e=>{GLFILT.match=e.target.value;render();}},
+    el('option',{value:'',...(GLFILT.match===''?{selected:true}:{})},'All lines'),
+    el('option',{value:'unlinked',...(GLFILT.match==='unlinked'?{selected:true}:{})},'Unlinked'),
+    el('option',{value:'linked',...(GLFILT.match==='linked'?{selected:true}:{})},'Linked'),
+    el('option',{value:'interest',...(GLFILT.match==='interest'?{selected:true}:{})},'Interest income'));
+  const glHideChk=el('input',{type:'checkbox',...(GLFILT.hideSmall?{checked:true}:{}),onchange:e=>{GLFILT.hideSmall=e.target.checked;render();}});
+  gp.append(el('div',{class:'ph'}, el('h3',{},'General ledger — SP spend'), el('div',{class:'sp'}),
+    el('span',{class:'chip'},`${glView.length}${glView.length!==gls.length?' of '+gls.length:''} lines`),
+    el('span',{class:'chip'},fmt(glSpent))));
+  gp.append(el('div',{style:'display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap'},
+    glCatSel, glMatchSel,
+    el('label',{style:'display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer'}, glHideChk, 'Hide under $1,000')));
+  if(glView.length){
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('Date'),th('Category'),th('Vendor / description'),th('Amount','r'),th('Match'))));
+    t.append(el('thead',{},tr(th('Amount','r'),th('Category'),th('Date'),th('Vendor / description'),th('Match'))));
     const tbb=el('tbody');
-    gls.sort((a,b)=>(b.date||'').localeCompare(a.date||''));
-    gls.forEach(g=>{
-      tbb.append(tr(td(el('span',{class:'mono',style:'font-size:12px'},g.date)),td(el('span',{style:'font-size:12px'},g.category)),
+    glView.forEach(g=>{
+      tbb.append(tr(tdn(g.amount,1),td(el('span',{style:'font-size:12px'},g.category)),
+        td(el('span',{class:'mono',style:'font-size:12px'},g.date)),
         td(el('div',{style:'font-size:12px;max-width:260px'}, el('div',{},g.vendor), g.remarks?el('div',{style:'color:var(--ink-3);font-size:11px'},g.remarks):null)),
-        tdn(g.amount,1), td(glLinkCell(g,code))));
+        td(glLinkCell(g,code))));
     });
     t.append(tbb); gp.append(t);
-  } else gp.append(el('div',{class:'empty'},'No ledger lines for this property. Upload a general ledger on the Data tab.'));
+  } else gp.append(el('div',{class:'empty'},gls.length?'No lines match the current filters.':'No ledger lines for this property. Upload a general ledger on the Data tab.'));
   right.append(gp);
 
   body.append(left,right);

@@ -53,7 +53,7 @@ let S=null;            // working state
 let VIEW={tab:'dashboard',prop:null};
 let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
-let DASH={region:'',props:[],cat:'',hidePlanned:false,discSort:'cost',discProp:''};  // dashboard controls
+let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
 let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
 const PCOLOR={
@@ -67,6 +67,28 @@ const pcolor=code=>PCOLOR[code]||'#7a8190';
 /* seedState removed — initial data is seeded server-side into Postgres */
 
 async function boot(){ await refreshState(); render(); }
+/* ---------- Theme (light / dark) ---------- */
+function applyTheme(t){ if(t==='dark') document.documentElement.setAttribute('data-theme','dark'); else document.documentElement.removeAttribute('data-theme'); }
+function isDark(){ return document.documentElement.getAttribute('data-theme')==='dark'; }
+function toggleTheme(){ const next=isDark()?'light':'dark'; try{localStorage.setItem('theme',next);}catch(e){} applyTheme(next); render(); }
+// Apply the saved (or system-preferred) theme immediately, before first paint.
+try{ applyTheme(localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme:dark)').matches?'dark':'light')); }catch(e){}
+/* Mobile: edge-swipe right to open the nav drawer, swipe left to close it. */
+(function initNavSwipe(){
+  let sx=0, sy=0, tracking=false;
+  addEventListener('touchstart', e=>{
+    if(e.touches.length!==1){tracking=false;return;}
+    const t=e.touches[0]; sx=t.clientX; sy=t.clientY; tracking=true;
+  }, {passive:true});
+  addEventListener('touchend', e=>{
+    if(!tracking) return; tracking=false;
+    if(!window.matchMedia('(max-width:820px)').matches) return;
+    const t=e.changedTouches[0], dx=t.clientX-sx, dy=t.clientY-sy;
+    if(Math.abs(dx)<50 || Math.abs(dy)>Math.abs(dx)*0.8) return;   // clear horizontal swipe only
+    if(dx>0 && sx<=44 && !VIEW.railOpen){ VIEW.railOpen=true; render(); }   // from left edge → open
+    else if(dx<0 && VIEW.railOpen){ VIEW.railOpen=false; render(); }        // swipe left → close
+  }, {passive:true});
+})();
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
 function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
@@ -276,6 +298,7 @@ function rail(){
   nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
 
   const foot=el('div',{class:'foot'},
+    el('button',{class:'theme-toggle',onclick:toggleTheme}, isDark()?'☀  Light mode':'🌙  Dark mode'),
     el('div',{class:'row'}, el('span',{},'GL period'), el('span',{class:'mono'},S.meta&&S.meta.glPeriod?S.meta.glPeriod:'—')),
     el('div',{class:'row',style:'margin-top:4px'}, el('span',{},'Cash as of'), el('span',{class:'mono'},S.meta&&S.meta.cashAsOf?S.meta.cashAsOf:'—')));
   r.append(brand,nav,foot);
@@ -494,13 +517,14 @@ function viewContracts(){
 ========================================================= */
 function viewDashboard(){
   const regions=['Minot','Williston'];
+  const isMobile=window.matchMedia('(max-width:820px)').matches;
   DASH.props=DASH.props||[];
   let props=S.properties.filter(p=>!DASH.region||p.region===DASH.region);
   if(DASH.props.length) props=props.filter(p=>DASH.props.includes(p.code));
   const codeset=new Set(props.map(p=>p.code));
   const inReg=code=>codeset.has(code);
-  const catOk=p=>!DASH.cat||p.category===DASH.cat;
-  const glOk=g=>inReg(g.property)&&(!DASH.cat||g.category===DASH.cat);
+  const catOk=p=>!DASH.cats.length||DASH.cats.includes(p.category);
+  const glOk=g=>inReg(g.property)&&(!DASH.cats.length||DASH.cats.includes(g.category));
 
   // dashboard controls: region toggle + hide-planned
   const regSeg=el('div',{class:'seg-ctl'},
@@ -509,8 +533,8 @@ function viewDashboard(){
   const hideChk=el('label',{class:'chk'},
     (()=>{const c=el('input',{type:'checkbox',onchange:e=>{DASH.hidePlanned=e.target.checked;render();}});if(DASH.hidePlanned)c.checked=true;return c;})(),
     'Hide \u2018Planned\u2019');
-  const bar=topbar('Portfolio','Dashboard', regSeg, hideChk,
-    el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project'));
+  const bar=topbar('Portfolio','Dashboard', regSeg,
+    el('div',{class:'tb-actions'}, hideChk, el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project')));
   const body=el('div',{class:'grid'});
 
   // property bubble toggles + category filter
@@ -523,11 +547,27 @@ function viewDashboard(){
   });
   if(DASH.props.length)pbWrap.append(el('button',{class:'bub clear',onclick:()=>{DASH.props=[];render();}},'clear'));
   const catsPresent=[...new Set(S.projects.filter(p=>inReg(p.property)).map(p=>p.category))].sort();
-  const catSel=el('select',{class:'mini-sel',onchange:e=>{DASH.cat=e.target.value;render();}});
-  catSel.append(el('option',{value:'',...(DASH.cat?{}:{selected:true})},'All categories'));
-  catsPresent.forEach(cd=>catSel.append(el('option',{value:cd,...(DASH.cat===cd?{selected:true}:{})},cd)));
-  body.append(el('div',{class:'dash-filter'}, pbWrap, el('div',{class:'bubbles'}, el('span',{class:'bub-lab'},'Category'), catSel,
-    DASH.cat?el('button',{class:'bub clear',onclick:()=>{DASH.cat='';render();}},'clear'):null)));
+  DASH.cats=DASH.cats.filter(c=>catsPresent.includes(c));   // drop selections no longer in range
+  const catToggle=c=>{const i=DASH.cats.indexOf(c);if(i<0)DASH.cats.push(c);else DASH.cats.splice(i,1);render();};
+  const catRow=el('div',{class:'bubbles'}, el('span',{class:'bub-lab'},'Category'));
+  const catDD=el('div',{class:'cat-dd'});
+  catDD.append(el('button',{class:'bub dd-btn'+(DASH.catOpen?' open':''),onclick:()=>{DASH.catOpen=!DASH.catOpen;render();}},
+    (DASH.cats.length?`${DASH.cats.length} selected`:'All categories'), el('span',{class:'chev'},'▾')));
+  if(DASH.catOpen){
+    const panel=el('div',{class:'cat-dd-panel'});
+    panel.append(el('button',{class:'bub all'+(DASH.cats.length?'':' on'),style:'margin-bottom:6px',onclick:()=>{DASH.cats=[];render();}}, DASH.cats.length?'Clear all':'All selected'));
+    catsPresent.forEach(cat=>{ const on=DASH.cats.includes(cat);
+      panel.append(el('label',{class:'cat-item'},
+        (()=>{const c=el('input',{type:'checkbox',onchange:()=>catToggle(cat)}); if(on)c.checked=true; return c;})(),
+        el('span',{},cat))); });
+    catDD.append(panel);
+  }
+  catRow.append(catDD);
+  if(DASH.cats.length) DASH.cats.slice().sort().forEach(cat=>catRow.append(el('button',{class:'bub on accent sm',title:'Remove',onclick:()=>catToggle(cat)},cat,' ✕')));
+  const filterBar=el('div',{class:'dash-filter'}, pbWrap, catRow);
+  // On mobile the filters live inside the sticky header so they stay locked at
+  // the top and drive every section below; on desktop they sit in the body.
+  if(isMobile){ bar.append(el('div',{class:'dash-filterbar'}, filterBar)); } else { body.append(filterBar); }
 
   const all=S.projects.filter(p=>inReg(p.property)&&catOk(p));
   const notesCount=all.filter(p=>phase(p)==='note').length;
@@ -547,7 +587,10 @@ function viewDashboard(){
     kpi('Cash today',fmt(totCash),'snapshot + adjustments'),
     kpi('Projected cash',fmt(totCash-totOutstanding),`less ${fmt(totOutstanding,false)} committed`),
   );
-  body.append(kpis);
+  body.append(isMobile ? mobileFold('Summary', DASH.region||'Portfolio', kpis) : kpis);
+
+  /* Awaiting approval — moved above the pipeline so the most actionable list is first. */
+  body.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)));
 
   /* Pipeline funnel — contractor lifecycle, stacked one colour per property (in-house excluded) */
   let hold=0; active.forEach(p=>{ if(p.onHold)hold++; });
@@ -555,15 +598,15 @@ function viewDashboard(){
   const stageProp=LIFECYCLE.map(()=>({})); const stageTotal=new Array(LIFECYCLE.length).fill(0);
   fActive.forEach(p=>{ if(p.onHold)return; const s=Math.max(0,stage(p)); stageProp[s][p.property]=(stageProp[s][p.property]||0)+1; stageTotal[s]++; });
   const maxT=Math.max(1,...stageTotal);
-  const funnel=el('div',{class:'panel'});
-  funnel.append(el('div',{class:'ph'}, el('h3',{},'Lifecycle pipeline'), el('div',{class:'sp'}),
+  const funnel=el('details',{class:'panel coll'}); funnel.open=!isMobile;
+  funnel.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Lifecycle pipeline'), el('div',{class:'sp'}),
     el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'segment = property · click to open'),
     el('span',{class:'chip'},`${hold} on hold`)));
   const legendProps=props.filter(pr=>fActive.some(p=>!p.onHold&&p.property===pr.code));
   const legend=el('div',{class:'plegend'});
   legendProps.forEach(pr=>legend.append(el('button',{class:'pl-item',title:`Open ${pr.code}`,onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
     el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}), pr.code)));
-  funnel.append(el('div',{class:'pad',style:'padding-bottom:6px'},legend));
+  funnel.append(el('div',{class:'pad pipe-legend',style:'padding-bottom:6px'},legend));
   const fwrap=el('div',{class:'pad',style:'padding-top:6px'});
   const fn=el('div',{class:'funnel'});
   LIFECYCLE.forEach((s,i)=>{
@@ -585,8 +628,8 @@ function viewDashboard(){
   fwrap.append(fn); funnel.append(fwrap); body.append(funnel);
 
   /* Portfolio summary tiles */
-  const tp=el('div',{class:'panel'});
-  tp.append(el('div',{class:'ph'}, el('h3',{},'Portfolio summary'), el('div',{class:'sp'}),
+  const tp=el('details',{class:'panel coll'}); tp.open=!isMobile;
+  tp.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Portfolio summary'), el('div',{class:'sp'}),
     el('span',{class:'chip'},`as of ${S.meta&&S.meta.cashAsOf||'—'}`)));
   const calcProjStats=pr=>{
     const code=pr.code, c=S.cash[code]||{}, cm=cashModel(code);
@@ -625,8 +668,8 @@ function viewDashboard(){
     regData.forEach(({pr,s})=>{
       const endTone=s.projEndCash<0?'bad':(s.projEndCash<s.cashToday*0.25?'warn':'good');
       const cpdTone=s.cpd==null?'none':(s.cpd>=3000?'good':(s.cpd>=2000?'warn':'bad'));
-      summaryWrap.append(el('div',{style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
-        el('div',{style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',
+      summaryWrap.append(el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
+        el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',
           onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
           el('div',{style:'display:flex;align-items:center;gap:6px'},
             el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}),
@@ -645,8 +688,8 @@ function viewDashboard(){
     const totCpd=tot.units?tot.projEnd/tot.units:null;
     const totEndTone=tot.projEnd<0?'bad':(tot.projEnd<tot.cash*0.25?'warn':'good');
     const totCpdTone=totCpd==null?'none':(totCpd>=3000?'good':(totCpd>=2000?'warn':'bad'));
-    summaryWrap.append(el('div',{style:'display:flex;align-items:stretch;border-bottom:2px solid var(--line);background:var(--surface-2)'},
-      el('div',{style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)'},
+    summaryWrap.append(el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:2px solid var(--line);background:var(--surface-2)'},
+      el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)'},
         el('span',{style:'font-size:11px;font-weight:600;color:var(--ink-3)'},'Subtotal')),
       el('div',{class:'headstats',style:'flex:1'},
         hstat('Spent to date', fmt(tot.spent), 'none', ''),
@@ -659,11 +702,8 @@ function viewDashboard(){
   tp.append(summaryWrap);
   body.append(tp);
 
-  /* Needs attention */
-  const att=el('div',{class:'grid',style:'grid-template-columns:1fr 1fr'});
-  att.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)),
-             attentionPanel('Work done, not yet closed', active.filter(p=>p.steps.workCompleted&&!p.steps.completed)));
-  body.append(att);
+  /* Needs attention (awaiting approval moved above the pipeline) */
+  body.append(attentionPanel('Work done, not yet closed', active.filter(p=>p.steps.workCompleted&&!p.steps.completed)));
 
   /* Unplanned large postings (audit) */
   const unp=unplannedAll().filter(g=>glOk(g));
@@ -743,13 +783,20 @@ function hstat(label,valueText,tone,sub,onClick){
     el('div',{class:'hs-val mono'},valueText),
     sub?el('div',{class:'hs-sub'},sub):null);
 }
+/* Wrap a section in a tap-to-expand fold (collapsed by default). Used on mobile
+   to keep the dashboard skimmable; callers pass it through only at phone widths. */
+function mobileFold(title, hint, contentEl){
+  const d=el('details',{class:'sec-fold'});
+  d.append(el('summary',{class:'sec-sum'}, el('span',{class:'chev'},'▸'), title, hint?el('span',{class:'sec-hint'},hint):null), contentEl);
+  return d;
+}
 /* Locked (sticky) property header: name + key SP-budget & cash-per-door metrics. */
 function propHead(p,actions,metrics){
   const t=el('div',{class:'topbar prop-head'});
   const menu=el('button',{class:'btn ghost sm menu-btn',onclick:()=>{VIEW.railOpen=!VIEW.railOpen;render();}},'☰');
   const r1=el('div',{class:'ph-row1'}, menu,
     el('div',{class:'tt'}, el('div',{class:'crumb'},`${p.region} · ${p.manager}`), el('h2',{}, el('span',{style:`display:inline-block;width:11px;height:11px;border-radius:3px;background:${pcolor(p.code)};margin-right:8px;vertical-align:middle`}), `${p.code} — ${p.name}`)),
-    el('div',{class:'sp'}), ...actions);
+    el('div',{class:'ph-actions'}, ...actions));
   const stats=el('div',{class:'headstats'}, ...metrics);
   // On phones the metric tiles dominate the screen, so tuck them behind a
   // tap-to-expand fold (collapsed by default). Desktop renders them inline as before.

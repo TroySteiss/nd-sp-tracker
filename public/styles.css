@@ -386,4 +386,83 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .sheet-editor.ih-mode .ed-side{display:none}
 @media(max-width:860px){ .editor-grid{grid-template-columns:1fr} }
 
+/* ---- collapsible reference panels (property view: cash / loan) ----
+   Open on desktop, collapsed by default on phones. The chevron and the
+   toggle interaction only appear at phone widths so desktop is unchanged. */
+details.coll{overflow:hidden}
+details.coll>summary.coll-sum{list-style:none;cursor:pointer;user-select:none}
+details.coll>summary.coll-sum::-webkit-details-marker{display:none}
+details.coll>summary .chev{display:none;transition:transform .15s;color:var(--ink-3);font-size:11px;flex:none}
+details.coll[open]>summary .chev{transform:rotate(90deg)}
+@media(min-width:821px){ details.coll>summary.coll-sum{cursor:default;pointer-events:none} }
+@media(max-width:820px){
+  details.coll>summary .chev{display:inline-block}
+  details.coll:not([open])>summary.ph{border-bottom:0}
+}
+
+/* ============================================================
+   Mobile / small-screen adaptations
+   The shell already collapses the rail to an off-canvas drawer at
+   820px; this block fixes the topbar overlap, wide tables, fixed
+   pixel grids, modals, and iOS tap-zoom for a usable phone view.
+   ============================================================ */
+@media(max-width:820px){
+  /* Prevent iOS Safari from auto-zooming when a field is focused (<16px triggers it). */
+  input,select,textarea{font-size:16px}
+
+  /* Drop the shell grid to a block so a wide child (table, funnel) can't
+     stretch the 1fr track past the viewport (grid blowout → page-wide scroll). */
+  .app{display:block}
+  .main{max-width:100%}
+
+  /* Layout grids (incl. inline-styled 2-col ones) stack to a single column on
+     phones. minmax(0,1fr) lets the track shrink below its content's max-content,
+     which is what otherwise blows the page wide. KPI tiles keep their own rules. */
+  .content .grid:not(.kpis){grid-template-columns:minmax(0,1fr)!important}
+
+  /* --- nav drawer: wider target + dim backdrop --- */
+  .rail{width:min(84vw,280px);left:calc(-1 * min(84vw,280px) - 4px)}
+  .scrim-nav{position:fixed;inset:0;background:rgba(20,24,32,.45);z-index:55;animation:fade .15s}
+
+  /* --- topbar: let title + actions wrap onto separate rows instead of overlapping --- */
+  .topbar{flex-wrap:wrap;gap:8px 10px;padding:10px 14px 11px}
+  .topbar .sp{display:none}
+  .topbar .tt{flex:1 1 auto;min-width:0}
+  .topbar h2{font-size:16px}
+  .topbar .crumb{font-size:11px}
+  .topbar select,.topbar input{flex:1 1 130px;min-width:0}
+  .topbar .seg-ctl{flex:0 0 auto}
+
+  /* --- KPI cards a touch tighter. !important overrides the inline
+     repeat(4,1fr) some views set (Contracts / Data / In-house). --- */
+  .kpis{grid-template-columns:repeat(2,1fr)!important}
+  .kpi{padding:12px 13px}
+  .kpi .val{font-size:18px}
+
+  /* --- collapse fixed-pixel grids so they fit a phone --- */
+  .bid{grid-template-columns:1fr 1fr;gap:8px}
+  .bs-row{grid-template-columns:1fr}
+  .recon{grid-template-columns:1fr 1fr}
+  .funnel .f{grid-template-columns:104px 1fr 32px;gap:8px;font-size:12px}
+  .editor-grid{grid-template-columns:1fr}
+
+  /* --- wide tables scroll inside their panel rather than stretching the page --- */
+  .panel:has(> table.tbl){overflow-x:auto;-webkit-overflow-scrolling:touch}
+
+  /* --- modal sheets go (near) full width --- */
+  .sheet{width:100vw}
+  .sheet .sh{padding:14px 16px}
+  .sheet .sb{padding:16px}
+  .modal-center .sheet{width:min(560px,94vw)}
+
+  /* --- misc containers --- */
+  .toolbar{gap:8px}
+  .cat-dd-panel{width:min(280px,86vw)}
+}
+@media(max-width:480px){
+  .kpis{grid-template-columns:1fr!important}
+  .headstats{grid-template-columns:1fr}
+  .recon,.bid{grid-template-columns:1fr}
+}
+
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

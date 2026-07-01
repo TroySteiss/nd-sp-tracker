@@ -232,8 +232,10 @@ function glMatchScore(g,p){
 function render(){
   const root=$('#root');
   root.innerHTML='';
-  const app=el('div',{class:'app'});
+  const app=el('div',{class:'app'+(VIEW.railOpen?' rail-open':'')});
   app.append(rail(), mainCol());
+  // Mobile: dim + tap-outside-to-close backdrop for the nav drawer.
+  if(VIEW.railOpen) app.append(el('div',{class:'scrim-nav',onclick:()=>{VIEW.railOpen=false;render();}}));
   root.append(app);
 }
 
@@ -1695,9 +1697,12 @@ function viewProperty(){
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});
 
   // LEFT: cash + loan
+  // On phones these two panels are collapsed by default to save vertical space
+  // (they're reference data); on desktop they stay expanded as before.
+  const isMobile = window.matchMedia('(max-width:820px)').matches;
   const left=el('div',{class:'grid',style:'gap:16px;align-content:start'});
-  const cashPanel=el('div',{class:'panel'});
-  cashPanel.append(el('div',{class:'ph'}, el('h3',{},'Cash position'), el('div',{class:'sp'}), el('span',{class:'chip'},`snapshot ${c.asOfDate||S.meta.cashAsOf||'—'}`)));
+  const cashPanel=el('details',{class:'panel coll'}); cashPanel.open=!isMobile;
+  cashPanel.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Cash position'), el('div',{class:'sp'}), el('span',{class:'chip'},`snapshot ${c.asOfDate||S.meta.cashAsOf||'—'}`)));
   const sl=el('div',{class:'pad stat-list'});
   const row=(k,v,cls,sub)=>el('div',{class:'sl'+(cls?' '+cls:'')}, el('span',{class:'k'},k,sub?el('span',{class:'sl-sub'},sub):null), el('span',{class:'v'+(typeof v==='number'&&v<0?' neg':'')},typeof v==='number'?fmt(v):v));
   // Projected cash with an expandable, line-by-line breakdown by status.
@@ -1741,8 +1746,8 @@ function viewProperty(){
   );
   cashPanel.append(sl); left.append(cashPanel);
 
-  const loanPanel=el('div',{class:'panel'});
-  loanPanel.append(el('div',{class:'ph'}, el('h3',{},'Loan & valuation')));
+  const loanPanel=el('details',{class:'panel coll'}); loanPanel.open=!isMobile;
+  loanPanel.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Loan & valuation')));
   const sl3=el('div',{class:'pad stat-list'});
   sl3.append(
     row('Market value', c.marketValue!=null?Number(c.marketValue):'—'),
@@ -2056,7 +2061,7 @@ function viewData(){
   // counts
   const stats=el('div',{class:'panel',style:'grid-column:1/-1'});
   stats.append(el('div',{class:'ph'}, el('h3',{},'What’s loaded')));
-  const sg=el('div',{class:'pad',style:'display:grid;grid-template-columns:repeat(4,1fr);gap:14px'});
+  const sg=el('div',{class:'pad',style:'display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:14px'});
   const stat=(l,v)=>el('div',{}, el('div',{class:'kpi'}, el('div',{class:'lab'},l), el('div',{class:'val'},v)));
   sg.append(stat('Properties',S.properties.length),stat('Projects',S.projects.length),
     stat('GL lines',S.gl.length),stat('Cash adjustments',S.cashAdjustments.length));

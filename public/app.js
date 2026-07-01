@@ -37,6 +37,7 @@ const pctWhole = (n)=>n==null||isNaN(n)?'—':Number(n).toFixed(1).replace(/\.0$
 const esc = s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
 const today=()=>new Date().toISOString().slice(0,10);
 const fmtDate=(d)=>{ if(!d)return '—'; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); const dt=new Date(+m[0],+m[1]-1,+m[2]); if(isNaN(dt))return String(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
+const fmtDateShort=(d)=>{ if(!d)return ''; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); return `${+m[1]}/${+m[2]}/${m[0].slice(2)}`; };
 const inDateRange=(p,state)=>{ const d=(p.dateAdded||'').slice(0,10); if(state.dateFrom&&(!d||d<state.dateFrom))return false; if(state.dateTo&&(!d||d>state.dateTo))return false; return true; };
 const uid = p=>p+Math.random().toString(36).slice(2,8);
 
@@ -259,6 +260,11 @@ function render(){
   // Mobile: dim + tap-outside-to-close backdrop for the nav drawer.
   if(VIEW.railOpen) app.append(el('div',{class:'scrim-nav',onclick:()=>{VIEW.railOpen=false;render();}}));
   root.append(app);
+  syncHeadOffset();
+}
+// Publish the sticky property-header height so section headers can lock right below it.
+function syncHeadOffset(){
+  requestAnimationFrame(()=>{ const h=document.querySelector('.prop-head'); document.documentElement.style.setProperty('--head-h',(h?h.offsetHeight:0)+'px'); });
 }
 
 function rail(){
@@ -309,7 +315,8 @@ function mainCol(){
   const m=el('div',{class:'main'});
   const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
-  m.append(bar,el('div',{class:'content'},body));
+  // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
+  m.append(bar,el('div',{class:'content'+(VIEW.tab==='property'?' content-flush':'')},body));
   return m;
 }
 // Add drag-and-drop to any element. Calls onFile(File) on drop or input change.
@@ -803,6 +810,7 @@ function propHead(p,actions,metrics){
   if(window.matchMedia('(max-width:820px)').matches){
     const fold=el('details',{class:'metrics-fold'});
     fold.append(el('summary',{class:'metrics-sum'}, el('span',{class:'chev'},'▸'), 'Financial summary', el('span',{class:'ms-hint'},`${metrics.length} metrics`)), stats);
+    fold.addEventListener('toggle', syncHeadOffset);   // header height changes → update sticky offset
     t.append(r1, fold);
   } else {
     t.append(r1, stats);
@@ -1823,28 +1831,33 @@ function viewProperty(){
   const projs=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
   const pj=el('div',{class:'panel'});
   const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
-  pj.append(el('div',{class:'ph'}, el('h3',{},'Projects'), el('div',{class:'sp'}), el('span',{class:'chip'},`${projs.length} total`)));
   // phase filter chips — click to hide/show a completion group
   const filt=el('div',{class:'phasefilt'});
   PHASES.forEach(ph=>{ if(!counts[ph.key])return; const hidden=!!PFILT.hide[ph.key];
     filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[ph.key]=!PFILT.hide[ph.key];render();}},
       el('span',{},ph.label), el('span',{class:'pf-n'},String(counts[ph.key]))));
   });
-  pj.append(el('div',{class:'pad',style:'padding-bottom:8px'},dateFilterGroup(PFILT),el('div',{style:'height:9px'}),filt,
-    el('div',{style:'font-size:11px;color:var(--ink-3);margin-top:8px'},'Auto-grouped by completion. Click a group to hide it; 📌 pins a project to the top.')));
-  const pb=el('div',{style:'max-height:560px;overflow:auto;padding-bottom:6px'});
+  // Header + filters stay together in one sticky unit so they're visible while
+  // scrolling the projects list (until the whole section scrolls past).
+  const stick=el('div',{class:'pj-stick'},
+    el('div',{class:'ph'}, el('h3',{},'Projects'), el('div',{class:'sp'}), el('span',{class:'chip'},`${projs.length} total`)),
+    el('div',{class:'pad pj-filters',style:'padding-bottom:8px'},dateFilterGroup(PFILT),el('div',{class:'pj-gap'}),filt,
+      el('div',{class:'pj-hint',style:'font-size:11px;color:var(--ink-3);margin-top:8px'},'Auto-grouped by completion. Click a group to hide it; 📌 pins a project to the top.')));
+  pj.append(stick);
+  const pb=el('div',{class:'proj-list'});
   if(!projs.length)pb.append(el('div',{class:'empty'},'No projects yet for this property.'));
   function projRow(pr){
     const ih=isInHouse(pr);
-    const r=el('div',{class:'clickrow proj-row',style:'padding:11px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(pr.id)});
-    const topr=el('div',{style:'display:flex;gap:8px;align-items:center;margin-bottom:6px'},
+    const costVal=ih?ihTotal(pr):(pr.actualCost!=null?pr.actualCost:pr.anticipatedCost);
+    const hasCost=costVal!=null&&costVal!==''&&!isNaN(Number(costVal));
+    const r=el('div',{class:'clickrow proj-row',onclick:()=>openProject(pr.id)});
+    const head=el('div',{class:'pr-head'},
       el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
-      el('strong',{style:'font-size:13px;flex:1;min-width:0'},pr.name),
-      ih?el('span',{class:'chip ih'},'In-house'):null,
-      el('span',{style:'font-size:11px;color:var(--ink-3)'},pr.category),
-      el('span',{style:'font-size:11px;color:var(--ink-3);white-space:nowrap'},'· '+fmtDate(pr.dateAdded)),
-      el('span',{class:'mono',style:'font-size:12px;font-weight:600'},fmt(ih?ihTotal(pr):(pr.actualCost!=null?pr.actualCost:pr.anticipatedCost),false)));
-    r.append(topr, ih?progressEl(pr):trackEl(pr));
+      el('strong',{class:'pr-name'}, pr.name),
+      el('div',{class:'pr-right'},
+        hasCost?el('span',{class:'mono pr-cost'},fmt(costVal,false)):null,
+        el('span',{class:'pr-date'}, el('span',{class:'pr-cat'},pr.category+' · '), fmtDateShort(pr.dateAdded))));
+    r.append(head, ih?progressEl(pr):trackEl(pr));
     return r;
   }
   const pinned=projs.filter(p2=>p2.pinned && !PFILT.hide[phase(p2)]);

@@ -5,6 +5,7 @@
 */
 :root{
   color-scheme:light;
+  --head-h:0px;   /* measured height of the sticky property header (mobile) */
   --ink:#1b1e26;        --ink-2:#3a3f4b;     --ink-3:#6b7280;
   --canvas:#eceef1;     --panel:#ffffff;     --panel-2:#f7f8fa;
   --surface:#ffffff;    --surface-2:#f2f4f7;
@@ -425,6 +426,15 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .sheet-editor.ih-mode .ed-side{display:none}
 @media(max-width:860px){ .editor-grid{grid-template-columns:1fr} }
 
+/* ---- property projects list rows ---- */
+.proj-row{padding:11px 16px;border-bottom:1px solid var(--line-2)}
+.pr-head{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}
+.pr-name{font-size:13px;font-weight:600;flex:1;min-width:0;line-height:1.3;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.pr-right{flex:none;display:flex;flex-direction:column;align-items:flex-end;gap:1px;text-align:right}
+.pr-cost{font-size:12.5px;font-weight:600;white-space:nowrap}
+.pr-date{font-size:11px;color:var(--ink-3);white-space:nowrap}
+.proj-list{max-height:560px;overflow:auto;padding-bottom:6px}
+
 /* ---- collapsible reference panels (property view: cash / loan) ----
    Open on desktop, collapsed by default on phones. The chevron and the
    toggle interaction only appear at phone widths so desktop is unchanged. */
@@ -506,6 +516,28 @@ details.coll[open]>summary .chev{transform:rotate(90deg)}
   .disc-tools{flex-wrap:nowrap;gap:6px}
   .disc-tools .dt-lab{display:none}
   .disc-tools .mini-sel{flex:1;min-width:0}
+
+  /* Property view: edge-to-edge sections (use the whole page width). The title
+     header stays locked at the top; each section header locks right under it. */
+  .content-flush{padding-left:0;padding-right:0}
+  .content-flush .panel>.ph,
+  .content-flush details.coll>summary.ph{position:sticky;top:var(--head-h);z-index:5;background:var(--panel)}
+  .content-flush .pj-stick{position:sticky;top:var(--head-h);z-index:6;background:var(--panel);border-bottom:1px solid var(--line-2)}
+  .content-flush .pj-stick>.ph{border-bottom:1px solid var(--line-2)}
+
+  /* Projects list: readable rows, de-nested scroll, non-sticky group labels. */
+  .proj-list{max-height:none;overflow:visible}
+  .grp-h{position:static}
+  .pj-hint{display:none}
+  .pr-name{white-space:normal;overflow:visible}
+  .pr-cat{display:none}
+  /* compact filters: date range tight, phase chips on one scrollable line */
+  .pj-filters{padding-top:8px}
+  .pj-gap{height:6px}
+  .fgroup{gap:6px}
+  .date-f{font-size:13px;padding:4px 6px}
+  .phasefilt{flex-wrap:nowrap;overflow-x:auto;gap:6px;padding-bottom:2px;-webkit-overflow-scrolling:touch}
+  .phasefilt .pf-chip{font-size:11px;padding:3px 8px;flex:none}
 
   /* Portfolio summary: stack the property label above the tiles so nothing is crushed. */
   .psum-row{flex-direction:column}

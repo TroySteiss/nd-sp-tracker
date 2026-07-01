@@ -518,10 +518,11 @@ details.coll[open]>summary .chev{transform:rotate(90deg)}
   .disc-tools .mini-sel{flex:1;min-width:0}
 
   /* Property view: edge-to-edge sections (use the whole page width). The title
-     header stays locked at the top; each section header locks right under it. */
+     header stays locked at the top; each section header locks right under it.
+     NB: never sticky a <summary> — sticky on <summary> breaks the <details>
+     layout (its content renders above the header). Only div headers stick. */
   .content-flush{padding-left:0;padding-right:0}
-  .content-flush .panel>.ph,
-  .content-flush details.coll>summary.ph{position:sticky;top:var(--head-h);z-index:5;background:var(--panel)}
+  .content-flush .panel>.ph:not(summary){position:sticky;top:var(--head-h);z-index:5;background:var(--panel)}
   .content-flush .pj-stick{position:sticky;top:var(--head-h);z-index:6;background:var(--panel);border-bottom:1px solid var(--line-2)}
   .content-flush .pj-stick>.ph{border-bottom:1px solid var(--line-2)}
 

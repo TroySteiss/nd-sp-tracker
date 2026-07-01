@@ -424,6 +424,22 @@ details.coll[open]>summary .chev{transform:rotate(90deg)}
   .rail{width:min(84vw,280px);left:calc(-1 * min(84vw,280px) - 4px)}
   .scrim-nav{position:fixed;inset:0;background:rgba(20,24,32,.45);z-index:55;animation:fade .15s}
 
+  /* The property header stacks 7 metric tiles and would otherwise stay pinned
+     (position:sticky) taller than the screen, hiding the whole page. Let it
+     scroll away on phones. */
+  .prop-head{position:static}
+  /* Let tile labels/subs wrap instead of getting ellipsis-clipped in the
+     narrow 2-column layout. */
+  .hstat .hs-lab,.hstat .hs-sub{white-space:normal;overflow:visible;text-overflow:clip}
+  .hstat .hs-val{font-size:16px}
+  /* Metric tiles tucked behind a tap-to-expand fold (collapsed by default). */
+  .metrics-fold>summary.metrics-sum{list-style:none;cursor:pointer;user-select:none;display:flex;align-items:center;gap:8px;font-family:var(--disp);font-weight:600;font-size:13px;color:var(--ink-2);padding:8px 2px}
+  .metrics-fold>summary.metrics-sum::-webkit-details-marker{display:none}
+  .metrics-fold>summary .chev{transition:transform .15s;color:var(--ink-3);font-size:11px;flex:none}
+  .metrics-fold>summary .ms-hint{margin-left:auto;font-weight:500;font-size:11px;color:var(--ink-3)}
+  .metrics-fold[open]>summary .chev{transform:rotate(90deg)}
+  .metrics-fold .headstats{margin-top:4px}
+
   /* --- topbar: let title + actions wrap onto separate rows instead of overlapping --- */
   .topbar{flex-wrap:wrap;gap:8px 10px;padding:10px 14px 11px}
   .topbar .sp{display:none}
@@ -461,7 +477,6 @@ details.coll[open]>summary .chev{transform:rotate(90deg)}
 }
 @media(max-width:480px){
   .kpis{grid-template-columns:1fr!important}
-  .headstats{grid-template-columns:1fr}
   .recon,.bid{grid-template-columns:1fr}
 }
 

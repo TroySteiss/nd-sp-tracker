@@ -750,7 +750,16 @@ function propHead(p,actions,metrics){
   const r1=el('div',{class:'ph-row1'}, menu,
     el('div',{class:'tt'}, el('div',{class:'crumb'},`${p.region} · ${p.manager}`), el('h2',{}, el('span',{style:`display:inline-block;width:11px;height:11px;border-radius:3px;background:${pcolor(p.code)};margin-right:8px;vertical-align:middle`}), `${p.code} — ${p.name}`)),
     el('div',{class:'sp'}), ...actions);
-  t.append(r1, el('div',{class:'headstats'}, ...metrics));
+  const stats=el('div',{class:'headstats'}, ...metrics);
+  // On phones the metric tiles dominate the screen, so tuck them behind a
+  // tap-to-expand fold (collapsed by default). Desktop renders them inline as before.
+  if(window.matchMedia('(max-width:820px)').matches){
+    const fold=el('details',{class:'metrics-fold'});
+    fold.append(el('summary',{class:'metrics-sum'}, el('span',{class:'chev'},'▸'), 'Financial summary', el('span',{class:'ms-hint'},`${metrics.length} metrics`)), stats);
+    t.append(r1, fold);
+  } else {
+    t.append(r1, stats);
+  }
   return t;
 }
 function barCell(used){

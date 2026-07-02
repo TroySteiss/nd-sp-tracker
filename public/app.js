@@ -344,13 +344,18 @@ async function openPdfViewer(source, fileName){
   document.body.append(overlay);
 }
 
-function addDrop(target, accept, onFile){
+function addDrop(target, accept, onFile, opts={}){
   const inp=document.createElement('input'); inp.type='file'; inp.accept=accept; inp.style.display='none';
-  inp.addEventListener('change',e=>{if(inp.files[0])onFile(inp.files[0]);});
+  if(opts.multiple) inp.multiple=true;
+  // With opts.multiple, hand every dropped/picked file to onFile one at a time
+  // (awaited, so async uploads run sequentially instead of racing).
+  const handle=async(list)=>{ const files=[...(list||[])]; if(!files.length)return;
+    if(opts.multiple){ for(const f of files){ await onFile(f); } } else { onFile(files[0]); } };
+  inp.addEventListener('change',()=>{handle(inp.files); inp.value='';});
   target.append(inp);
   target.addEventListener('dragover',e=>{e.preventDefault();target.classList.add('hot');});
   target.addEventListener('dragleave',e=>{if(!target.contains(e.relatedTarget))target.classList.remove('hot');});
-  target.addEventListener('drop',e=>{e.preventDefault();target.classList.remove('hot');const f=e.dataTransfer.files[0];if(f)onFile(f);});
+  target.addEventListener('drop',e=>{e.preventDefault();target.classList.remove('hot');handle(e.dataTransfer.files);});
   return inp;
 }
 
@@ -1286,14 +1291,14 @@ function openProject(id,preset){
       });
       // + add another file line
       const addRow=el('div',{class:'bs-file',style:'margin-top:2px'});
-      const addInp=addDrop(addRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f));
-      addRow.append(el('button',{class:'btn sm ghost',onclick:()=>addInp.click(),title:'Attach another file — embeds into the contract in this order'},'＋ Add file'));
+      const addInp=addDrop(addRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f),{multiple:true});
+      addRow.append(el('button',{class:'btn sm ghost',onclick:()=>addInp.click(),title:'Attach one or more files — embedded into the contract in this order'},'＋ Add file'));
       filesWrap.append(addRow);
     } else {
       const fileRow=el('div',{class:'bs-file'});
       fileRow.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:4px 8px;transition:background .15s;';
       const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
-      const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f));
+      const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f),{multiple:true});
       fileRow.append(lbl);
       filesWrap.append(fileRow);
     }
@@ -1307,6 +1312,9 @@ function openProject(id,preset){
   bidBody.append(genRow);
   function refreshGen(){
     genRow.innerHTML='';
+    // These sections are inserted as siblings after genRow; clear stale copies
+    // so a redraw (e.g. after each file add) doesn't stack duplicate lines.
+    if(genRow.parentElement) genRow.parentElement.querySelectorAll('.exec-section,.lw-upload-section').forEach(n=>n.remove());
     const hasFile=p.bids.some(bd=>bd.fileKey);
     const btn=el('button',{class:'btn accent sm',onclick:()=>openContractDialog()},'📄 Generate Contract');
     if(!hasFile){ btn.disabled=true; btn.title='Attach a bid document to a slot first'; btn.style.opacity='.5'; btn.style.cursor='default'; }
@@ -1314,7 +1322,7 @@ function openProject(id,preset){
     if(p.contractFileKey){ genRow.append(el('div',{style:'flex:1'}), el('a',{class:'btn ghost sm',href:'/api/files/'+p.contractFileKey+'?name='+encodeURIComponent(p.contractFileName||'contract.pdf')},'⬇ '+(p.contractFileName||'contract.pdf'))); }
 
     // --- Executed contract upload ---
-    const execSection=el('div',{style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
+    const execSection=el('div',{class:'exec-section',style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
     const execLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Executed Contract');
     execSection.append(execLabel);
     if(p.executedContractFileKey){
@@ -1404,11 +1412,14 @@ function openProject(id,preset){
     const mdyToIso=mdy=>{const m=String(mdy||'').split('/');return m.length===3?`${m[2]}-${m[0].padStart(2,'0')}-${m[1].padStart(2,'0')}`:'';};
     const plusDays=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${String(d.getMonth()+1).padStart(2,'0')}/${String(d.getDate()).padStart(2,'0')}/${d.getFullYear()}`;};
     const plusDaysIso=n=>{const d=new Date();d.setDate(d.getDate()+n);return `${d.getFullYear()}-${String(d.getMonth()+1).padStart(2,'0')}-${String(d.getDate()).padStart(2,'0')}`;};
+    const ctrByName=nm=>(S.contractors||[]).find(c=>c.name.trim().toLowerCase()===String(nm||'').trim().toLowerCase());
+    const initCtrName=(approved.contractor||p.contractor||'');
+    const initCtr=ctrByName(initCtrName);
     const data={
       effectiveDate:isoToMdy(today()), termEndDate:plusDays(60),
-      ownerEntity:prop.ownerEntity||'', contractorName:(approved.contractor||p.contractor||''),
+      ownerEntity:prop.ownerEntity||'', contractorName:initCtrName,
       propertyName:prop.name||'', propertyAddr:prop.address||'',
-      ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:'',
+      ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:(initCtr&&initCtr.address)||'',
       contractTotal:usd(total), unit:'', scope:p.name||''
     };
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
@@ -1449,15 +1460,16 @@ function openProject(id,preset){
         }},'Add to directory'));
       ctrNameField.append(warn);
     };
+    const ctrAddrInp=el('input',{value:data.contractorAddr||'',oninput:e=>data.contractorAddr=e.target.value});
     const ctrNameInp=el('input',{value:data.contractorName||'',list:'contract-gen-dl',oninput:e=>{
       data.contractorName=e.target.value;
-      const match=(S.contractors||[]).find(c=>c.name.toLowerCase()===e.target.value.toLowerCase());
-      if(match&&match.address&&!data.contractorAddr)data.contractorAddr=match.address;
+      const match=ctrByName(e.target.value);
+      if(match&&match.address){ data.contractorAddr=match.address; ctrAddrInp.value=match.address; }   // pull the saved address
     }});
     ctrNameInp.addEventListener('blur',()=>genCtrWarn(data.contractorName));
     const ctrNameField=el('div',{class:'field'},el('label',{},'Contractor name'),ctrNameInp);
     bb.append(ctrNameField);
-    bb.append(f('Contractor address','contractorAddr'));
+    bb.append(el('div',{class:'field'},el('label',{},'Contractor address'),ctrAddrInp));
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{
       if(!data.ownerEntity||!data.contractorName||!data.contractTotal){ err.textContent='Owner entity, contractor name and contract total are required.'; return; }

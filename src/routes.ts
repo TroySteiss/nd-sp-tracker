@@ -200,6 +200,14 @@ api.post('/projects/:id/contract', async (req, res) => {
       await c.query('update properties set owner_entity=$1, address=$2, owner_notice_addr=$3 where code=$4',
         [vars.ownerEntity, vars.propertyAddr, vars.ownerNoticeAddr, proj.property_code]);
     }
+    // remember the contractor's address in the directory so it pre-fills next time
+    if (vars.contractorName && vars.contractorAddr && vars.contractorAddr.trim()) {
+      await c.query(
+        `insert into contractors(id,name,address) values($1,$2,$3)
+         on conflict(name) do update set address=case when excluded.address<>'' then excluded.address else contractors.address end`,
+        [uid('CTR'), vars.contractorName.trim(), vars.contractorAddr.trim()]
+      );
+    }
   });
 
   res.json({ contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });

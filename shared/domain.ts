@@ -52,6 +52,7 @@ export interface Project {
   progressNotes?: ProgressNote[];
   noContract?: boolean;
   noContractSet?: boolean;
+  commitCash?: boolean;
   contractFileKey?: string | null;
   contractFileName?: string | null;
   executedContractFileKey?: string | null;
@@ -368,7 +369,11 @@ export function cashModel(state: AppState, code: string): CashModel {
     }
     if (phase(p) === 'active') { outstanding.push(p); outstandingTotal += projOutflow(p); }   // committed, unpaid
     else if (isPaidP(p)) { paid.push(p); paidTotal += projOutflow(p); }                       // final
-    else if (phase(p) === 'discussed') { discussed.push(p); discussedTotal += projOutflow(p); }
+    else if (phase(p) === 'discussed') {
+      // commitCash forces a pre-approval project into outstanding commitments.
+      if (p.commitCash) { outstanding.push(p); outstandingTotal += projOutflow(p); }
+      else { discussed.push(p); discussedTotal += projOutflow(p); }
+    }
   });
   return { snapshot, adj, cashToday, outstanding, outstandingTotal, paid, paidTotal, discussed, discussedTotal, projectedCash: cashToday - outstandingTotal };
 }

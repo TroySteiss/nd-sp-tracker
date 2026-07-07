@@ -1599,6 +1599,22 @@ function projStatusLabel(p){
   if(ph==='paid') return 'Paid — awaiting closeout';
   const s=stage(p); return (s>=0 && LIFECYCLE[s]) ? LIFECYCLE[s].label : 'In progress';
 }
+/* Forward-looking status for the email tables: what the project is waiting on
+   now (vs. projStatusLabel, which names the furthest completed stage). */
+function projNextStatus(p){
+  if(p.onHold) return 'On hold';
+  if(isInHouse(p)) return 'In-house — '+pct(ihPct(p))+' complete';
+  if(isComplete(p)) return 'Completed';
+  const s=p.steps||{};
+  if(s.paid) return 'Paid — awaiting closeout';
+  if(s.workCompleted) return 'Work done — awaiting payment';
+  if(s.workStarted) return 'Work in progress';
+  if(s.signed||s.contractSaved) return 'Awaiting work start';
+  if(s.contractGenerated) return 'Awaiting countersignature';
+  if(s.approved) return 'Awaiting contract';
+  const bidCt=(p.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
+  return `Awaiting approval · ${bidCt}/3 bids`;
+}
 /* Draft an "is this up to date?" email for a property: SP budget/cash summary +
    where each active project sits. Shown in a modal to copy or open in email. */
 function openUpdateEmail(code){
@@ -1626,21 +1642,34 @@ function openUpdateEmail(code){
   const moneyCell=(n,extra='')=>`<td style="${tdR}${Number(n)<0?'color:'+NEG+';':''}${extra}">${esc(fmt(n))}</td>`;
   const hdTxt='font-family:Calibri,Arial,sans-serif;font-size:13px;font-weight:bold;margin:16px 0 6px;';
   // Each status subsection gets its own tint: [group-header bg, member-row bg].
-  const GROUP_TINTS=[['#dcebe2','#f2f9f5'],['#dde9f4','#f3f8fc'],['#f7ecca','#fcf7e9'],['#e8e1f5','#f6f3fb'],['#f4ded6','#fbf1ed'],['#e4e7ec','#f4f6f8']];
-  const projTable=(list)=>{
+  // Cool tones for committed work; warm tones for the not-in-projections table.
+  const COOL_TINTS=[['#dcebe2','#f2f9f5'],['#dde9f4','#f3f8fc'],['#e8e1f5','#f6f3fb'],['#dcebeb','#f1f8f8'],['#e4e7ec','#f4f6f8']];
+  const WARM_TINTS=[['#f7ecca','#fcf7e9'],['#f6e0cd','#fbf2ea'],['#f4d9d4','#fbf0ee'],['#f2e3d3','#faf3ea'],['#efe0e0','#f9f2f2']];
+  // Lien-waiver state: filed > received > pending; N/A for in-house / no-contract.
+  const lienCell=x=>{ if(isInHouse(x)||x.noContract) return '—';
+    const s=x.steps||{}; return s.lienSaved?'Filed':(s.lienWaiver?'Received':'Pending'); };
+  const projTable=(list,tints,full)=>{
     const order=[]; const by=new Map();
     list.forEach(x=>{ const lab=projStatusLabel(x); if(!by.has(lab)){by.set(lab,[]);order.push(lab);} by.get(lab).push(x); });
+    const th=(txt,st='text-align:left')=>`<th style="${tdL}background:#e9ecf0;${st}">${txt}</th>`;
     let t=`<table style="border-collapse:collapse">`
-      +`<tr><th style="${tdL}background:#e9ecf0;text-align:left">Project</th><th style="${tdR}background:#e9ecf0">Amount</th><th style="${tdL}background:#e9ecf0;text-align:center">Bids saved</th></tr>`;
+      +`<tr>${th('Project')}${th('Amount','text-align:right')}`
+      +(full?`${th('Planned start','text-align:center')}${th('Complete by','text-align:center')}`:'')
+      +th('Status')
+      +(full?th('Lien waiver','text-align:center'):'')
+      +`</tr>`;
+    const nCols=full?6:3;
     order.forEach((lab,gi)=>{
-      const [gbg,rbg]=GROUP_TINTS[gi%GROUP_TINTS.length];
-      t+=`<tr><td colspan="3" style="${tdL}background:${gbg};font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
+      const [gbg,rbg]=tints[gi%tints.length];
+      t+=`<tr><td colspan="${nCols}" style="${tdL}background:${gbg};font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
       by.get(lab).forEach(x=>{
         const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);
-        const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
-        // Bid counts only matter before approval; past that the bid is settled.
-        const showBids=!isInHouse(x)&&!isApproved(x);
-        t+=`<tr><td style="${tdL}background:${rbg}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt,'background:'+rbg+';')}<td style="${tdL}background:${rbg};text-align:center">${showBids?bidCt+'/3':'—'}</td></tr>`;
+        t+=`<tr><td style="${tdL}background:${rbg}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt,'background:'+rbg+';')}`
+          +(full?`<td style="${tdL}background:${rbg};text-align:center">${esc(x.plannedStart?fmtDateShort(x.plannedStart):'—')}</td>`
+               +`<td style="${tdL}background:${rbg};text-align:center">${esc(x.plannedEnd?fmtDateShort(x.plannedEnd):'—')}</td>`:'')
+          +`<td style="${tdL}background:${rbg}">${esc(projNextStatus(x))}</td>`
+          +(full?`<td style="${tdL}background:${rbg};text-align:center">${esc(lienCell(x))}</td>`:'')
+          +`</tr>`;
       });
     });
     return t+`</table>`;
@@ -1658,9 +1687,9 @@ function openUpdateEmail(code){
     +`<tr><td style="${tdL}font-weight:bold;background:#f2f4f7">Budget remaining (projected)</td>${moneyCell(projRemaining,'font-weight:bold;background:#f2f4f7;')}</tr>`
     +`</table>`
     +`<p style="${hdTxt}">PROJECTS IN CASH PROJECTIONS (${included.length})</p>`
-    +(included.length?projTable(included):noneP('(none committed)'))
+    +(included.length?projTable(included,COOL_TINTS,true):noneP('(none committed)'))
     +`<p style="${hdTxt}">PROJECTS NOT IN CASH PROJECTIONS (${excluded.length})</p>`
-    +(excluded.length?projTable(excluded):noneP('(none)'))
+    +(excluded.length?projTable(excluded,WARM_TINTS,false):noneP('(none)'))
     +`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:14px 0 0">Please reply with any updates or corrections. Thanks!</p>`;
 
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});

@@ -1605,25 +1605,34 @@ function openUpdateEmail(code){
   const p=PROP(code)||{}; const cm=cashModel(code);
   const budget=Number(p.spBudget)||0, spent=glSpentFor(code), remaining=budget-spent;
   const asOf=(S.cash[code]&&S.cash[code].asOfDate)||S.meta.cashAsOf||'';
-  const projs=projForProp(code).filter(x=>!isComplete(x)&&phase(x)!=='note');
-  projs.sort((a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a)));
-  const lines=projs.map(x=>{
-    const cost=isInHouse(x)?ihTotal(x):(x.actualCost!=null?x.actualCost:x.anticipatedCost);
-    return `  • ${x.name||'(untitled)'} — ${projStatusLabel(x)}${cost!=null&&cost!==''?` — ${fmt(cost,false)}`:''}`;
+  // Only projects that are actually counted in the cash projections (outstanding
+  // commitments), grouped by status in pipeline order.
+  const included=cm.outstanding.slice();
+  included.sort((a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a)));
+  const groupOrder=[]; const byLabel=new Map();
+  included.forEach(x=>{ const lab=projStatusLabel(x); if(!byLabel.has(lab)){byLabel.set(lab,[]);groupOrder.push(lab);} byLabel.get(lab).push(x); });
+  const lines=[];
+  groupOrder.forEach(lab=>{
+    lines.push(lab.toUpperCase());
+    byLabel.get(lab).forEach(x=>{
+      const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);   // the amount counted in projections
+      const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
+      const bids=isInHouse(x)?'':` — ${bidCt}/3 bids`;
+      lines.push(`  • ${x.name||'(untitled)'} — ${fmt(amt,false)}${bids}`);
+    });
   });
   const subject=`SP Update Check — ${code}${p.name?' · '+p.name:''}`;
   const body=[
     `Hi${p.manager?' '+p.manager:''},`,'',
     `Quick check on the Special Projects for ${code}${p.name?' — '+p.name:''}. Could you confirm the summary below is up to date, and flag any changes to costs, status, or new projects to add?`,'',
     `SPECIAL PROJECTS SUMMARY${asOf?` (as of ${asOf})`:''}`,
-    `  SP Budget:               ${fmt(budget)}`,
-    `  Spent to date:           ${fmt(spent)}`,
-    `  Remaining budget:        ${fmt(remaining)}`,
-    `  Outstanding commitments: ${fmt(cm.outstandingTotal)}`,
-    `  Current cash:            ${fmt(cm.cashToday)}`,
-    `  Projected cash:          ${fmt(cm.projectedCash)}`,'',
-    `PROJECTS (${projs.length})`,
-    ...(lines.length?lines:['  (none in the active pipeline)']),'',
+    `  SP Budget:                    ${fmt(budget)}`,
+    `  Spent to date:                ${fmt(spent)}`,
+    `  Remaining budget:             ${fmt(remaining)}`,
+    `  Outstanding commitments:      ${fmt(cm.outstandingTotal)}`,
+    `  Budget remaining (projected): ${fmt(budget-spent-cm.outstandingTotal)}`,'',
+    `PROJECTS IN CASH PROJECTIONS (${included.length})`,
+    ...(lines.length?lines:['  (none committed)']),'',
     `Please reply with any updates or corrections. Thanks!`
   ].join('\n');
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});

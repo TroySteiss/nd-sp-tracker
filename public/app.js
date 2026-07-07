@@ -7,20 +7,19 @@
    A JSON backup can always be exported/imported for portability.
    ============================================================ */
 
-/* ---------- Lifecycle (the 12 steps from the workflow brief) ---------- */
+/* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
+   from the executed-contract / lien-waiver attachments) ---------- */
 const LIFECYCLE = [
   {key:'planned',           label:'Planned',                 short:'Plan', desc:'Scope, anticipated cost and planned timing captured.'},
   {key:'gotBids',           label:'Bids Received',           short:'Bids', desc:'Bids collected (3 is standard; not always required).'},
   {key:'approved',          label:'Bid Approved',            short:'Appr', desc:'One bid selected and approved.'},
   {key:'contractGenerated', label:'Contract Generated',      short:'Ctrct',desc:'Contract drafted to the approved bid and sent to the contractor.'},
-  {key:'signed',            label:'Signed & Countersigned',  short:'Sign', desc:'Contractor signed; we countersigned and returned.'},
-  {key:'contractSaved',     label:'Contract Filed',          short:'File', desc:'Executed contract saved in the property SharePoint folder.'},
+  {key:'signed',            label:'Signed & Countersigned',  short:'Sign', desc:'Auto — ticks when the executed contract is attached.'},
   {key:'workStarted',       label:'Work Started',            short:'Start',desc:'Work underway (may run in phases).'},
   {key:'workCompleted',     label:'Work Completed',          short:'Done', desc:'Contractor completed the work or phase.'},
   {key:'paid',              label:'Work Paid For',           short:'Paid', desc:'Invoice paid (confirmed by the general ledger).'},
   {key:'completed',         label:'Completed',               short:'✓',    desc:'Work closed out; reflected in the financial statements.'},
-  {key:'lienWaiver',        label:'Lien Waiver Received',    short:'Lien', desc:'Contractor returned the lien waiver.'},
-  {key:'lienSaved',         label:'Waiver Filed',            short:'WFile',desc:'Lien waiver saved in the same SharePoint folder.'},
+  {key:'lienWaiver',        label:'Lien Waiver Received',    short:'Lien', desc:'Auto — ticks when the lien waiver is attached.'},
 ];
 const STEP_KEYS = LIFECYCLE.map(s=>s.key);
 const CATEGORIES = ['APPLIANCES','BUILDING REPAIRS','CABINETS/COUNTERTOPS','CARPETS/VINYL','COMMON AREA UPGRADES','Concrete/Asphalt','DOORS/WINDOWS','DRAPES/BLINDS','ELECTRICAL - EXTERIOR','ELECTRICAL - INTERIOR','ELEVATORS','FENCING','FIRE','FURNITURE/EQUIPMENT','GENERAL','HVAC','INSPECTION EXPENSES','JANITORIAL','LABOR','LANDSCAPING','OTHER','PAINTING - EXTERIOR','PAINTING - INTERIOR','PARKING','PLUMBING','POOL','REPAIR DOWN UNITS','ROOFING','SECURITY CAMERA','SIGNAGE','SUPPLIES','UNIT AMENITIES/UPGRADES','WOOD REPLACEMENT'];
@@ -47,7 +46,7 @@ const API={
   async get(path){ const r=await fetch('/api'+path,{headers:{'Accept':'application/json'}}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok)throw new Error(await r.text()); return r.json(); },
   async send(method,path,body){ const r=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},body:body!=null?JSON.stringify(body):undefined}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok){ let msg; try{msg=(await r.json()).error;}catch(e){ msg='request failed'; } throw new Error(msg||'request failed'); } return r.json(); }
 };
-async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.cashAdjustments||[]; S.gl=S.gl||[]; S.projects=S.projects||[]; S.cash=S.cash||{}; S.meta=S.meta||{}; }
+async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.cashAdjustments||[]; S.gl=S.gl||[]; S.projects=S.projects||[]; S.cash=S.cash||{}; S.meta=S.meta||{}; S.projects.forEach(p=>{ if(typeof syncDerivedSteps==='function') syncDerivedSteps(p); }); }
 
 /* ---------- App state ---------- */
 let S=null;            // working state
@@ -128,9 +127,17 @@ async function start(){
 /* ---------- Derived ---------- */
 const PROP=code=>S.properties.find(p=>p.code===code);
 /* Contract steps become "N/A" when a project needs no contract (e.g. < $5K). */
-const CONTRACT_STEPS=['contractGenerated','signed','contractSaved'];
+const CONTRACT_STEPS=['contractGenerated','signed'];
 const naKeys=p=>p.noContract?CONTRACT_STEPS:[];
 const isNA=(p,key)=>!!p.noContract && CONTRACT_STEPS.includes(key);
+/* Steps that are never toggled by hand — they mirror whether the matching
+   attachment exists (executed contract → signed; lien waiver → lienWaiver). */
+const AUTO_STEPS=['signed','lienWaiver'];
+function syncDerivedSteps(p){
+  if(!p||p.inHouse)return; p.steps=p.steps||{};
+  p.steps.signed=!!p.executedContractFileKey;
+  p.steps.lienWaiver=!!p.lienWaiverFileKey;
+}
 const appKeys=p=>{ const na=naKeys(p); return STEP_KEYS.filter(k=>!na.includes(k)); };
 const appLifecycle=p=>{ const na=naKeys(p); return LIFECYCLE.filter(s=>!na.includes(s.key)); };
 function stage(p){ let last=-1; STEP_KEYS.forEach((k,i)=>{if(p.steps&&p.steps[k])last=i;}); return last; } // index of furthest completed step (global)
@@ -392,10 +399,10 @@ function viewContracts(){
   const statusOf=c=>{
     const pr=projById.get(c.projectId);
     if(pr&&pr.executedContractFileKey) return 'executed';
-    if(pr&&pr.steps&&(pr.steps.signed||pr.steps.contractSaved)) return 'countersigned';
+    if(pr&&pr.steps&&pr.steps.signed) return 'countersigned';
     return 'generated';
   };
-  const ST_LABEL={executed:'Executed',countersigned:'Signed — awaiting file',generated:'Generated — awaiting countersign'};
+  const ST_LABEL={executed:'Executed',countersigned:'Signed & Countersigned',generated:'Generated — awaiting countersign'};
   const ST_CHIP={executed:'done',countersigned:'good',generated:'hold'};
 
   // Planned: approved projects with no generated contract
@@ -707,7 +714,7 @@ function viewDashboard(){
           hstat('Spent to date', fmt(s.spent), 'none', ''),
           hstat('Current cash', fmt(s.cashToday), 'none', ''),
           hstat(`Proj addt Expenses ${s.fy}`, fmt(s.projRemainingSpendInt), 'none', ''),
-          hstat(`${s.fy} Budget Proj`, fmt(s.yyyyBudgetProj), ybpTone, ''),
+          hstat(`Remaining in ${s.fy}`, fmt(s.yyyyBudgetProj), ybpTone, ''),
           hstat(`${s.fy} Remaining Accretion`, fmt(s.futureAccretion), s.futureAccretion>=0?'good':'bad', `${(s.madePct-s.effectiveSentPct).toFixed(1)}% · ${s.futureQtrs}q${s.inclAccretion?'':' excl.'}`),
           hstat(`Proj ${s.fy} end Cash`, fmt(s.projEndCash), endTone, ''),
           hstat('Cash / door', s.cpd==null?'—':fmt(s.cpd), cpdTone, ''))));
@@ -726,7 +733,7 @@ function viewDashboard(){
         hstat('Spent to date', fmt(tot.spent), 'none', ''),
         hstat('Current cash', fmt(tot.cash), 'none', ''),
         hstat(`Proj addt Expenses ${fy}`, fmt(tot.projRem), 'none', ''),
-        hstat(`${fy} Budget Proj`, fmt(tot.ybp), totYbpTone, ''),
+        hstat(`Remaining in ${fy}`, fmt(tot.ybp), totYbpTone, ''),
         hstat(`${fy} Remaining Accretion`, fmt(tot.accretion), tot.accretion>=0?'good':'bad', ''),
         hstat(`Proj ${fy} end Cash`, fmt(tot.projEnd), totEndTone, ''),
         hstat('Cash / door', totCpd==null?'—':fmt(totCpd), totCpdTone, ''))));
@@ -1067,7 +1074,8 @@ function trackEl(p){
   let cur=-1; steps.forEach((s,i)=>{ if(p.steps&&p.steps[s.key])cur=i; });
   steps.forEach((s,i)=>{
     const done=p.steps&&p.steps[s.key];
-    const cls=done?(i===cur&&!isComplete(p)?'seg cur':'seg done'):'seg';
+    // Lien waiver renders purple when done (visually distinct from work steps).
+    const cls=done?(s.key==='lienWaiver'?'seg done lien':(i===cur&&!isComplete(p)?'seg cur':'seg done')):'seg';
     const seg=el('div',{class:cls,title:`${s.label}${done?' ✓':''}`});
     t.append(seg);
   });
@@ -1109,6 +1117,7 @@ function openProject(id,preset){
   // Each bid holds an ordered list of files (first = scope/totals, rest = supporting docs).
   // Normalize legacy single-file bids into the array form.
   p.bids.forEach(bd=>{ if(!Array.isArray(bd.files)) bd.files = bd.fileKey?[{fileKey:bd.fileKey,fileName:bd.fileName,fileSize:bd.fileSize}]:[]; });
+  syncDerivedSteps(p);   // signed / lienWaiver mirror their attachments
   const fileSize=n=>n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB';
   const reg=()=>PROP(p.property)?PROP(p.property).region:'';
 
@@ -1186,19 +1195,23 @@ function openProject(id,preset){
     f('Total to complete',ihTotalInp),
     f('Amount completed',ihDoneInp));
   core.append(contractorCost, inhouseCost);
-  const holdWrap=el('label',{style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
-    (()=>{const c=el('input',{type:'checkbox',onchange:e=>p.onHold=e.target.checked});if(p.onHold)c.checked=true;return c;})(),'Mark as on hold');
-  const pinWrap=el('label',{style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
-    (()=>{const c=el('input',{type:'checkbox',onchange:e=>p.pinned=e.target.checked});if(p.pinned)c.checked=true;return c;})(),'📌 Pin to top');
-  const ihWrap=el('label',{class:'ih-toggle',style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
-    (()=>{const c=el('input',{type:'checkbox',onchange:e=>{p.inHouse=e.target.checked;applyMode();}});if(p.inHouse)c.checked=true;return c;})(),'🛠 In-house (own crew)');
-  let ncChk;
-  const ncWrap=el('label',{class:'nc-toggle',style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer'},
-    (()=>{ncChk=el('input',{type:'checkbox',onchange:e=>{p.noContract=e.target.checked;p.noContractSet=true; if(p.noContract)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); drawSteps();}}); if(p.noContract)ncChk.checked=true; return ncChk;})(),'📄 No contract needed');
-  function refreshNC(){ if(ncChk)ncChk.checked=!!p.noContract; }
-  const commitWrap=el('label',{style:'display:flex;align-items:center;gap:8px;font-weight:600;font-size:13px;cursor:pointer',title:'Count this project in Outstanding Commitments / projected cash now — even without full bids or an executed contract'},
-    (()=>{const c=el('input',{type:'checkbox',onchange:e=>p.commitCash=e.target.checked});if(p.commitCash)c.checked=true;return c;})(),'💵 Commit to projected cash');
-  core.append(el('div',{style:'display:flex;gap:24px;flex-wrap:wrap'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap));
+  // Option pills — colored toggle chips instead of bare checkboxes.
+  const optPill=(icon,label,cls,get,set,title)=>{
+    const pill=el('button',{type:'button',class:'opt-pill '+cls+(get()?' on':''),...(title?{title}:{}),
+      onclick:()=>{ set(!get()); pill.classList.toggle('on',get()); }},
+      el('span',{class:'op-ic'},icon), label);
+    return pill;
+  };
+  const holdWrap=optPill('⏸','On hold','hold',()=>!!p.onHold,v=>p.onHold=v,'Park this project for a future period');
+  const pinWrap=optPill('📌','Pinned','pin',()=>!!p.pinned,v=>p.pinned=v,'Pin to the top of the property list');
+  const ihWrap=optPill('🛠','In-house','ih-p',()=>!!p.inHouse,v=>{p.inHouse=v;applyMode();},'Own crew — progress tracking instead of bids/contracts');
+  const ncWrap=optPill('📄','No contract','nc',()=>!!p.noContract,v=>{p.noContract=v;p.noContractSet=true; if(v)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); drawSteps();},'Contract steps become N/A (e.g. under $5K)');
+  function refreshNC(){ ncWrap.classList.toggle('on',!!p.noContract); }
+  const commitWrap=optPill('💵','Commit to cash','commit',()=>!!p.commitCash,v=>p.commitCash=v,'Count in Outstanding Commitments / projected cash now — even without full bids or a contract');
+  // Approved projects are always in the projections, so the toggle is moot.
+  function refreshCommit(){ commitWrap.style.display=isApproved(p)?'none':''; }
+  refreshCommit();
+  core.append(el('div',{class:'opt-row'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap));
   b.append(core);
 
   // --- in-house panel: progress + additional notes ---
@@ -1329,36 +1342,52 @@ function openProject(id,preset){
   }
   function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
 
-  // --- Generate Contract (Independent Contractor Agreement) ---
-  const genRow=el('div',{style:'margin-top:12px;padding-top:12px;border-top:1px solid var(--line-2);display:flex;align-items:center;gap:10px;flex-wrap:wrap'});
-  bidBody.append(genRow);
+  // --- Contract (own section): generated → executed → lien waiver ---
+  const hasCt=!!(p.contractFileKey||p.executedContractFileKey||p.lienWaiverFileKey);
+  const contractWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(hasCt?{open:''}:{})});
+  const ctMeta=el('span',{class:'bs-meta'},'');
+  contractWrap.append(el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Contract'), el('div',{class:'sp'}), ctMeta));
+  const ctBody=el('div',{class:'pad'});
+  contractWrap.append(ctBody);
+  const ctRow=label=>{ const r=el('div',{class:'ct-row'}); r.append(el('span',{class:'ct-lab'},label)); return r; };
+  const fileLink=(key,name)=>el('a',{class:'btn ghost sm',href:'/api/files/'+key+'?name='+encodeURIComponent(name||'file.pdf')},'⬇ '+(name||'file.pdf'));
   function refreshGen(){
-    genRow.innerHTML='';
-    // These sections are inserted as siblings after genRow; clear stale copies
-    // so a redraw (e.g. after each file add) doesn't stack duplicate lines.
-    if(genRow.parentElement) genRow.parentElement.querySelectorAll('.exec-section,.lw-upload-section').forEach(n=>n.remove());
-    const hasFile=p.bids.some(bd=>bd.fileKey);
-    const btn=el('button',{class:'btn accent sm',onclick:()=>openContractDialog()},'📄 Generate Contract');
-    if(!hasFile){ btn.disabled=true; btn.title='Attach a bid document to a slot first'; btn.style.opacity='.5'; btn.style.cursor='default'; }
-    genRow.append(btn, el('span',{class:'bs-meta'}, hasFile?'Builds the Independent Contractor Agreement with the bid embedded (Exhibits A–D).':'Attach a bid document to enable.'));
-    if(p.contractFileKey){ genRow.append(el('div',{style:'flex:1'}), el('a',{class:'btn ghost sm',href:'/api/files/'+p.contractFileKey+'?name='+encodeURIComponent(p.contractFileName||'contract.pdf')},'⬇ '+(p.contractFileName||'contract.pdf'))); }
+    ctBody.innerHTML='';
+    ctMeta.textContent=[p.contractFileKey?'generated':null,p.executedContractFileKey?'executed':null,p.lienWaiverFileKey?'lien waiver':null].filter(Boolean).join(' · ')||'none yet';
 
-    // --- Executed contract upload ---
-    const execSection=el('div',{class:'exec-section',style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
-    const execLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Executed Contract');
-    execSection.append(execLabel);
+    // 1) Generated (unexecuted) contract — build it here, or drop in one made elsewhere.
+    const hasBidFile=p.bids.some(bd=>bd.fileKey);
+    const gRow=ctRow('Generated contract');
+    const genBtn=el('button',{class:'btn accent sm',onclick:()=>openContractDialog()},'📄 Generate');
+    if(!hasBidFile){ genBtn.disabled=true; genBtn.title='Attach a bid document in Bids first'; genBtn.style.opacity='.5'; genBtn.style.cursor='default'; }
+    const extInp=addDrop(gRow,'.pdf,application/pdf',async file=>{
+      toast('Uploading contract…');
+      const fd=new FormData(); fd.append('file',file);
+      try{
+        const r=await fetch('/api/projects/'+p.id+'/contract-file',{method:'POST',body:fd});
+        if(!r.ok){const e=await r.json().catch(()=>({}));throw new Error(e.error||'upload failed');}
+        const out=await r.json();
+        p.contractFileKey=out.fileKey; p.contractFileName=out.fileName;
+        Object.assign(p.steps,out.steps);
+        drawSteps(); refreshGen(); toast('Contract attached');
+      }catch(e){ toast('Upload failed: '+e.message); }
+    });
+    gRow.append(genBtn,
+      el('button',{class:'btn ghost sm',title:'Attach a contract generated outside the tracker',onclick:()=>extInp.click()},'⬆ Upload existing'));
+    if(p.contractFileKey) gRow.append(fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'));
+    else gRow.append(el('span',{class:'bs-meta'},hasBidFile?'Builds the ICA with the bid embedded (Exhibits A–D) — or drop in your own.':'Attach a bid to enable generation — or drop in an existing contract.'));
+    ctBody.append(gRow);
+
+    // 2) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
+    const eRow=ctRow('Executed contract');
     if(p.executedContractFileKey){
-      execSection.append(
-        el('span',{class:'bs-meta',style:'margin-left:8px;color:var(--green,#2a7a2a)'},'✓ Filed'),
-        el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.executedContractFileKey+'?name='+encodeURIComponent(p.executedContractFileName||'executed.pdf')},'⬇ '+(p.executedContractFileName||'executed.pdf'))
-      );
+      eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'));
     } else {
-      execSection.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:6px 10px;transition:background .15s;';
-      const execBtn=el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>execInput.click()},'⬆ Upload Executed');
-      execSection.append(execBtn);
-      const execInput=addDrop(execSection,'.pdf,application/pdf',async file=>{
+      eRow.classList.add('ct-drop');
+      const execBtn=el('button',{class:'btn ghost sm',onclick:()=>execInput.click()},'⬆ Upload executed');
+      eRow.append(execBtn, el('span',{class:'bs-meta'},'Auto-ticks “Signed & Countersigned”.'));
+      const execInput=addDrop(eRow,'.pdf,application/pdf',async file=>{
         execBtn.disabled=true; execBtn.textContent='Uploading…';
-
         // LW dialog before upload
         const lwScrim=el('div',{class:'scrim modal-center',style:'z-index:2000'});
         const lwSheet=el('div',{class:'sheet',style:'max-width:380px'});
@@ -1371,58 +1400,47 @@ function openProject(id,preset){
           const fd=new FormData(); fd.append('file',file); fd.append('lwSigned',String(lwSigned));
           try{
             const r=await fetch('/api/projects/'+p.id+'/executed-contract',{method:'POST',body:fd});
-            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';return;}
+            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');execBtn.disabled=false;execBtn.textContent='⬆ Upload executed';return;}
             const out=await r.json();
             p.executedContractFileKey=out.fileKey; p.executedContractFileName=out.fileName;
             Object.assign(p.steps,out.steps);
             drawSteps(); refreshGen();
-            if(!lwSigned) showLwUpload();
-            toast('Executed contract filed'+(lwSigned?' · Lien waiver marked received':''));
-          }catch(e){toast('Upload failed: '+e.message);execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';}
+            toast('Executed contract attached'+(lwSigned?' · Lien waiver marked received':''));
+          }catch(e){toast('Upload failed: '+e.message);execBtn.disabled=false;execBtn.textContent='⬆ Upload executed';}
         };
         lwBody.append(el('div',{style:'display:flex;gap:8px;justify-content:flex-end'},
-          el('button',{class:'btn ghost',onclick:()=>{lwScrim.remove();execBtn.disabled=false;execBtn.textContent='⬆ Upload Executed';}},'Cancel'),
+          el('button',{class:'btn ghost',onclick:()=>{lwScrim.remove();execBtn.disabled=false;execBtn.textContent='⬆ Upload executed';}},'Cancel'),
           el('button',{class:'btn',onclick:()=>doUpload(false)},'No'),
           el('button',{class:'btn accent',onclick:()=>doUpload(true)},'Yes')));
         lwSheet.append(lwBody); lwScrim.append(lwSheet); document.body.append(lwScrim);
       });
     }
-    genRow.after(execSection);
+    ctBody.append(eRow);
 
-    // --- Lien waiver upload section (shown when LW not yet received) ---
-    function showLwUpload(){
-      const existing=genRow.parentElement&&genRow.parentElement.querySelector('.lw-upload-section');
-      if(existing)return;
-      const lwSection=el('div',{class:'lw-upload-section',style:'margin-top:10px;padding-top:10px;border-top:1px solid var(--line-2)'});
-      const lwLabel=el('span',{class:'bs-meta',style:'font-weight:600;color:var(--ink-2)'},'Lien Waiver');
-      const execUrl='/api/files/'+p.executedContractFileKey+'?name='+encodeURIComponent(p.executedContractFileName||'contract.pdf');
-      const mkViewBtn=()=>el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>openPdfViewer(execUrl,p.executedContractFileName||'Executed Contract')},'👁 View contract');
+    // 3) Lien waiver — applicable once a contract is in play; auto-ticks "Lien Waiver Received".
+    if(!p.noContract && (p.executedContractFileKey||p.lienWaiverFileKey)){
+      const lRow=ctRow('Lien waiver');
       if(p.lienWaiverFileKey){
-        lwSection.append(lwLabel,
-          el('span',{class:'bs-meta',style:'margin-left:8px;color:var(--green,#2a7a2a)'},'✓ Filed'),
-          el('a',{class:'btn ghost sm',style:'margin-left:8px',href:'/api/files/'+p.lienWaiverFileKey+'?name='+encodeURIComponent(p.lienWaiverFileName||'lien-waiver.pdf')},'⬇ '+(p.lienWaiverFileName||'lien-waiver.pdf')),
-          mkViewBtn());
+        lRow.append(el('span',{class:'ct-ok lien'},'✓ Received'), fileLink(p.lienWaiverFileKey,p.lienWaiverFileName||'lien-waiver.pdf'));
       } else {
-        lwSection.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:6px 10px;transition:background .15s;';
-        const lwBtn=el('button',{class:'btn ghost sm',style:'margin-left:8px',onclick:()=>lwInput.click()},'⬆ Upload Lien Waiver');
-        lwSection.append(lwLabel, lwBtn, mkViewBtn());
-        const lwInput=addDrop(lwSection,'.pdf,application/pdf',async file=>{
+        lRow.classList.add('ct-drop');
+        const lwBtn=el('button',{class:'btn ghost sm',onclick:()=>lwInput.click()},'⬆ Upload lien waiver');
+        lRow.append(lwBtn, el('span',{class:'bs-meta'},'Auto-ticks “Lien Waiver Received”.'));
+        const lwInput=addDrop(lRow,'.pdf,application/pdf',async file=>{
           lwBtn.disabled=true; lwBtn.textContent='Uploading…';
           const fd=new FormData(); fd.append('file',file);
           try{
             const r=await fetch('/api/projects/'+p.id+'/lien-waiver',{method:'POST',body:fd});
-            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');lwBtn.disabled=false;lwBtn.textContent='⬆ Upload Lien Waiver';return;}
+            if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');lwBtn.disabled=false;lwBtn.textContent='⬆ Upload lien waiver';return;}
             const out=await r.json();
             p.lienWaiverFileKey=out.fileKey; p.lienWaiverFileName=out.fileName;
-            p.steps.lienWaiver=true; p.steps.lienSaved=true;
-            drawSteps(); refreshGen(); toast('Lien waiver filed');
-          }catch(e){toast('Upload failed: '+e.message);lwBtn.disabled=false;lwBtn.textContent='⬆ Upload Lien Waiver';}
+            p.steps.lienWaiver=true;
+            drawSteps(); refreshGen(); toast('Lien waiver attached');
+          }catch(e){toast('Upload failed: '+e.message);lwBtn.disabled=false;lwBtn.textContent='⬆ Upload lien waiver';}
         });
       }
-      execSection.after(lwSection);
+      ctBody.append(lRow);
     }
-    // Show LW section if executed is filed but LW not yet received (or already have LW file)
-    if(p.executedContractFileKey && (!p.steps.lienWaiver || p.lienWaiverFileKey)) showLwUpload();
   }
 
   function openContractDialog(){
@@ -1510,38 +1528,45 @@ function openProject(id,preset){
   }
 
   function drawBids(){ slotsWrap.innerHTML=''; for(let i=0;i<3;i++) slotsWrap.append(bidSlot(i)); refreshMeta(); refreshGen(); }
-  drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap);
+  drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap, contractWrap);
 
   // --- lifecycle steps ---
   const stepsPanel=el('div',{class:'panel',style:'margin-top:16px'});
   stepsPanel.append(el('div',{class:'ph'}, el('h3',{},'Lifecycle'), el('div',{class:'sp'}),
     el('button',{class:'btn sm',onclick:()=>{
-      const keys=appKeys(p); let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
+      // Advance to the next hand-toggled step (auto steps mirror attachments).
+      const keys=appKeys(p).filter(k=>!AUTO_STEPS.includes(k));
+      let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
       const next=keys[cur+1];
       if(next){ p.steps[next]=true; const gi=STEP_KEYS.indexOf(next);
-        if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k))p.steps[k]=true; }); }
+        if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k)&&!AUTO_STEPS.includes(k))p.steps[k]=true; }); }
         drawSteps(); }
     }},'Advance ▸')));
   const stepBody=el('div',{class:'pad'}); const stepsList=el('div',{class:'steps'});
   function drawSteps(){
+    syncDerivedSteps(p);
     stepsList.innerHTML='';
     LIFECYCLE.forEach((s,i)=>{
       const na=isNA(p,s.key);
+      const auto=AUTO_STEPS.includes(s.key);
       const on=!na && !!p.steps[s.key];
-      const row=el('div',{class:'step'+(on?' on':'')+(na?' na':'')});
+      const row=el('div',{class:'step'+(on?' on':'')+(na?' na':'')+(s.key==='lienWaiver'?' lien':'')});
       row.append(el('div',{class:'num'}, na?'–':(on?'✓':String(i+1))),
         el('div',{style:'flex:1'}, el('div',{class:'nm'},s.label), el('div',{class:'ds'}, na?'Not applicable — no contract needed.':s.desc)));
       if(na){
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge'},'N/A')));
+      } else if(auto){
+        // Derived from the attachment — no manual switch.
+        row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Ticks automatically when the file is attached in the Contract section'},on?'✓ auto':'auto')));
       } else {
         const sw=el('button',{class:'switch'+(on?' on':''),title:'toggle',onclick:()=>{
           const nv=!p.steps[s.key];
           p.steps[s.key]=nv;
           if(i<=APPROVED_IDX){
-            if(!nv && i===APPROVED_IDX){ STEP_KEYS.slice(i+1).forEach(k=>p.steps[k]=false); }
+            if(!nv && i===APPROVED_IDX){ STEP_KEYS.slice(i+1).forEach(k=>{ if(!AUTO_STEPS.includes(k))p.steps[k]=false; }); }
           } else {
-            if(nv){ STEP_KEYS.slice(0,i).forEach(k=>{ if(!isNA(p,k))p.steps[k]=true; }); }
-            else  { STEP_KEYS.slice(i+1).forEach(k=>p.steps[k]=false); }
+            if(nv){ STEP_KEYS.slice(0,i).forEach(k=>{ if(!isNA(p,k)&&!AUTO_STEPS.includes(k))p.steps[k]=true; }); }
+            else  { STEP_KEYS.slice(i+1).forEach(k=>{ if(!AUTO_STEPS.includes(k))p.steps[k]=false; }); }
           }
           drawSteps();
         }});
@@ -1549,6 +1574,7 @@ function openProject(id,preset){
       }
       stepsList.append(row);
     });
+    if(typeof refreshCommit==='function') refreshCommit();
   }
   drawSteps(); stepBody.append(stepsList); stepsPanel.append(stepBody); b.append(stepsPanel);
 
@@ -1559,6 +1585,7 @@ function openProject(id,preset){
     inhouseCost.style.display=ih?'':'none';
     inhousePanel.style.display=ih?'':'none';
     bidsWrap.style.display=ih?'none':'';
+    contractWrap.style.display=ih?'none':'';
     stepsPanel.style.display=ih?'none':'';
     sheet.classList.toggle('ih-mode',ih);
   }
@@ -1617,7 +1644,7 @@ function projNextStatus(p){
   if(s.paid) return 'Paid — awaiting closeout';
   if(s.workCompleted) return 'Work done — awaiting payment';
   if(s.workStarted) return 'Work in progress';
-  if(s.signed||s.contractSaved) return 'Awaiting work start';
+  if(s.signed) return 'Awaiting work start';
   if(s.contractGenerated) return 'Awaiting countersignature';
   if(s.approved) return 'Awaiting contract';
   const bidCt=(p.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
@@ -1668,7 +1695,7 @@ function buildUpdateEmail(code){
   const WARM_TINTS=[['#f7ecca','#fcf7e9'],['#f6e0cd','#fbf2ea'],['#f4d9d4','#fbf0ee'],['#f2e3d3','#faf3ea'],['#efe0e0','#f9f2f2']];
   // Lien-waiver state: filed > received > pending; N/A for in-house / no-contract.
   const lienCell=x=>{ if(isInHouse(x)||x.noContract) return '—';
-    const s=x.steps||{}; return s.lienSaved?'Filed':(s.lienWaiver?'Received':'Pending'); };
+    const s=x.steps||{}; return s.lienWaiver?'Received':'Pending'; };
   const projTable=(list,tints,full)=>{
     const order=[]; const by=new Map();
     list.forEach(x=>{ const lab=projStatusLabel(x); if(!by.has(lab)){by.set(lab,[]);order.push(lab);} by.get(lab).push(x); });
@@ -2025,7 +2052,7 @@ function viewProperty(){
     [ hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
       hstat(`Proj addt Expenses ${fy}`, fmt(projRemainingSpendInt), 'none', intProj?`net ${fmt(intProj,false)} interest income`:'committed, not yet paid', openInterest),
-      hstat(`${fy} Budget Proj`, fmt(yyyyBudgetProj), ybpTone, `${fmt(remaining,false)} budget less proj spend`),
+      hstat(`Remaining in ${fy}`, fmt(yyyyBudgetProj), ybpTone, `${fmt(remaining,false)} budget less proj spend`),
       hstat(`${fy} Remaining Accretion`, fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${(madePct-effectiveSentPct).toFixed(2)}% spread · ${futureQtrs}q future${inclAccretion?'':' · excl.'}`, openAccretion),
       hstat(`Proj ${fy} end Cash`, fmt(projEndCash), projEndTone, projEndSub, openReturns),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units (proj end cash)`:'no unit count') ]);

@@ -15,9 +15,9 @@ function blankState(over: Partial<AppState> = {}): AppState {
 }
 
 describe('constants', () => {
-  it('approved is index 2; 12 steps; $5k threshold', () => {
+  it('approved is index 2; 10 steps; $5k threshold', () => {
     expect(APPROVED_IDX).toBe(2);
-    expect(STEP_KEYS.length).toBe(12);
+    expect(STEP_KEYS.length).toBe(10);
     expect(OVER_THRESHOLD).toBe(5000);
   });
 });
@@ -73,10 +73,10 @@ describe('advance & cascade (spec §5.2)', () => {
     expect(p.steps!.workCompleted).toBe(false);
     expect(p.steps!.workStarted).toBe(false);
   });
-  it('no-contract excludes the 3 contract steps from cascade and applicable count', () => {
+  it('no-contract excludes the contract steps from cascade and applicable count', () => {
     const p = proj({ noContract: true });
     expect(appKeys(p)).not.toContain('signed');
-    expect(stepsTotal(p)).toBe(9);
+    expect(stepsTotal(p)).toBe(8);
     toggleStep(p, STEP_KEYS.indexOf('workStarted'));
     // contract steps stay false because they're N/A
     expect(p.steps!.signed).toBeFalsy();

@@ -428,6 +428,32 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .sheet-editor.ih-mode .ed-side{display:none}
 @media(max-width:860px){ .editor-grid{grid-template-columns:1fr} }
 
+/* ---- project editor: option pills (hold / pin / in-house / no-contract / commit) ---- */
+.opt-row{display:flex;gap:8px;flex-wrap:wrap;margin-top:2px}
+.opt-pill{display:inline-flex;align-items:center;gap:7px;border:1px solid var(--line);background:var(--panel);border-radius:20px;padding:6px 13px;font-size:12.5px;font-weight:600;color:var(--ink-2);transition:.12s}
+.opt-pill .op-ic{font-size:12px;filter:grayscale(.4);opacity:.8}
+.opt-pill:hover{border-color:#cfd4dc;background:var(--panel-2)}
+.opt-pill.on{color:#fff;background:var(--ink);border-color:var(--ink)}
+.opt-pill.on .op-ic{filter:none;opacity:1}
+.opt-pill.hold.on{background:var(--rust);border-color:var(--rust)}
+.opt-pill.pin.on{background:var(--wheat);border-color:var(--wheat);color:#231603}
+.opt-pill.ih-p.on{background:#6d4ca8;border-color:#6d4ca8}
+.opt-pill.commit.on{background:var(--green);border-color:var(--green)}
+:root[data-theme="dark"] .opt-pill.nc.on{background:#313849;border-color:#313849}
+
+/* ---- project editor: contract section rows ---- */
+.ct-row{display:flex;align-items:center;gap:9px;flex-wrap:wrap;padding:10px 0;border-bottom:1px solid var(--line-2)}
+.ct-row:last-child{border-bottom:0}
+.ct-lab{font-weight:600;font-size:12.5px;min-width:150px}
+.ct-drop{border:2px dashed var(--line-2)!important;border-radius:8px;padding:8px 10px;transition:background .15s}
+.ct-ok{font-size:12px;font-weight:700;color:var(--green)}
+.ct-ok.lien{color:#8a63c9}
+
+/* ---- lien waiver: purple completion (track segment + checklist row) ---- */
+.track .seg.done.lien{background:#8a63c9}
+.step.on.lien{border-color:#8a63c9}
+.step.on.lien .num{background:#8a63c9;border-color:#8a63c9;color:#fff}
+
 /* ---- property projects list rows ---- */
 .proj-row{padding:11px 16px;border-bottom:1px solid var(--line-2)}
 .pr-head{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}

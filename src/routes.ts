@@ -353,6 +353,27 @@ api.post('/import/cushion/confirm', async (req, res) => {
   res.json({ ok: true, count: Object.keys(found).length });
 });
 
+/* ---------- Externally generated contract upload (fills the "generated" slot) ---------- */
+api.post('/projects/:id/contract-file', memUpload.single('file'), async (req, res) => {
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  const projRow = await query('select * from projects where id=$1', [req.params.id]);
+  if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
+  const proj = projRow.rows[0];
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  // Same cascade as generating in-app: contractGenerated + earlier non-N/A steps.
+  const steps: Record<string, boolean> = { ...(proj.steps || {}), contractGenerated: true };
+  const noContract = !!proj.no_contract;
+  STEP_KEYS.slice(0, STEP_KEYS.indexOf('contractGenerated')).forEach((k) => {
+    if (!(noContract && CONTRACT_STEPS.includes(k))) steps[k] = true;
+  });
+  await query(
+    'update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
+    [key, f.originalname, JSON.stringify(steps), proj.id]
+  );
+  res.json({ fileKey: key, fileName: f.originalname, steps });
+});
+
 /* ---------- Executed contract upload ---------- */
 api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req, res) => {
   const f = req.file;
@@ -362,8 +383,8 @@ api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req
   const proj = projRow.rows[0];
   const lwSigned = req.body?.lwSigned === 'true' || req.body?.lwSigned === true;
   const key = await storeFile(f.originalname, f.mimetype, f.buffer);
-  let steps = { ...(proj.steps || {}), signed: true, contractSaved: true };
-  if (lwSigned) { steps = { ...steps, lienWaiver: true, lienSaved: true }; }
+  let steps = { ...(proj.steps || {}), signed: true };
+  if (lwSigned) { steps = { ...steps, lienWaiver: true }; }
   await query(
     'update projects set executed_contract_file_key=$1, executed_contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
     [key, f.originalname, JSON.stringify(steps), proj.id]
@@ -377,7 +398,7 @@ api.post('/projects/:id/lien-waiver', memUpload.single('file'), async (req, res)
   if (!f) return res.status(400).json({ error: 'no file' });
   const projRow = await query('select steps from projects where id=$1', [req.params.id]);
   if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
-  const steps = JSON.stringify({ ...(projRow.rows[0].steps || {}), lienWaiver: true, lienSaved: true });
+  const steps = JSON.stringify({ ...(projRow.rows[0].steps || {}), lienWaiver: true });
   const key = await storeFile(f.originalname, f.mimetype, f.buffer);
   await query(
     'update projects set lien_waiver_file_key=$1, lien_waiver_file_name=$2, steps=$3, updated_at=now() where id=$4',

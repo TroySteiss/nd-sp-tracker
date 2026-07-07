@@ -182,24 +182,23 @@ export interface AppState {
   contractors?: Contractor[];
 }
 
-/* ---------- Lifecycle (the 12 steps from the workflow brief) ---------- */
+/* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
+   from the executed-contract / lien-waiver attachments) ---------- */
 export const LIFECYCLE = [
   { key: 'planned',           label: 'Planned',                short: 'Plan', desc: 'Scope, anticipated cost and planned timing captured.' },
   { key: 'gotBids',           label: 'Bids Received',          short: 'Bids', desc: 'Bids collected (3 is standard; not always required).' },
   { key: 'approved',          label: 'Bid Approved',           short: 'Appr', desc: 'One bid selected and approved.' },
   { key: 'contractGenerated', label: 'Contract Generated',     short: 'Ctrct', desc: 'Contract drafted to the approved bid and sent to the contractor.' },
-  { key: 'signed',            label: 'Signed & Countersigned', short: 'Sign', desc: 'Contractor signed; we countersigned and returned.' },
-  { key: 'contractSaved',     label: 'Contract Filed',         short: 'File', desc: 'Executed contract saved in the property SharePoint folder.' },
+  { key: 'signed',            label: 'Signed & Countersigned', short: 'Sign', desc: 'Auto — ticks when the executed contract is attached.' },
   { key: 'workStarted',       label: 'Work Started',           short: 'Start', desc: 'Work underway (may run in phases).' },
   { key: 'workCompleted',     label: 'Work Completed',         short: 'Done', desc: 'Contractor completed the work or phase.' },
   { key: 'paid',              label: 'Work Paid For',          short: 'Paid', desc: 'Invoice paid (confirmed by the general ledger).' },
   { key: 'completed',         label: 'Completed',              short: '✓',    desc: 'Work closed out; reflected in the financial statements.' },
-  { key: 'lienWaiver',        label: 'Lien Waiver Received',   short: 'Lien', desc: 'Contractor returned the lien waiver.' },
-  { key: 'lienSaved',         label: 'Waiver Filed',           short: 'WFile', desc: 'Lien waiver saved in the same SharePoint folder.' },
+  { key: 'lienWaiver',        label: 'Lien Waiver Received',   short: 'Lien', desc: 'Auto — ticks when the lien waiver is attached.' },
 ] as const;
 
 export const STEP_KEYS: string[] = LIFECYCLE.map(s => s.key);
-export const CONTRACT_STEPS = ['contractGenerated', 'signed', 'contractSaved'];
+export const CONTRACT_STEPS = ['contractGenerated', 'signed'];
 export const APPROVED_IDX = STEP_KEYS.indexOf('approved'); // workflow "lock-in" point (2)
 export const OVER_THRESHOLD = 5000;                        // $5K threshold (3 uses, see spec §7.5)
 

@@ -1696,7 +1696,7 @@ function openUpdateEmail(code){
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Draft update email · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
   const bb=el('div',{class:'sb'});
-  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then Copy pastes into Outlook with the tables intact. "Open in email" sends plain text.'));
+  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then "Outlook draft" opens a ready-to-send compose window with the tables intact. Copy also pastes rich; the plain-text link is the last resort.'));
   const subInp=el('input',{value:subject,style:'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;background:var(--panel);color:var(--ink)'});
   // White canvas regardless of app theme — it previews how the email will look.
   const bodyDiv=el('div',{contenteditable:'true',style:'background:#ffffff;color:#1b1e26;border:1px solid var(--line);border-radius:8px;padding:14px;min-height:300px;max-height:52vh;overflow:auto'});
@@ -1714,10 +1714,27 @@ function openUpdateEmail(code){
       toast('Copied — paste into Outlook');
     }
   }},'📋 Copy');
-  const mailBtn=el('button',{class:'btn accent',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'✉ Open in email');
+  // mailto: is spec-limited to a plain-text body, so it can never carry the
+  // tables/colors. An .eml draft with X-Unsent: 1 does — Outlook opens it as
+  // an unsent compose window with the HTML rendered.
+  const emlBtn=el('button',{class:'btn accent',onclick:()=>{
+    const htmlDoc='<html><head><meta charset="utf-8"></head><body>'+bodyDiv.innerHTML+'</body></html>';
+    const bytes=new TextEncoder().encode(htmlDoc);
+    let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b));
+    const b64=btoa(bin).replace(/(.{76})/g,'$1\r\n');
+    const eml='Subject: '+subInp.value.replace(/[\r\n]+/g,' ')+'\r\n'
+      +'X-Unsent: 1\r\nMIME-Version: 1.0\r\n'
+      +'Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64;
+    const url=URL.createObjectURL(new Blob([eml],{type:'message/rfc822'}));
+    const a=el('a',{href:url,download:subInp.value.replace(/[\\/:*?"<>|]/g,'-')+'.eml'});
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),4000);
+    toast('Draft downloaded — open it and Outlook composes with formatting');
+  }},'✉ Outlook draft');
+  const mailBtn=el('button',{class:'btn ghost',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'Plain-text email');
   bb.append(el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Subject'),subInp,
     el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Body'),bodyDiv,
-    el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},copyBtn,mailBtn));
+    el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},mailBtn,copyBtn,emlBtn));
   sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
 }
 

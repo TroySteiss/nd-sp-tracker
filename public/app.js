@@ -1623,6 +1623,18 @@ function projNextStatus(p){
   const bidCt=(p.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
   return `Awaiting approval · ${bidCt}/3 bids`;
 }
+/* Greeting name for the update email: saved override wins, else derived from
+   the first To address (local part before the dot: kianna.parisien@… →
+   "Kianna"), else the manager's first name. */
+function greetingNameFor(p){
+  if(p.updateGreeting&&p.updateGreeting.trim()) return p.updateGreeting.trim();
+  const firstAddr=String(p.updateTo||'').split(/[;,]/)[0].trim();
+  if(firstAddr.includes('@')){
+    const seg=firstAddr.split('@')[0].split('.')[0].replace(/[^a-z'\-]/gi,'');
+    if(seg) return seg.charAt(0).toUpperCase()+seg.slice(1).toLowerCase();
+  }
+  return (p.manager||'').trim().split(/\s+/)[0]||'';
+}
 /* Build the "is this up to date?" email for a property: SP budget/cash summary +
    where each active project sits. Returns {subject, html} for the dialog and
    the dashboard bulk download. */
@@ -1639,7 +1651,7 @@ function buildUpdateEmail(code){
   const excluded=projForProp(code)
     .filter(x=>!inclSet.has(x)&&!isComplete(x)&&phase(x)!=='note')
     .sort(byStage);
-  const firstName=(p.manager||'').trim().split(/\s+/)[0]||'';
+  const firstName=greetingNameFor(p);
   const nowD=new Date();
   const subject=`SP Update Check - ${code} ${String(nowD.getDate()).padStart(2,'0')}/${String(nowD.getMonth()+1).padStart(2,'0')}/${nowD.getFullYear()}`;
 
@@ -1747,11 +1759,11 @@ function makeZip(files){   // files: [{name, bytes:Uint8Array}]
   chunks.push(new Uint8Array([0x50,0x4B,5,6,...u16(0),...u16(0),...u16(central.length),...u16(central.length),...u32(offset-cdStart),...u32(cdStart),...u16(0)]));
   return new Blob(chunks,{type:'application/zip'});
 }
-/* Remember To/CC per property so drafts come pre-addressed. */
-async function saveRecipients(code,to,cc){
-  const pr=PROP(code); if(pr && pr.updateTo===to && pr.updateCc===cc) return;
-  try{ await API.send('PATCH','/properties/'+code+'/recipients',{updateTo:to,updateCc:cc}); if(pr){pr.updateTo=to;pr.updateCc=cc;} }
-  catch(e){ toast('Could not save recipients: '+e.message); }
+/* Remember To/CC + greeting override per property so drafts come pre-addressed. */
+async function saveRecipients(code,to,cc,greeting){
+  const pr=PROP(code); if(pr && pr.updateTo===to && pr.updateCc===cc && (pr.updateGreeting||'')===greeting) return false;
+  try{ await API.send('PATCH','/properties/'+code+'/recipients',{updateTo:to,updateCc:cc,updateGreeting:greeting}); if(pr){pr.updateTo=to;pr.updateCc=cc;pr.updateGreeting=greeting;} return true; }
+  catch(e){ toast('Could not save recipients: '+e.message); return false; }
 }
 
 function openUpdateEmail(code){
@@ -1761,11 +1773,33 @@ function openUpdateEmail(code){
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Draft update email · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
   const bb=el('div',{class:'sb'});
-  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'To / CC are remembered for this property. "Outlook draft" opens a ready-to-send compose window with the tables intact; Copy pastes rich.'));
+  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'"Outlook draft" opens a ready-to-send compose window with the tables intact; Copy pastes rich.'));
   const inpStyle='width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)';
   const lbl=t=>el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin:10px 0 4px'},t);
-  const toInp=el('input',{value:p.updateTo||'',placeholder:'manager@monarchinvestment.com; …',style:inpStyle,onchange:()=>saveRecipients(code,toInp.value.trim(),ccInp.value.trim())});
-  const ccInp=el('input',{value:p.updateCc||'',placeholder:'regional@…; accounting@… (optional)',style:inpStyle,onchange:()=>saveRecipients(code,toInp.value.trim(),ccInp.value.trim())});
+  // Compact recipients line + ⚙ settings popup (To / CC / greeting live there).
+  const recipTxt=el('span',{style:'flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;font-size:12px;color:var(--ink-2)'});
+  const refreshRecip=()=>{ const pr=PROP(code)||{};
+    recipTxt.textContent=(pr.updateTo?'To: '+pr.updateTo:'To: — (set recipients)')+(pr.updateCc?'   ·   CC: '+pr.updateCc:''); };
+  refreshRecip();
+  function openRecipSettings(){
+    const pr=PROP(code)||{};
+    const s2=el('div',{class:'scrim modal-center',style:'z-index:2000',onclick:e=>{if(e.target===s2)closeSettings();}});
+    const sh2=el('div',{class:'sheet'});
+    const autoName=(()=>{const t={...pr,updateGreeting:''};return greetingNameFor(t);})();
+    const toI=el('input',{value:pr.updateTo||'',placeholder:'kianna.parisien@monarchinvestment.com; …',style:inpStyle});
+    const ccI=el('input',{value:pr.updateCc||'',placeholder:'regional@…; accounting@… (optional)',style:inpStyle});
+    const grI=el('input',{value:pr.updateGreeting||'',placeholder:autoName?`auto: ${autoName}`:'auto from the To address',style:inpStyle});
+    const closeSettings=async()=>{
+      const changed=await saveRecipients(code,toI.value.trim(),ccI.value.trim(),grI.value.trim());
+      s2.remove(); refreshRecip();
+      if(changed){ bodyDiv.innerHTML=buildUpdateEmail(code).html; }   // greeting may have changed
+    };
+    sh2.append(el('div',{class:'sh'}, el('h2',{style:'font-size:15px;flex:1'},'Email settings · '+code), el('button',{class:'btn ghost',onclick:closeSettings},'Done')),
+      el('div',{class:'sb'},
+        el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12px'},'Saved with the property — drafts (including the dashboard bulk download) come pre-addressed. Greeting is pulled from the To address unless overridden.'),
+        lbl('To'),toI, lbl('CC'),ccI, lbl('Greeting name (override)'),grI));
+    s2.append(sh2); document.body.append(s2);
+  }
   const subInp=el('input',{value:subject,style:inpStyle});
   // White canvas regardless of app theme — it previews how the email will look.
   const bodyDiv=el('div',{contenteditable:'true',style:'background:#ffffff;color:#1b1e26;border:1px solid var(--line);border-radius:8px;padding:14px;min-height:260px;max-height:46vh;overflow:auto;margin-top:4px'});
@@ -1784,13 +1818,16 @@ function openUpdateEmail(code){
     }
   }},'📋 Copy');
   const emlBtn=el('button',{class:'btn accent',onclick:()=>{
-    saveRecipients(code,toInp.value.trim(),ccInp.value.trim());
-    const eml=buildEml({subject:subInp.value,to:toInp.value,cc:ccInp.value,html:bodyDiv.innerHTML});
+    const pr=PROP(code)||{};
+    const eml=buildEml({subject:subInp.value,to:pr.updateTo,cc:pr.updateCc,html:bodyDiv.innerHTML});
     downloadBlob(new Blob([eml],{type:'message/rfc822'}), emlFileName(subInp.value));
     toast('Draft downloaded — open it and Outlook composes with formatting');
   }},'✉ Outlook draft');
-  const mailBtn=el('button',{class:'btn ghost',onclick:()=>{window.location.href='mailto:'+encodeURIComponent(toInp.value)+'?cc='+encodeURIComponent(ccInp.value)+'&subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'Plain-text email');
-  bb.append(lbl('To'),toInp, lbl('CC'),ccInp, lbl('Subject'),subInp, lbl('Body'),bodyDiv,
+  const mailBtn=el('button',{class:'btn ghost',onclick:()=>{const pr=PROP(code)||{};window.location.href='mailto:'+encodeURIComponent(pr.updateTo||'')+'?cc='+encodeURIComponent(pr.updateCc||'')+'&subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'Plain-text email');
+  bb.append(
+    el('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:2px'}, recipTxt,
+      el('button',{class:'btn ghost sm',title:'To / CC / greeting — saved with the property',onclick:openRecipSettings},'⚙')),
+    lbl('Subject'),subInp, lbl('Body'),bodyDiv,
     el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},mailBtn,copyBtn,emlBtn));
   sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
 }

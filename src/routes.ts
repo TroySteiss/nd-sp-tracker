@@ -244,11 +244,11 @@ api.delete('/cash-adjustments/:id', async (req, res) => {
   res.json({ ok: true });
 });
 
-/* ---------- update-email recipients (remembered per property) ---------- */
+/* ---------- update-email recipients + greeting override (per property) ---------- */
 api.patch('/properties/:code/recipients', async (req, res) => {
   const b = req.body || {};
-  await query('update properties set update_to=$1, update_cc=$2 where code=$3',
-    [String(b.updateTo || ''), String(b.updateCc || ''), req.params.code.toUpperCase()]);
+  await query('update properties set update_to=$1, update_cc=$2, update_greeting=$3 where code=$4',
+    [String(b.updateTo || ''), String(b.updateCc || ''), String(b.updateGreeting || ''), req.params.code.toUpperCase()]);
   res.json({ ok: true });
 });
 

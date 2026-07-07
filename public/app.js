@@ -1605,14 +1605,18 @@ function openUpdateEmail(code){
   const p=PROP(code)||{}; const cm=cashModel(code);
   const budget=Number(p.spBudget)||0, spent=glSpentFor(code), remaining=budget-spent;
   const asOf=(S.cash[code]&&S.cash[code].asOfDate)||S.meta.cashAsOf||'';
-  // Only projects that are actually counted in the cash projections (outstanding
-  // commitments), grouped by status in pipeline order.
-  const included=cm.outstanding.slice();
-  included.sort((a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a)));
-  const groupOrder=[]; const byLabel=new Map();
-  included.forEach(x=>{ const lab=projStatusLabel(x); if(!byLabel.has(lab)){byLabel.set(lab,[]);groupOrder.push(lab);} byLabel.get(lab).push(x); });
+  // Split the tracked pipeline into what's counted in the cash projections
+  // (outstanding commitments) and everything else still open (discussed,
+  // on hold, paid-awaiting-closeout). Completed work and bare notes stay out.
+  const byStage=(a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a));
+  const included=cm.outstanding.slice().sort(byStage);
+  const inclSet=new Set(included);
+  const excluded=projForProp(code)
+    .filter(x=>!inclSet.has(x)&&!isComplete(x)&&phase(x)!=='note')
+    .sort(byStage);
   const firstName=(p.manager||'').trim().split(/\s+/)[0]||'';
-  const subject=`SP Update Check — ${code}${p.name?' · '+p.name:''}`;
+  const nowD=new Date();
+  const subject=`SP Update Check - ${code} ${String(nowD.getDate()).padStart(2,'0')}/${String(nowD.getMonth()+1).padStart(2,'0')}/${nowD.getFullYear()}`;
 
   // HTML body with real tables. Inline styles + hard-coded colors only — this
   // gets pasted into Outlook, where CSS variables and stylesheets don't exist.
@@ -1621,6 +1625,27 @@ function openUpdateEmail(code){
   const tdR=tdL+'text-align:right;white-space:nowrap;';
   const moneyCell=(n,extra='')=>`<td style="${tdR}${Number(n)<0?'color:'+NEG+';':''}${extra}">${esc(fmt(n))}</td>`;
   const hdTxt='font-family:Calibri,Arial,sans-serif;font-size:13px;font-weight:bold;margin:16px 0 6px;';
+  // Each status subsection gets its own tint: [group-header bg, member-row bg].
+  const GROUP_TINTS=[['#dcebe2','#f2f9f5'],['#dde9f4','#f3f8fc'],['#f7ecca','#fcf7e9'],['#e8e1f5','#f6f3fb'],['#f4ded6','#fbf1ed'],['#e4e7ec','#f4f6f8']];
+  const projTable=(list)=>{
+    const order=[]; const by=new Map();
+    list.forEach(x=>{ const lab=projStatusLabel(x); if(!by.has(lab)){by.set(lab,[]);order.push(lab);} by.get(lab).push(x); });
+    let t=`<table style="border-collapse:collapse">`
+      +`<tr><th style="${tdL}background:#e9ecf0;text-align:left">Project</th><th style="${tdR}background:#e9ecf0">Amount</th><th style="${tdL}background:#e9ecf0;text-align:center">Bids saved</th></tr>`;
+    order.forEach((lab,gi)=>{
+      const [gbg,rbg]=GROUP_TINTS[gi%GROUP_TINTS.length];
+      t+=`<tr><td colspan="3" style="${tdL}background:${gbg};font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
+      by.get(lab).forEach(x=>{
+        const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);
+        const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
+        // Bid counts only matter before approval; past that the bid is settled.
+        const showBids=!isInHouse(x)&&!isApproved(x);
+        t+=`<tr><td style="${tdL}background:${rbg}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt,'background:'+rbg+';')}<td style="${tdL}background:${rbg};text-align:center">${showBids?bidCt+'/3':'—'}</td></tr>`;
+      });
+    });
+    return t+`</table>`;
+  };
+  const noneP=t=>`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0">${t}</p>`;
   const projRemaining=budget-spent-cm.outstandingTotal;
   let html=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0 0 12px">Hi${firstName?' '+esc(firstName):''},</p>`
     +`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0 0 14px">Could you confirm the summary below is up to date, and flag any changes to costs, status, or new projects to add?</p>`
@@ -1632,23 +1657,11 @@ function openUpdateEmail(code){
     +`<tr><td style="${tdL}">Outstanding commitments</td>${moneyCell(cm.outstandingTotal)}</tr>`
     +`<tr><td style="${tdL}font-weight:bold;background:#f2f4f7">Budget remaining (projected)</td>${moneyCell(projRemaining,'font-weight:bold;background:#f2f4f7;')}</tr>`
     +`</table>`
-    +`<p style="${hdTxt}">PROJECTS IN CASH PROJECTIONS (${included.length})</p>`;
-  if(included.length){
-    html+=`<table style="border-collapse:collapse">`
-      +`<tr><th style="${tdL}background:#e9ecf0;text-align:left">Project</th><th style="${tdR}background:#e9ecf0">Amount</th><th style="${tdL}background:#e9ecf0;text-align:center">Bids saved</th></tr>`;
-    groupOrder.forEach(lab=>{
-      html+=`<tr><td colspan="3" style="${tdL}background:#f2f4f7;font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
-      byLabel.get(lab).forEach(x=>{
-        const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);   // the amount counted in projections
-        const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
-        html+=`<tr><td style="${tdL}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt)}<td style="${tdL}text-align:center">${isInHouse(x)?'—':bidCt+'/3'}</td></tr>`;
-      });
-    });
-    html+=`</table>`;
-  } else {
-    html+=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0">(none committed)</p>`;
-  }
-  html+=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:14px 0 0">Please reply with any updates or corrections. Thanks!</p>`;
+    +`<p style="${hdTxt}">PROJECTS IN CASH PROJECTIONS (${included.length})</p>`
+    +(included.length?projTable(included):noneP('(none committed)'))
+    +`<p style="${hdTxt}">PROJECTS NOT IN CASH PROJECTIONS (${excluded.length})</p>`
+    +(excluded.length?projTable(excluded):noneP('(none)'))
+    +`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:14px 0 0">Please reply with any updates or corrections. Thanks!</p>`;
 
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet'});

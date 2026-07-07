@@ -56,6 +56,7 @@ let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase group
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
 let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
+let QS={year:null,q:null};   // quarterly summary picker (Money tab)
 const PCOLOR={
   /* Minot — shades of blue */
   CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
@@ -1070,12 +1071,12 @@ function progressEl(p){
 }
 function trackEl(p){
   const t=el('div',{class:'track'});
-  const steps=appLifecycle(p);                       // N/A (no-contract) steps excluded
+  // N/A (no-contract) and auto attachment-derived steps excluded from the bar.
+  const steps=appLifecycle(p).filter(s=>!AUTO_STEPS.includes(s.key));
   let cur=-1; steps.forEach((s,i)=>{ if(p.steps&&p.steps[s.key])cur=i; });
   steps.forEach((s,i)=>{
     const done=p.steps&&p.steps[s.key];
-    // Lien waiver renders purple when done (visually distinct from work steps).
-    const cls=done?(s.key==='lienWaiver'?'seg done lien':(i===cur&&!isComplete(p)?'seg cur':'seg done')):'seg';
+    const cls=done?(i===cur&&!isComplete(p)?'seg cur':'seg done'):'seg';
     const seg=el('div',{class:cls,title:`${s.label}${done?' ✓':''}`});
     t.append(seg);
   });
@@ -2327,6 +2328,129 @@ function openGLMatch(g,code){
 /* =========================================================
    CASH & LOANS
 ========================================================= */
+/* =========================================================
+   QUARTERLY SUMMARY (Money tab) — narrative draft language per
+   portfolio/property for a chosen quarter, in the style of the
+   quarterly investor reports. Built from the quarter's GL lines
+   (notes/vendors/linked projects) plus the tracker pipeline for
+   the "future special projects" sentence.
+========================================================= */
+// Portfolio membership per the QIR tool's data/portfolios.json (Address Key).
+const PORTFOLIOS=[
+  {key:'minot4', name:'Minot 4 Portfolio',            props:['CLND','SPND','TCND','TPND']},
+  {key:'will2',  name:'Williston 2 Portfolio',        props:['BCND','ECND']},
+  {key:'basin',  name:'Basin Portfolio',              props:['FHND','PHND']},
+  {key:'wynd',   name:'The Wyatt at Northern Lights', props:['WYND']},
+];
+const fmtQK=n=>'$'+Math.round(Math.abs(n)/1000)+'K';   // report convention: $36K
+const qtrOf=iso=>{ const m=+String(iso||'').slice(5,7); return m?Math.ceil(m/3):null; };
+function qRange(y,q){ const endM=q*3; const last=new Date(y,endM,0).getDate();
+  return [`${y}-${String(endM-2).padStart(2,'0')}-01`, `${y}-${String(endM).padStart(2,'0')}-${String(last).padStart(2,'0')}`]; }
+const glForQuarter=(code,y,q)=>{ const [s,e]=qRange(y,q); return S.gl.filter(g=>g.property===code&&g.date>=s&&g.date<=e); };
+// Human-ish description of a GL line: linked project name > remarks > vendor > category.
+function glDesc(g){
+  const linked=g.linkedProjectId&&S.projects.find(p=>p.id===g.linkedProjectId);
+  let d=String((linked&&linked.name)||g.remarks||g.vendor||g.category||'miscellaneous work').trim();
+  if(d===d.toUpperCase()) d=d.toLowerCase();
+  return d.replace(/\.$/,'');
+}
+const lcFirst=s=>{ s=String(s).trim().replace(/\.$/,''); return /^[A-Z][a-z]/.test(s)?s.charAt(0).toLowerCase()+s.slice(1):s; };
+const joinAnd=arr=>{ arr=arr.filter(Boolean); if(!arr.length)return ''; if(arr.length===1)return arr[0];
+  if(arr.length===2)return arr[0]+' as well as '+arr[1];
+  return arr.slice(0,-1).join(', ')+', as well as '+arr[arr.length-1]; };
+// Pipeline items that read as "future" work: discussed / notes / on hold / approved but not yet started.
+function futureSPList(code){
+  const seen=new Set();
+  return projForProp(code)
+    .filter(p=>!isComplete(p)&&!isPaidP(p)&&!(p.steps&&p.steps.workStarted)&&phase(p)!=='done')
+    .sort((a,b)=>projOutflow(b)-projOutflow(a))
+    .map(p=>lcFirst(p.name)).filter(Boolean)
+    .filter(n=>{ const k=n.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true; });
+}
+function qSpend(code,y,q){
+  const lines=glForQuarter(code,y,q);
+  const interest=lines.filter(isInterestGL).reduce((a,g)=>a+Math.abs(+g.amount||0),0);
+  const total=lines.filter(g=>!isInterestGL(g)).reduce((a,g)=>a+(+g.amount||0),0);
+  const items=lines.filter(g=>!isInterestGL(g)&&(+g.amount||0)>0).sort((a,b)=>b.amount-a.amount);
+  return {total,interest,items};
+}
+function topDescs(items,limit,withProp){
+  const out=[],seen=new Set();
+  for(const it of items){
+    const g=it.g||it, code=it.code;
+    let d=glDesc(g); const k=d.toLowerCase();
+    if(seen.has(k))continue; seen.add(k);
+    if(withProp&&code){ const nm=(PROP(code)||{}).name||code; d+=' at '+nm; }
+    out.push({d,amt:+g.amount});
+    if(out.length>=limit)break;
+  }
+  return out;
+}
+function propQuarterDraft(code,y,q){
+  const {total,interest,items}=qSpend(code,y,q);
+  const parts=[];
+  parts.push(total>500?`${fmtQK(total)} was spent on Special Projects throughout the quarter.`
+                      :'Special Projects spend was minimal during the quarter.');
+  const ds=topDescs(items,4,false);
+  if(ds.length){
+    parts.push(`The largest cost incurred was attributed to ${ds[0].d} (${fmtQK(ds[0].amt)}).`);
+    if(ds.length>1) parts.push(`Other costs included ${joinAnd(ds.slice(1).map(x=>x.d))}.`);
+  }
+  if(interest>500) parts.push(`The property benefited from ${fmtQK(interest)} of interest income accrued throughout the quarter, resulting in an effective SP cost of ${fmtQK(total-interest)}.`);
+  const fut=futureSPList(code).slice(0,7);
+  if(fut.length) parts.push(`Future Special Projects could include ${joinAnd(fut)}.`);
+  return parts.join('  ');
+}
+function portQuarterDraft(pf,y,q){
+  let total=0,interest=0; const items=[];
+  pf.props.forEach(code=>{ const s=qSpend(code,y,q); total+=s.total; interest+=s.interest; s.items.forEach(g=>items.push({g,code})); });
+  items.sort((a,b)=>b.g.amount-a.g.amount);
+  const parts=[`${fmtQK(total)} was spent on Special Projects during the quarter.`];
+  const ds=topDescs(items,4,true);
+  if(ds.length) parts.push(`Special Projects included costs associated with ${joinAnd(ds.map(x=>x.d))}.`);
+  if(interest>500) parts.push(`The portfolio did benefit from ${fmtQK(interest)} of interest income accrued throughout the quarter, resulting in an effective SP cost of ${fmtQK(total-interest)}.`);
+  const fut=[];
+  pf.props.forEach(code=>{ const nm=(PROP(code)||{}).name||code;
+    futureSPList(code).slice(0,3).forEach(f=>fut.push(`${f} at ${nm}`)); });
+  if(fut.length) parts.push(`Future Special Projects may include ${joinAnd(fut.slice(0,8))}.`);
+  parts.push('On top of these projects, we intend to also continue to address curb appeal items and other minor building repairs throughout the portfolio, as our attention to street appeal and resident satisfaction has allowed for further rental growth and sustained occupancy.');
+  return parts.join('  ');
+}
+function quarterlySummaryPanel(){
+  const isMobile=window.matchMedia('(max-width:820px)').matches;
+  // default to the latest quarter present in the GL
+  const dates=S.gl.map(g=>g.date).filter(Boolean).sort();
+  const latest=dates[dates.length-1]||today();
+  if(!QS.year){ QS.year=+latest.slice(0,4); QS.q=qtrOf(latest)||1; }
+  const qs=el('details',{class:'panel coll'}); qs.open=!isMobile;
+  qs.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Quarterly summary'), el('div',{class:'sp'}),
+    el('span',{class:'chip'},`Q${QS.q} ${QS.year}`)));
+  const bodyEl=el('div',{class:'pad'});
+  // quarter picker
+  const years=[...new Set(dates.map(d=>+d.slice(0,4)))]; if(!years.length)years.push(+today().slice(0,4));
+  const yearSel=el('select',{class:'mini-sel',onchange:e=>{QS.year=+e.target.value;render();}});
+  years.forEach(y=>yearSel.append(el('option',{value:String(y),...(QS.year===y?{selected:true}:{})},String(y))));
+  const qSel=el('select',{class:'mini-sel',onchange:e=>{QS.q=+e.target.value;render();}});
+  [1,2,3,4].forEach(n=>qSel.append(el('option',{value:String(n),...(QS.q===n?{selected:true}:{})},'Q'+n)));
+  bodyEl.append(el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px'},
+    el('span',{class:'bub-lab'},'Quarter'), qSel, yearSel,
+    el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'Drafts built from the quarter’s GL (notes, vendors, linked projects) + the tracker pipeline. Edit freely, then copy.')));
+  const copyBtn=txtEl=>el('button',{class:'btn ghost sm',onclick:async()=>{try{await navigator.clipboard.writeText(txtEl.value);toast('Copied');}catch(e){txtEl.select();document.execCommand('copy');toast('Copied');}}},'📋 Copy');
+  const draftBox=text=>{ const ta=el('textarea',{class:'qs-draft'}); ta.value=text; return ta; };
+  // One report per portfolio: multi-property portfolios get a single high-level
+  // summary; standalone sites (WYND) get the property-style narrative.
+  PORTFOLIOS.forEach(pf=>{
+    const card=el('div',{class:'qs-card'});
+    card.append(el('div',{class:'qs-head'}, el('strong',{},pf.name),
+      el('span',{class:'bs-meta'},pf.props.join(' · '))));
+    const ta=draftBox(pf.props.length>1?portQuarterDraft(pf,QS.year,QS.q):propQuarterDraft(pf.props[0],QS.year,QS.q));
+    card.append(el('div',{class:'qs-row'}, el('span',{class:'qs-lab'},pf.props.length>1?'Portfolio report':'Property report'), copyBtn(ta)), ta);
+    bodyEl.append(card);
+  });
+  qs.append(bodyEl);
+  return qs;
+}
+
 function viewCash(){
   const bar=topbar('Money','Cash & Loans',
     el('button',{class:'btn accent',onclick:openAdjust},'+ Cash adjustment'));
@@ -2379,6 +2503,9 @@ function viewCash(){
     t.append(tbb); ab.append(t);
   }
   ap.append(ab); body.append(ap);
+
+  // quarterly narrative drafts
+  body.append(quarterlySummaryPanel());
   return {bar,body};
 }
 function openAdjust(){

@@ -454,6 +454,14 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .step.on.lien{border-color:#8a63c9}
 .step.on.lien .num{background:#8a63c9;border-color:#8a63c9;color:#fff}
 
+/* ---- quarterly summary (Money tab) ---- */
+.qs-card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px;background:var(--panel-2)}
+.qs-head{display:flex;align-items:baseline;gap:10px;margin-bottom:4px}
+.qs-head strong{font-family:var(--disp);font-size:14px}
+.qs-row{display:flex;align-items:center;gap:8px;margin:10px 0 4px}
+.qs-lab{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);flex:1}
+.qs-draft{width:100%;min-height:88px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-family:var(--body);font-size:13px;line-height:1.55;resize:vertical}
+
 /* ---- property projects list rows ---- */
 .proj-row{padding:11px 16px;border-bottom:1px solid var(--line-2)}
 .pr-head{display:flex;align-items:flex-start;gap:8px;margin-bottom:6px}

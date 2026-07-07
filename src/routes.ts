@@ -28,8 +28,8 @@ const nnull = (v: any): number | null => (v == null || v === '' || isNaN(Number(
 const dnull = (v: any): string | null => {
   if (v == null || v === '') return null;
   const raw = String(v).trim();
-  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); // MM/DD/YYYY -> YYYY-MM-DD
-  if (m) return `${m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`;
+  const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})$/); // M/D/YY[YY] -> YYYY-MM-DD
+  if (m) { const y = m[3].length === 2 ? '20' + m[3] : m[3]; return `${y}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}`; }
   const s = raw.slice(0, 10);
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 };

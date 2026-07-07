@@ -30,7 +30,15 @@ export function parseGL(buffer: Buffer): GLParseResult {
       if (!net && !debit && !credit) return;
       let date: any = r[2];
       if (date instanceof Date) date = date.toISOString().slice(0, 10);
-      else date = String(date || '').slice(0, 10);
+      else if (typeof date === 'number' && date > 20000 && date < 80000) {
+        // Excel serial date (days since 1899-12-30)
+        date = new Date(Math.round((date - 25569) * 86400 * 1000)).toISOString().slice(0, 10);
+      } else {
+        // raw:false → formatted text; normalize M/D/YY[YY] here so it survives dnull
+        const raw = String(date || '').trim();
+        const m = raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2,4})/);
+        date = m ? `${m[3].length === 2 ? '20' + m[3] : m[3]}-${m[1].padStart(2, '0')}-${m[2].padStart(2, '0')}` : raw.slice(0, 10);
+      }
       tx.push({
         id: uid('G'), property: code, account: acct || undefined, category: cat || 'GENERAL', date,
         vendor: String(r[4] || '').slice(0, 80), control: String(r[5] || ''),

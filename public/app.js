@@ -2343,10 +2343,18 @@ const PORTFOLIOS=[
   {key:'wynd',   name:'The Wyatt at Northern Lights', props:['WYND']},
 ];
 const fmtQK=n=>'$'+Math.round(Math.abs(n)/1000)+'K';   // report convention: $36K
+// Normalize a GL date to ISO regardless of stored format (ISO, MM/DD/YYYY, M/D/YY).
+function isoDateOf(v){
+  const raw=String(v||'').trim(); if(!raw)return '';
+  if(/^\d{4}-\d{2}-\d{2}/.test(raw)) return raw.slice(0,10);
+  let m=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})/); if(m) return `${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  m=raw.match(/^(\d{1,2})\/(\d{1,2})\/(\d{2})$/); if(m) return `20${m[3]}-${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}`;
+  return '';
+}
 const qtrOf=iso=>{ const m=+String(iso||'').slice(5,7); return m?Math.ceil(m/3):null; };
 function qRange(y,q){ const endM=q*3; const last=new Date(y,endM,0).getDate();
   return [`${y}-${String(endM-2).padStart(2,'0')}-01`, `${y}-${String(endM).padStart(2,'0')}-${String(last).padStart(2,'0')}`]; }
-const glForQuarter=(code,y,q)=>{ const [s,e]=qRange(y,q); return S.gl.filter(g=>g.property===code&&g.date>=s&&g.date<=e); };
+const glForQuarter=(code,y,q)=>{ const [s,e]=qRange(y,q); return S.gl.filter(g=>{ const d=isoDateOf(g.date); return g.property===code&&d&&d>=s&&d<=e; }); };
 // Human-ish description of a GL line: linked project name > remarks > vendor > category.
 function glDesc(g){
   const linked=g.linkedProjectId&&S.projects.find(p=>p.id===g.linkedProjectId);
@@ -2418,16 +2426,23 @@ function portQuarterDraft(pf,y,q){
 }
 function quarterlySummaryPanel(){
   const isMobile=window.matchMedia('(max-width:820px)').matches;
-  // default to the latest quarter present in the GL
-  const dates=S.gl.map(g=>g.date).filter(Boolean).sort();
-  const latest=dates[dates.length-1]||today();
-  if(!QS.year){ QS.year=+latest.slice(0,4); QS.q=qtrOf(latest)||1; }
+  const dates=S.gl.map(g=>isoDateOf(g.date)).filter(Boolean).sort();
+  const undated=S.gl.length-dates.length;
+  // Default to the last *completed* quarter that has GL data (reports are
+  // written for finished quarters; a just-started quarter is mostly empty).
+  if(!QS.year){
+    const t=today(); let ly=+t.slice(0,4), lq=(qtrOf(t)||1)-1; if(lq<1){lq=4;ly--;}   // last completed
+    const qs=[...new Set(dates.map(d=>`${d.slice(0,4)}-${qtrOf(d)}`))].sort();        // quarters with data
+    const pick=qs.filter(k=>k<=`${ly}-${lq}`).pop()||qs.pop();
+    if(pick){ QS.year=+pick.split('-')[0]; QS.q=+pick.split('-')[1]; }
+    else { QS.year=ly; QS.q=lq; }
+  }
   const qs=el('details',{class:'panel coll'}); qs.open=!isMobile;
   qs.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'), el('h3',{},'Quarterly summary'), el('div',{class:'sp'}),
     el('span',{class:'chip'},`Q${QS.q} ${QS.year}`)));
   const bodyEl=el('div',{class:'pad'});
   // quarter picker
-  const years=[...new Set(dates.map(d=>+d.slice(0,4)))]; if(!years.length)years.push(+today().slice(0,4));
+  const years=[...new Set([...dates.map(d=>+d.slice(0,4)),QS.year])].sort();
   const yearSel=el('select',{class:'mini-sel',onchange:e=>{QS.year=+e.target.value;render();}});
   years.forEach(y=>yearSel.append(el('option',{value:String(y),...(QS.year===y?{selected:true}:{})},String(y))));
   const qSel=el('select',{class:'mini-sel',onchange:e=>{QS.q=+e.target.value;render();}});
@@ -2435,6 +2450,10 @@ function quarterlySummaryPanel(){
   bodyEl.append(el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:6px'},
     el('span',{class:'bub-lab'},'Quarter'), qSel, yearSel,
     el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'Drafts built from the quarter’s GL (notes, vendors, linked projects) + the tracker pipeline. Edit freely, then copy.')));
+  if(undated>0) bodyEl.append(el('div',{style:'font-size:12px;color:var(--rust);margin-bottom:10px'},
+    `⚠ ${undated} GL line${undated!==1?'s have':' has'} no usable date, so they can't be placed in a quarter. Re-upload the GL to fix the dates.`));
+  if(!dates.length) bodyEl.append(el('div',{style:'font-size:12px;color:var(--ink-3);margin-bottom:10px'},
+    'No dated GL lines loaded yet — totals below will be empty until a GL is uploaded.'));
   const copyBtn=txtEl=>el('button',{class:'btn ghost sm',onclick:async()=>{try{await navigator.clipboard.writeText(txtEl.value);toast('Copied');}catch(e){txtEl.select();document.execCommand('copy');toast('Copied');}}},'📋 Copy');
   const draftBox=text=>{ const ta=el('textarea',{class:'qs-draft'}); ta.value=text; return ta; };
   // One report per portfolio: multi-property portfolios get a single high-level

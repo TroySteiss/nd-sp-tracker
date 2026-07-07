@@ -549,8 +549,16 @@ function viewDashboard(){
   const hideChk=el('label',{class:'chk'},
     (()=>{const c=el('input',{type:'checkbox',onchange:e=>{DASH.hidePlanned=e.target.checked;render();}});if(DASH.hidePlanned)c.checked=true;return c;})(),
     'Hide \u2018Planned\u2019');
+  const emailAllBtn=el('button',{class:'btn',title:'Download an Outlook draft (.eml) for every property shown, zipped — To/CC come from each property’s saved recipients',onclick:()=>{
+    const files=props.map(pr=>{ const {subject,html}=buildUpdateEmail(pr.code);
+      return {name:emlFileName(subject), bytes:new TextEncoder().encode(buildEml({subject,to:pr.updateTo,cc:pr.updateCc,html}))}; });
+    if(!files.length){ toast('No properties in view'); return; }
+    const d=new Date();
+    downloadBlob(makeZip(files), `SP Update Emails ${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}.zip`);
+    toast(files.length+' drafts zipped — open each .eml to compose');
+  }},'⬇ Update emails');
   const bar=topbar('Portfolio','Dashboard', regSeg,
-    el('div',{class:'tb-actions'}, hideChk, el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project')));
+    el('div',{class:'tb-actions'}, hideChk, emailAllBtn, el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project')));
   const body=el('div',{class:'grid'});
 
   // property bubble toggles + category filter
@@ -1615,9 +1623,10 @@ function projNextStatus(p){
   const bidCt=(p.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
   return `Awaiting approval · ${bidCt}/3 bids`;
 }
-/* Draft an "is this up to date?" email for a property: SP budget/cash summary +
-   where each active project sits. Shown in a modal to copy or open in email. */
-function openUpdateEmail(code){
+/* Build the "is this up to date?" email for a property: SP budget/cash summary +
+   where each active project sits. Returns {subject, html} for the dialog and
+   the dashboard bulk download. */
+function buildUpdateEmail(code){
   const p=PROP(code)||{}; const cm=cashModel(code);
   const budget=Number(p.spBudget)||0, spent=glSpentFor(code), remaining=budget-spent;
   const asOf=(S.cash[code]&&S.cash[code].asOfDate)||S.meta.cashAsOf||'';
@@ -1691,15 +1700,75 @@ function openUpdateEmail(code){
     +`<p style="${hdTxt}">PROJECTS NOT IN CASH PROJECTIONS (${excluded.length})</p>`
     +(excluded.length?projTable(excluded,WARM_TINTS,false):noneP('(none)'))
     +`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:14px 0 0">Please reply with any updates or corrections. Thanks!</p>`;
+  return {subject, html};
+}
 
+/* RFC-822 unsent draft (X-Unsent: 1) — Outlook opens it as a compose window
+   with the HTML rendered and To/Cc pre-filled; mailto can't carry formatting. */
+function buildEml({subject,to,cc,html}){
+  const htmlDoc='<html><head><meta charset="utf-8"></head><body>'+html+'</body></html>';
+  const bytes=new TextEncoder().encode(htmlDoc);
+  let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b));
+  const b64=btoa(bin).replace(/(.{76})/g,'$1\r\n');
+  const hv=s=>String(s||'').replace(/[\r\n]+/g,' ').trim();
+  return (hv(to)?'To: '+hv(to)+'\r\n':'')+(hv(cc)?'Cc: '+hv(cc)+'\r\n':'')
+    +'Subject: '+hv(subject)+'\r\nX-Unsent: 1\r\nMIME-Version: 1.0\r\n'
+    +'Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64;
+}
+const emlFileName=subject=>String(subject).replace(/[\\/:*?"<>|]/g,'-')+'.eml';
+function downloadBlob(blob,name){
+  const url=URL.createObjectURL(blob);
+  const a=el('a',{href:url,download:name});
+  document.body.append(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),4000);
+}
+/* Minimal STORE-only (no compression) .zip so all drafts download as one file. */
+function makeZip(files){   // files: [{name, bytes:Uint8Array}]
+  const enc=new TextEncoder();
+  const tbl=(()=>{const t=new Uint32Array(256);for(let n=0;n<256;n++){let c=n;for(let k=0;k<8;k++)c=c&1?0xEDB88320^(c>>>1):c>>>1;t[n]=c;}return t;})();
+  const crc32=b=>{let c=0xFFFFFFFF;for(let i=0;i<b.length;i++)c=tbl[(c^b[i])&0xFF]^(c>>>8);return (c^0xFFFFFFFF)>>>0;};
+  const u16=n=>[n&255,(n>>8)&255], u32=n=>[n&255,(n>>8)&255,(n>>16)&255,(n>>24)&255];
+  const now=new Date();
+  const dosT=(now.getHours()<<11)|(now.getMinutes()<<5)|(now.getSeconds()>>1);
+  const dosD=(((now.getFullYear()-1980)&0x7F)<<9)|((now.getMonth()+1)<<5)|now.getDate();
+  const chunks=[]; const central=[]; let offset=0;
+  files.forEach(f=>{
+    const nameB=enc.encode(f.name); const crc=crc32(f.bytes); const sz=f.bytes.length;
+    const local=new Uint8Array([0x50,0x4B,3,4,...u16(20),...u16(0),...u16(0),...u16(dosT),...u16(dosD),...u32(crc),...u32(sz),...u32(sz),...u16(nameB.length),...u16(0)]);
+    chunks.push(local,nameB,f.bytes);
+    central.push({nameB,crc,sz,off:offset});
+    offset+=local.length+nameB.length+sz;
+  });
+  const cdStart=offset;
+  central.forEach(c=>{
+    const hdr=new Uint8Array([0x50,0x4B,1,2,...u16(20),...u16(20),...u16(0),...u16(0),...u16(dosT),...u16(dosD),...u32(c.crc),...u32(c.sz),...u32(c.sz),...u16(c.nameB.length),...u16(0),...u16(0),...u16(0),...u16(0),...u32(0),...u32(c.off)]);
+    chunks.push(hdr,c.nameB); offset+=hdr.length+c.nameB.length;
+  });
+  chunks.push(new Uint8Array([0x50,0x4B,5,6,...u16(0),...u16(0),...u16(central.length),...u16(central.length),...u32(offset-cdStart),...u32(cdStart),...u16(0)]));
+  return new Blob(chunks,{type:'application/zip'});
+}
+/* Remember To/CC per property so drafts come pre-addressed. */
+async function saveRecipients(code,to,cc){
+  const pr=PROP(code); if(pr && pr.updateTo===to && pr.updateCc===cc) return;
+  try{ await API.send('PATCH','/properties/'+code+'/recipients',{updateTo:to,updateCc:cc}); if(pr){pr.updateTo=to;pr.updateCc=cc;} }
+  catch(e){ toast('Could not save recipients: '+e.message); }
+}
+
+function openUpdateEmail(code){
+  const p=PROP(code)||{};
+  const {subject,html}=buildUpdateEmail(code);
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Draft update email · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
   const bb=el('div',{class:'sb'});
-  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then "Outlook draft" opens a ready-to-send compose window with the tables intact. Copy also pastes rich; the plain-text link is the last resort.'));
-  const subInp=el('input',{value:subject,style:'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;background:var(--panel);color:var(--ink)'});
+  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'To / CC are remembered for this property. "Outlook draft" opens a ready-to-send compose window with the tables intact; Copy pastes rich.'));
+  const inpStyle='width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)';
+  const lbl=t=>el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin:10px 0 4px'},t);
+  const toInp=el('input',{value:p.updateTo||'',placeholder:'manager@monarchinvestment.com; …',style:inpStyle,onchange:()=>saveRecipients(code,toInp.value.trim(),ccInp.value.trim())});
+  const ccInp=el('input',{value:p.updateCc||'',placeholder:'regional@…; accounting@… (optional)',style:inpStyle,onchange:()=>saveRecipients(code,toInp.value.trim(),ccInp.value.trim())});
+  const subInp=el('input',{value:subject,style:inpStyle});
   // White canvas regardless of app theme — it previews how the email will look.
-  const bodyDiv=el('div',{contenteditable:'true',style:'background:#ffffff;color:#1b1e26;border:1px solid var(--line);border-radius:8px;padding:14px;min-height:300px;max-height:52vh;overflow:auto'});
+  const bodyDiv=el('div',{contenteditable:'true',style:'background:#ffffff;color:#1b1e26;border:1px solid var(--line);border-radius:8px;padding:14px;min-height:260px;max-height:46vh;overflow:auto;margin-top:4px'});
   bodyDiv.innerHTML=html;
   const copyBtn=el('button',{class:'btn',onclick:async()=>{
     try{
@@ -1714,26 +1783,14 @@ function openUpdateEmail(code){
       toast('Copied — paste into Outlook');
     }
   }},'📋 Copy');
-  // mailto: is spec-limited to a plain-text body, so it can never carry the
-  // tables/colors. An .eml draft with X-Unsent: 1 does — Outlook opens it as
-  // an unsent compose window with the HTML rendered.
   const emlBtn=el('button',{class:'btn accent',onclick:()=>{
-    const htmlDoc='<html><head><meta charset="utf-8"></head><body>'+bodyDiv.innerHTML+'</body></html>';
-    const bytes=new TextEncoder().encode(htmlDoc);
-    let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b));
-    const b64=btoa(bin).replace(/(.{76})/g,'$1\r\n');
-    const eml='Subject: '+subInp.value.replace(/[\r\n]+/g,' ')+'\r\n'
-      +'X-Unsent: 1\r\nMIME-Version: 1.0\r\n'
-      +'Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64;
-    const url=URL.createObjectURL(new Blob([eml],{type:'message/rfc822'}));
-    const a=el('a',{href:url,download:subInp.value.replace(/[\\/:*?"<>|]/g,'-')+'.eml'});
-    document.body.append(a); a.click(); a.remove();
-    setTimeout(()=>URL.revokeObjectURL(url),4000);
+    saveRecipients(code,toInp.value.trim(),ccInp.value.trim());
+    const eml=buildEml({subject:subInp.value,to:toInp.value,cc:ccInp.value,html:bodyDiv.innerHTML});
+    downloadBlob(new Blob([eml],{type:'message/rfc822'}), emlFileName(subInp.value));
     toast('Draft downloaded — open it and Outlook composes with formatting');
   }},'✉ Outlook draft');
-  const mailBtn=el('button',{class:'btn ghost',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'Plain-text email');
-  bb.append(el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Subject'),subInp,
-    el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Body'),bodyDiv,
+  const mailBtn=el('button',{class:'btn ghost',onclick:()=>{window.location.href='mailto:'+encodeURIComponent(toInp.value)+'?cc='+encodeURIComponent(ccInp.value)+'&subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'Plain-text email');
+  bb.append(lbl('To'),toInp, lbl('CC'),ccInp, lbl('Subject'),subInp, lbl('Body'),bodyDiv,
     el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},mailBtn,copyBtn,emlBtn));
   sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
 }

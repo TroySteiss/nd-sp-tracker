@@ -1611,41 +1611,70 @@ function openUpdateEmail(code){
   included.sort((a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a)));
   const groupOrder=[]; const byLabel=new Map();
   included.forEach(x=>{ const lab=projStatusLabel(x); if(!byLabel.has(lab)){byLabel.set(lab,[]);groupOrder.push(lab);} byLabel.get(lab).push(x); });
-  const lines=[];
-  groupOrder.forEach(lab=>{
-    lines.push(lab.toUpperCase());
-    byLabel.get(lab).forEach(x=>{
-      const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);   // the amount counted in projections
-      const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
-      const bids=isInHouse(x)?'':` — ${bidCt}/3 bids`;
-      lines.push(`  • ${x.name||'(untitled)'} — ${fmt(amt,false)}${bids}`);
-    });
-  });
+  const firstName=(p.manager||'').trim().split(/\s+/)[0]||'';
   const subject=`SP Update Check — ${code}${p.name?' · '+p.name:''}`;
-  const body=[
-    `Hi${p.manager?' '+p.manager:''},`,'',
-    `Quick check on the Special Projects for ${code}${p.name?' — '+p.name:''}. Could you confirm the summary below is up to date, and flag any changes to costs, status, or new projects to add?`,'',
-    `SPECIAL PROJECTS SUMMARY${asOf?` (as of ${asOf})`:''}`,
-    `  SP Budget:                    ${fmt(budget)}`,
-    `  Spent to date:                ${fmt(spent)}`,
-    `  Remaining budget:             ${fmt(remaining)}`,
-    `  Outstanding commitments:      ${fmt(cm.outstandingTotal)}`,
-    `  Budget remaining (projected): ${fmt(budget-spent-cm.outstandingTotal)}`,'',
-    `PROJECTS IN CASH PROJECTIONS (${included.length})`,
-    ...(lines.length?lines:['  (none committed)']),'',
-    `Please reply with any updates or corrections. Thanks!`
-  ].join('\n');
+
+  // HTML body with real tables. Inline styles + hard-coded colors only — this
+  // gets pasted into Outlook, where CSS variables and stylesheets don't exist.
+  const NEG='#b4452f';
+  const tdL='padding:6px 12px;border:1px solid #d6dade;font-size:13px;font-family:Calibri,Arial,sans-serif;';
+  const tdR=tdL+'text-align:right;white-space:nowrap;';
+  const moneyCell=(n,extra='')=>`<td style="${tdR}${Number(n)<0?'color:'+NEG+';':''}${extra}">${esc(fmt(n))}</td>`;
+  const hdTxt='font-family:Calibri,Arial,sans-serif;font-size:13px;font-weight:bold;margin:16px 0 6px;';
+  const projRemaining=budget-spent-cm.outstandingTotal;
+  let html=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0 0 12px">Hi${firstName?' '+esc(firstName):''},</p>`
+    +`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0 0 14px">Could you confirm the summary below is up to date, and flag any changes to costs, status, or new projects to add?</p>`
+    +`<p style="${hdTxt}">SPECIAL PROJECTS SUMMARY${asOf?` (as of ${esc(asOf)})`:''}</p>`
+    +`<table style="border-collapse:collapse">`
+    +`<tr><td style="${tdL}">SP Budget</td>${moneyCell(budget)}</tr>`
+    +`<tr><td style="${tdL}">Spent to date</td>${moneyCell(spent)}</tr>`
+    +`<tr><td style="${tdL}">Remaining budget</td>${moneyCell(remaining)}</tr>`
+    +`<tr><td style="${tdL}">Outstanding commitments</td>${moneyCell(cm.outstandingTotal)}</tr>`
+    +`<tr><td style="${tdL}font-weight:bold;background:#f2f4f7">Budget remaining (projected)</td>${moneyCell(projRemaining,'font-weight:bold;background:#f2f4f7;')}</tr>`
+    +`</table>`
+    +`<p style="${hdTxt}">PROJECTS IN CASH PROJECTIONS (${included.length})</p>`;
+  if(included.length){
+    html+=`<table style="border-collapse:collapse">`
+      +`<tr><th style="${tdL}background:#e9ecf0;text-align:left">Project</th><th style="${tdR}background:#e9ecf0">Amount</th><th style="${tdL}background:#e9ecf0;text-align:center">Bids saved</th></tr>`;
+    groupOrder.forEach(lab=>{
+      html+=`<tr><td colspan="3" style="${tdL}background:#f2f4f7;font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
+      byLabel.get(lab).forEach(x=>{
+        const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);   // the amount counted in projections
+        const bidCt=(x.bids||[]).filter(b=>b.fileKey||(b.files&&b.files.length)).length;
+        html+=`<tr><td style="${tdL}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt)}<td style="${tdL}text-align:center">${isInHouse(x)?'—':bidCt+'/3'}</td></tr>`;
+      });
+    });
+    html+=`</table>`;
+  } else {
+    html+=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:0">(none committed)</p>`;
+  }
+  html+=`<p style="font-family:Calibri,Arial,sans-serif;font-size:13px;margin:14px 0 0">Please reply with any updates or corrections. Thanks!</p>`;
+
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Draft update email · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
   const bb=el('div',{class:'sb'});
-  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then copy the text or open it in your email app.'));
+  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then Copy pastes into Outlook with the tables intact. "Open in email" sends plain text.'));
   const subInp=el('input',{value:subject,style:'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;background:var(--panel);color:var(--ink)'});
-  const ta=el('textarea',{style:'width:100%;min-height:300px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:12.5px;line-height:1.5;background:var(--panel);color:var(--ink);resize:vertical'}); ta.value=body;
-  const copyBtn=el('button',{class:'btn',onclick:async()=>{const txt=subInp.value+'\n\n'+ta.value;try{await navigator.clipboard.writeText(txt);toast('Copied to clipboard');}catch(e){ta.focus();ta.select();document.execCommand('copy');toast('Copied');}}},'📋 Copy');
-  const mailBtn=el('button',{class:'btn accent',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(ta.value);}},'✉ Open in email');
+  // White canvas regardless of app theme — it previews how the email will look.
+  const bodyDiv=el('div',{contenteditable:'true',style:'background:#ffffff;color:#1b1e26;border:1px solid var(--line);border-radius:8px;padding:14px;min-height:300px;max-height:52vh;overflow:auto'});
+  bodyDiv.innerHTML=html;
+  const copyBtn=el('button',{class:'btn',onclick:async()=>{
+    try{
+      await navigator.clipboard.write([new ClipboardItem({
+        'text/html':new Blob([bodyDiv.innerHTML],{type:'text/html'}),
+        'text/plain':new Blob([bodyDiv.innerText],{type:'text/plain'})})]);
+      toast('Copied — paste into Outlook');
+    }catch(e){
+      const r=document.createRange(); r.selectNodeContents(bodyDiv);
+      const sel=getSelection(); sel.removeAllRanges(); sel.addRange(r);
+      document.execCommand('copy'); sel.removeAllRanges();
+      toast('Copied — paste into Outlook');
+    }
+  }},'📋 Copy');
+  const mailBtn=el('button',{class:'btn accent',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(bodyDiv.innerText);}},'✉ Open in email');
   bb.append(el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Subject'),subInp,
-    el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Body'),ta,
+    el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Body'),bodyDiv,
     el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},copyBtn,mailBtn));
   sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
 }

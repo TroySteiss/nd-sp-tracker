@@ -1588,6 +1588,59 @@ function openProject(id,preset){
   sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
 }
 
+/* Plain-English status for a project (used in the property update email). */
+function projStatusLabel(p){
+  if(p.onHold) return 'On hold';
+  if(isComplete(p)) return 'Completed';
+  if(isInHouse(p)) return 'In-house — '+pct(ihPct(p))+' complete';
+  const ph=phase(p);
+  if(ph==='note') return 'Planned — no cost yet';
+  if(ph==='discussed') return 'Discussed / awaiting approval';
+  if(ph==='paid') return 'Paid — awaiting closeout';
+  const s=stage(p); return (s>=0 && LIFECYCLE[s]) ? LIFECYCLE[s].label : 'In progress';
+}
+/* Draft an "is this up to date?" email for a property: SP budget/cash summary +
+   where each active project sits. Shown in a modal to copy or open in email. */
+function openUpdateEmail(code){
+  const p=PROP(code)||{}; const cm=cashModel(code);
+  const budget=Number(p.spBudget)||0, spent=glSpentFor(code), remaining=budget-spent;
+  const asOf=(S.cash[code]&&S.cash[code].asOfDate)||S.meta.cashAsOf||'';
+  const projs=projForProp(code).filter(x=>!isComplete(x)&&phase(x)!=='note');
+  projs.sort((a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a)));
+  const lines=projs.map(x=>{
+    const cost=isInHouse(x)?ihTotal(x):(x.actualCost!=null?x.actualCost:x.anticipatedCost);
+    return `  • ${x.name||'(untitled)'} — ${projStatusLabel(x)}${cost!=null&&cost!==''?` — ${fmt(cost,false)}`:''}`;
+  });
+  const subject=`SP Update Check — ${code}${p.name?' · '+p.name:''}`;
+  const body=[
+    `Hi${p.manager?' '+p.manager:''},`,'',
+    `Quick check on the Special Projects for ${code}${p.name?' — '+p.name:''}. Could you confirm the summary below is up to date, and flag any changes to costs, status, or new projects to add?`,'',
+    `SPECIAL PROJECTS SUMMARY${asOf?` (as of ${asOf})`:''}`,
+    `  SP Budget:               ${fmt(budget)}`,
+    `  Spent to date:           ${fmt(spent)}`,
+    `  Remaining budget:        ${fmt(remaining)}`,
+    `  Outstanding commitments: ${fmt(cm.outstandingTotal)}`,
+    `  Current cash:            ${fmt(cm.cashToday)}`,
+    `  Projected cash:          ${fmt(cm.projectedCash)}`,'',
+    `PROJECTS (${projs.length})`,
+    ...(lines.length?lines:['  (none in the active pipeline)']),'',
+    `Please reply with any updates or corrections. Thanks!`
+  ].join('\n');
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Draft update email · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+  const bb=el('div',{class:'sb'});
+  bb.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Review or edit, then copy the text or open it in your email app.'));
+  const subInp=el('input',{value:subject,style:'width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;margin-bottom:10px;background:var(--panel);color:var(--ink)'});
+  const ta=el('textarea',{style:'width:100%;min-height:300px;padding:10px;border:1px solid var(--line);border-radius:8px;font-family:var(--mono);font-size:12.5px;line-height:1.5;background:var(--panel);color:var(--ink);resize:vertical'}); ta.value=body;
+  const copyBtn=el('button',{class:'btn',onclick:async()=>{const txt=subInp.value+'\n\n'+ta.value;try{await navigator.clipboard.writeText(txt);toast('Copied to clipboard');}catch(e){ta.focus();ta.select();document.execCommand('copy');toast('Copied');}}},'📋 Copy');
+  const mailBtn=el('button',{class:'btn accent',onclick:()=>{window.location.href='mailto:?subject='+encodeURIComponent(subInp.value)+'&body='+encodeURIComponent(ta.value);}},'✉ Open in email');
+  bb.append(el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Subject'),subInp,
+    el('label',{style:'display:block;font-size:11.5px;font-weight:600;color:var(--ink-2);margin-bottom:4px'},'Body'),ta,
+    el('div',{style:'display:flex;gap:8px;margin-top:12px;justify-content:flex-end'},copyBtn,mailBtn));
+  sheet.append(head,bb); scrim.append(sheet); document.body.append(scrim);
+}
+
 /* =========================================================
    PROPERTY DETAIL
 ========================================================= */
@@ -1775,7 +1828,8 @@ function viewProperty(){
   const intProj = avgInt*monthsLeft;
   const projEndSub=[inclReturns?`− ${fmt(currentQtrDist,false)} Q${currentQtr} distrib`:null, inclAccretion&&futureAccretion?`+ ${fmt(futureAccretion,false)} accretion`:null].filter(Boolean).join(' · ')||'after committed';
   const bar=propHead(p,
-    [ el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
+    [ el('button',{class:'btn',onclick:()=>openUpdateEmail(code)},'📧 Update email'),
+      el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),

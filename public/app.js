@@ -1403,9 +1403,11 @@ function openProject(id,preset){
             if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');execBtn.disabled=false;execBtn.textContent='⬆ Upload executed';return;}
             const out=await r.json();
             p.executedContractFileKey=out.fileKey; p.executedContractFileName=out.fileName;
+            // "Yes, LW signed with contract" → the same document fills the LW slot.
+            if(out.lienWaiverFileKey){ p.lienWaiverFileKey=out.lienWaiverFileKey; p.lienWaiverFileName=out.lienWaiverFileName; }
             Object.assign(p.steps,out.steps);
             drawSteps(); refreshGen();
-            toast('Executed contract attached'+(lwSigned?' · Lien waiver marked received':''));
+            toast('Executed contract attached'+(lwSigned?' · Lien waiver received (signed with contract)':''));
           }catch(e){toast('Upload failed: '+e.message);execBtn.disabled=false;execBtn.textContent='⬆ Upload executed';}
         };
         lwBody.append(el('div',{style:'display:flex;gap:8px;justify-content:flex-end'},
@@ -1421,7 +1423,9 @@ function openProject(id,preset){
     if(!p.noContract && (p.executedContractFileKey||p.lienWaiverFileKey)){
       const lRow=ctRow('Lien waiver');
       if(p.lienWaiverFileKey){
-        lRow.append(el('span',{class:'ct-ok lien'},'✓ Received'), fileLink(p.lienWaiverFileKey,p.lienWaiverFileName||'lien-waiver.pdf'));
+        const withContract=p.lienWaiverFileKey===p.executedContractFileKey;
+        lRow.append(el('span',{class:'ct-ok lien'},withContract?'✓ Received — signed with contract':'✓ Received'));
+        if(!withContract) lRow.append(fileLink(p.lienWaiverFileKey,p.lienWaiverFileName||'lien-waiver.pdf'));
       } else {
         lRow.classList.add('ct-drop');
         const lwBtn=el('button',{class:'btn ghost sm',onclick:()=>lwInput.click()},'⬆ Upload lien waiver');

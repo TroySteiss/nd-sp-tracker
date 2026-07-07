@@ -385,11 +385,21 @@ api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req
   const key = await storeFile(f.originalname, f.mimetype, f.buffer);
   let steps = { ...(proj.steps || {}), signed: true };
   if (lwSigned) { steps = { ...steps, lienWaiver: true }; }
-  await query(
-    'update projects set executed_contract_file_key=$1, executed_contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
-    [key, f.originalname, JSON.stringify(steps), proj.id]
-  );
-  res.json({ fileKey: key, fileName: f.originalname, steps });
+  if (lwSigned) {
+    // The lien waiver was signed within the executed contract, so that document
+    // also fills the lien-waiver slot (keeps the attachment-derived step true).
+    await query(
+      `update projects set executed_contract_file_key=$1, executed_contract_file_name=$2,
+         lien_waiver_file_key=$1, lien_waiver_file_name=$2, steps=$3, updated_at=now() where id=$4`,
+      [key, f.originalname, JSON.stringify(steps), proj.id]
+    );
+  } else {
+    await query(
+      'update projects set executed_contract_file_key=$1, executed_contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
+      [key, f.originalname, JSON.stringify(steps), proj.id]
+    );
+  }
+  res.json({ fileKey: key, fileName: f.originalname, steps, lienWaiverFileKey: lwSigned ? key : null, lienWaiverFileName: lwSigned ? f.originalname : null });
 });
 
 /* ---------- Lien waiver upload ---------- */

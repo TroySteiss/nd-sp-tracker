@@ -393,6 +393,11 @@ function mainCol(){
 }
 // Add drag-and-drop to any element. Calls onFile(File) on drop or input change.
 // Returns the hidden file input so callers can still trigger .click() on it.
+/* Download URL for any stored file — serves Content-Disposition: attachment
+   with the ORIGINAL uploaded filename (viewing inline in a tab loses it). */
+const dlUrl=(key,name)=>'/api/files/'+key+'?name='+encodeURIComponent(name||'file');
+const dlBtn=(key,name,label)=>el('a',{class:'btn ghost sm',href:dlUrl(key,name),title:'Download as “'+(name||'file')+'”',onclick:e=>e.stopPropagation()},label||'⬇');
+
 async function openPdfViewer(source, fileName){
   let url, revokeOnClose=false;
   if(typeof source==='string'){url=source;}
@@ -560,13 +565,16 @@ function viewContracts(){
     panel.append(el('div',{class:'empty'}, el('div',{class:'big'},showPlanned?'No projects awaiting a contract.':'No contracts yet'), showPlanned?'All approved projects have contracts generated.':'Generate a contract from a project\'s Bids panel.'));
   } else {
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('#'),th('Project'),th('Property'),th('Contractor'),th('Total','r'),th('Status'),th('Eff. date'),th('Term end'))));
+    t.append(el('thead',{},tr(th('#'),th('Project'),th('Property'),th('Contractor'),th('Total','r'),th('Status'),th('Eff. date'),th('Term end'),th('File'))));
     const tb=el('tbody');
     let i=0;
     list.forEach(c=>{
       i++;
       const proj=projById.get(c.projectId);
       const st=statusOf(c);
+      // Prefer the executed contract's file when it exists; else the generated one.
+      const fKey=(proj&&proj.executedContractFileKey)||c.fileKey||(proj&&proj.contractFileKey)||null;
+      const fName=(proj&&proj.executedContractFileKey)?(proj.executedContractFileName||'executed.pdf'):(c.outputFilename||(proj&&proj.contractFileName)||'contract.pdf');
       tb.append(el('tr',{class:'clickrow',onclick:()=>{if(proj)openProject(proj.id);}},
         el('td',{class:'num'},String(i)),
         td(el('div',{style:'font-size:12px'},el('div',{},proj?proj.name:(c.outputFilename||'—')),el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
@@ -575,7 +583,10 @@ function viewContracts(){
         el('td',{class:'num r'},usd(c.total)),
         td(el('span',{class:'chip '+(ST_CHIP[st]||'')},ST_LABEL[st]||st)),
         td(fmtDate(c.effectiveDate)),
-        td(fmtDate(c.termEnd))));
+        td(fmtDate(c.termEnd)),
+        td(fKey?el('span',{style:'display:inline-flex;gap:4px'},
+          el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:e=>{e.stopPropagation();window.open('/api/bids/file/'+fKey,'_blank');}},'👁'),
+          dlBtn(fKey,fName)):'—')));
     });
     planned.forEach(pr=>{
       i++;
@@ -586,7 +597,7 @@ function viewContracts(){
         td(pr.contractor||'—'),
         el('td',{class:'num r'},usd(pr.anticipatedCost)),
         td(el('span',{class:'chip hold'},'Planned — no contract')),
-        td('—'),td('—')));
+        td('—'),td('—'),td('—')));
     });
     t.append(tb);
     panel.append(el('div',{style:'overflow:auto'},t));
@@ -1494,8 +1505,9 @@ function openProject(id,preset){
           el('div',{style:'display:flex;flex-direction:column;min-width:0;flex:1'},
             multi?el('span',{style:'font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600'},bidFileLabel(bd,fi)):null,
             el('div',{style:'display:flex;gap:6px;align-items:center;min-width:0'},
-              el('a',{href:'/api/bids/file/'+fl.fileKey,target:'_blank',title:'View stored file'},fl.fileName||'bid'),
+              el('a',{href:'/api/bids/file/'+fl.fileKey,target:'_blank',title:'View in a new tab'},fl.fileName||'bid'),
               el('span',{class:'bs-sz'},fl.fileSize?fileSize(fl.fileSize):''))),
+          dlBtn(fl.fileKey,fl.fileName),
           el('button',{class:'btn ghost sm',title:'Remove this file',onclick:()=>{bd.files.splice(fi,1);syncBidPrimary(bd);drawBids();}},'✕'));
         filesWrap.append(row);
       });
@@ -1570,7 +1582,10 @@ function openProject(id,preset){
   const ctBody=el('div',{class:'pad'});
   contractWrap.append(ctBody);
   const ctRow=label=>{ const r=el('div',{class:'ct-row'}); r.append(el('span',{class:'ct-lab'},label)); return r; };
-  const fileLink=(key,name)=>el('a',{class:'btn ghost sm',href:'/api/files/'+key+'?name='+encodeURIComponent(name||'file.pdf')},'⬇ '+(name||'file.pdf'));
+  // View (new tab) + download pair — downloads keep the original filename.
+  const fileLink=(key,name)=>el('span',{style:'display:inline-flex;gap:6px;align-items:center;min-width:0'},
+    el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:()=>window.open('/api/bids/file/'+key,'_blank')},'👁'),
+    dlBtn(key,name,'⬇ '+(name||'file.pdf')));
   function refreshGen(){
     refreshGenPanel();
     ctBody.innerHTML='';

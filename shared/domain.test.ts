@@ -4,7 +4,7 @@ import {
   phase, isComplete, projOutflow, stage, stepsDone, stepsTotal,
   advance, toggleStep, appKeys, isNA, applyCostRules,
   cashModel, auditModel, glMatchScore, glSpentFor, cashAdjFor,
-  toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, regionFor,
+  toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -198,9 +198,37 @@ describe('tile tones (spec §7.4)', () => {
   });
 });
 
-describe('reference data', () => {
-  it('region derives from property', () => {
-    expect(regionFor('CLND')).toBe('Minot');
-    expect(regionFor('BCND')).toBe('Williston');
+describe('Above the Line (operationally funded)', () => {
+  it('detects the phrase case-insensitively anywhere in the name', () => {
+    expect(isAboveLine(proj({ name: 'Roof — Above the Line' }))).toBe(true);
+    expect(isAboveLine(proj({ name: 'ABOVE THE LINE parking lot' }))).toBe(true);
+    expect(isAboveLine(proj({ name: 'Above-average roof' }))).toBe(false);
+  });
+  it('is excluded from cash projections entirely (outstanding, discussed, paid)', () => {
+    const atl = proj({ id: 'A1', name: 'Above the Line HVAC', anticipatedCost: 10000, steps: { planned: true, gotBids: true, approved: true } });
+    const normal = proj({ id: 'N1', name: 'Normal HVAC', anticipatedCost: 8000, steps: { planned: true, gotBids: true, approved: true } });
+    const st = blankState({ projects: [atl, normal], cash: { CLND: { cash: 50000 } } });
+    const cm = cashModel(st, 'CLND');
+    expect(cm.outstanding.map((p) => p.id)).toEqual(['N1']);
+    expect(cm.outstandingTotal).toBe(8000);
+    expect(cm.projectedCash).toBe(42000);
+  });
+  it('needs no GL tie-out: paid ATL projects are not flagged', () => {
+    const atl = proj({ id: 'A1', name: 'Above the Line paving', actualCost: 9000, steps: { paid: true } });
+    const st = blankState({ projects: [atl] });
+    const am = auditModel(st, 'CLND');
+    expect(am.paid.length).toBe(0);
+    expect(am.paidNoGL.length).toBe(0);
+  });
+});
+
+describe('reference data (seed defaults — runtime source of truth is the properties table)', () => {
+  it('seed list carries region + portfolio per property', () => {
+    const clnd = PROPERTIES.find((p) => p.code === 'CLND')!;
+    const bcnd = PROPERTIES.find((p) => p.code === 'BCND')!;
+    expect(clnd.region).toBe('Minot');
+    expect(bcnd.region).toBe('Williston');
+    expect(clnd.portfolio).toBe('Minot 4 Portfolio');
+    expect(PROPERTIES.every((p) => p.region && p.manager && p.portfolio)).toBe(true);
   });
 });

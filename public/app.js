@@ -1,10 +1,10 @@
 
 "use strict";
 /* ============================================================
-   NORTH DAKOTA — SPECIAL PROJECTS / CAPEX TRACKER
-   Single-file tool. Data persists via the artifact storage API
-   when available, otherwise localStorage, otherwise in-memory.
-   A JSON backup can always be exported/imported for portability.
+   SPECIAL PROJECTS / CAPEX TRACKER — multi-region
+   Regions, properties, colors and portfolios live in the DB and
+   are editable in Settings. Data persists via the REST API
+   (Postgres). A JSON backup can always be exported/imported.
    ============================================================ */
 
 /* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
@@ -57,13 +57,20 @@ let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'co
 let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
 let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
-const PCOLOR={
-  /* Minot — shades of blue */
-  CLND:'#5e97cc', SPND:'#3f7cb8', TPND:'#2f6199', TCND:'#234e7d', WYND:'#183a5e',
-  /* Williston — shades of warm orange → red */
-  BCND:'#e0973a', ECND:'#d2731f', FHND:'#b8501f', PHND:'#8f3818'
+let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
+/* Per-property color comes from the properties table (editable in Settings).
+   Unknown codes (e.g. GL lines kept for a future property) get a stable fallback. */
+const FALLBACK_COLORS=['#5e97cc','#e0973a','#4f9d69','#a2599c','#c05b4d','#3f7cb8','#8f6f3a','#2f8f8f','#7a5cc0','#b8501f'];
+const pcolor=code=>{
+  const p=S&&S.properties&&S.properties.find(x=>x.code===code);
+  if(p&&p.color)return p.color;
+  let h=0; for(const ch of String(code||''))h=(h*31+ch.charCodeAt(0))>>>0;
+  return FALLBACK_COLORS[h%FALLBACK_COLORS.length];
 };
-const pcolor=code=>PCOLOR[code]||'#7a8190';
+/* Ordered region names (regions table; falls back to whatever the properties use). */
+const regionNames=()=> (S&&S.regions&&S.regions.length)? S.regions.map(r=>r.name)
+  : [...new Set(((S&&S.properties)||[]).map(p=>p.region).filter(Boolean))];
+const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';
 
 /* seedState removed — initial data is seeded server-side into Postgres */
 
@@ -110,19 +117,29 @@ async function delAdj(id){ try{ await API.send('DELETE','/cash-adjustments/'+id)
 async function saveCash(code,obj,msg){ try{ await API.send('PATCH','/cash/'+code,obj); await afterWrite(msg||'Cash updated'); }catch(e){ toast('Failed: '+e.message); } }
 async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWrite('Reset to starter data'); }catch(e){ toast('Failed: '+e.message); } }
 async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
-/* ---------- login (shared password) ---------- */
+/* ---------- login (username + shared password) ---------- */
+let USER='';   // signed-in username (First.Last), from the session
 function showLogin(){ const o=document.getElementById('login'); if(o)o.style.display='flex'; }
 function hideLogin(){ const o=document.getElementById('login'); if(o)o.style.display='none'; }
+function setLoginTitle(t){ const h=document.getElementById('login-title'); if(h&&t)h.textContent=t; if(t)document.title=t; }
+async function signOut(){ try{ await fetch('/api/logout',{method:'POST'}); }catch(e){} USER=''; showLogin(); }
 async function start(){
   const form=document.getElementById('login-form');
+  const userEl=document.getElementById('login-user');
+  try{ if(userEl&&!userEl.value) userEl.value=localStorage.getItem('sp-username')||''; }catch(e){}
   if(form&&!form._wired){ form._wired=true; form.addEventListener('submit',async ev=>{
     ev.preventDefault();
+    const username=(userEl?userEl.value:'').trim();
     const pw=document.getElementById('login-pw').value;
     const err=document.getElementById('login-err'); err.textContent='';
-    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({password:pw})});
-    if(r.ok){ hideLogin(); await boot(); } else { err.textContent='Incorrect password.'; }
+    if(!username){ err.textContent='Enter your name (e.g. First.Last).'; return; }
+    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:pw})});
+    if(r.ok){ USER=username; try{localStorage.setItem('sp-username',username);}catch(e){} hideLogin(); await boot(); }
+    else { let msg='Incorrect password.'; try{ msg=(await r.json()).error||msg; }catch(e){} err.textContent=msg; }
   }); }
-  try{ const st=await fetch('/api/auth/status').then(r=>r.json()); if(st.authed){ hideLogin(); await boot(); } else { showLogin(); } }
+  try{ const st=await fetch('/api/auth/status').then(r=>r.json());
+    setLoginTitle(st.appTitle);
+    if(st.authed){ USER=st.username||''; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -175,6 +192,10 @@ const ihPct=p=>{ const t=ihTotal(p); return t>0?Math.min(1, ihDone(p)/t):0; };
 /* phase: where a project sits relative to its workflow.
    In-house projects use a progress workflow (total to complete / amount completed).
    Contractor projects: no cost = "note"; cost pre-approval = "discussed"; approval locks the pipeline. */
+/* "Above the Line" in the project name = funded from operational cashflow, not
+   property cash. Excluded from all SP projections, GL tie-out and update emails;
+   shown only in a collapsed property-view group / optional Projects filter. */
+const isATL=p=>/above\s+the\s+line/i.test(p&&p.name||'');
 function phase(p){
   if(p.onHold) return 'hold';
   if(p.inHouse){
@@ -210,6 +231,7 @@ function cashModel(code){
   const outstanding=[], paid=[], discussed=[];
   let outstandingTotal=0, paidTotal=0, discussedTotal=0;
   projs.forEach(p=>{
+    if(isATL(p)) return;                              // operationally funded — never in SP projections
     if(p.inHouse){
       if(p.onHold || !ihIsBudget(p)) return;          // quantity-tracked in-house has no $ figure
       const t=ihTotal(p), d=ihDone(p);
@@ -236,7 +258,7 @@ function auditModel(code){
   const glTotal=gls.reduce((a,g)=>a+(Number(g.amount)||0),0);
   const linkedIds=new Set(gls.map(g=>g.linkedProjectId).filter(Boolean));
   const unplanned=gls.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId && !isInterestGL(g));   // posted, >$5k, not tied (interest income excluded)
-  const paid=projForProp(code).filter(isPaidP);
+  const paid=projForProp(code).filter(p=>isPaidP(p)&&!isATL(p));   // ATL needs no GL tie-out
   const paidNoGL=paid.filter(p=>!linkedIds.has(p.id));                                     // marked paid but no GL backing
   return {gls,glTotal,unplanned,paid,paidNoGL,linkedCount:linkedIds.size};
 }
@@ -282,12 +304,13 @@ function syncHeadOffset(){
 function rail(){
   const counts={
     projects:S.projects.length,
-    active:S.projects.filter(p=>!isComplete(p)&&phase(p)!=='note').length,
+    active:S.projects.filter(p=>!isComplete(p)&&phase(p)!=='note'&&!isATL(p)).length,
   };
   const r=el('div',{class:'rail'+(VIEW.railOpen?' open':'')});
+  document.title=appTitle();
   const brand=el('div',{class:'brand'},
     el('div',{class:'mark'}, el('div',{class:'glyph'},'SP'),
-      el('div',{}, el('h1',{},'North Dakota'), el('div',{class:'sub'},'Special Projects · Capex'))));
+      el('div',{}, el('h1',{},appTitle()), el('div',{class:'sub'},'Special Projects · Capex'))));
   const nav=el('div',{class:'nav'});
   const item=(tab,ic,label,ct)=>{
     const b=el('button',{class:VIEW.tab===tab?'on':'',onclick:()=>{VIEW.tab=tab;VIEW.railOpen=false;render();}},
@@ -301,12 +324,14 @@ function rail(){
   nav.append(item('inhouse','🛠','In-house',S.projects.filter(isInHouse).length||null));
   nav.append(item('contracts','▦','Contracts',(S.contracts||[]).length||null));
   nav.append(el('div',{class:'grp'},'Properties'));
-  ['Minot','Williston'].forEach(reg=>{
+  regionNames().forEach(reg=>{
+    const inRegion=S.properties.filter(p=>p.region===reg);
+    if(!inRegion.length){ return; }
     nav.append(el('div',{class:'grp',style:'padding-top:6px'},reg));
-    S.properties.filter(p=>p.region===reg).forEach(p=>{
+    inRegion.forEach(p=>{
       const b=el('button',{class:(VIEW.tab==='property'&&VIEW.prop===p.code)?'on':'',onclick:()=>{VIEW.tab='property';VIEW.prop=p.code;VIEW.railOpen=false;render();}},
         el('span',{class:'ic',style:`color:${pcolor(p.code)}`},'●'), el('span',{},p.code),
-        el('span',{class:'ct'},String(projForProp(p.code).filter(x=>!isComplete(x)&&phase(x)!=='note').length)));
+        el('span',{class:'ct'},String(projForProp(p.code).filter(x=>!isComplete(x)&&phase(x)!=='note'&&!isATL(x)).length)));
       nav.append(b);
     });
   });
@@ -314,8 +339,14 @@ function rail(){
   nav.append(item('cash','$','Cash & Loans'));
   nav.append(item('data','⇪','Upload & Data'));
   nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
+  nav.append(el('div',{class:'grp'},'Admin'));
+  nav.append(item('changelog','≡','Change log'));
+  nav.append(item('settings','⚙','Settings'));
 
   const foot=el('div',{class:'foot'},
+    el('div',{class:'row',style:'margin-bottom:6px'}, el('span',{},'Signed in as'),
+      el('span',{class:'mono',title:USER,style:'max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},USER||'—')),
+    el('button',{class:'theme-toggle',onclick:signOut,style:'margin-bottom:6px'},'⎋  Sign out'),
     el('button',{class:'theme-toggle',onclick:toggleTheme}, isDark()?'☀  Light mode':'🌙  Dark mode'),
     el('div',{class:'row'}, el('span',{},'GL period'), el('span',{class:'mono'},S.meta&&S.meta.glPeriod?S.meta.glPeriod:'—')),
     el('div',{class:'row',style:'margin-top:4px'}, el('span',{},'Cash as of'), el('span',{class:'mono'},S.meta&&S.meta.cashAsOf?S.meta.cashAsOf:'—')));
@@ -325,7 +356,7 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory};
+  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
   m.append(bar,el('div',{class:'content'+(VIEW.tab==='property'?' content-flush':'')},body));
@@ -540,7 +571,7 @@ function viewContracts(){
    DASHBOARD
 ========================================================= */
 function viewDashboard(){
-  const regions=['Minot','Williston'];
+  const regions=regionNames();
   const isMobile=window.matchMedia('(max-width:820px)').matches;
   DASH.props=DASH.props||[];
   let props=S.properties.filter(p=>!DASH.region||p.region===DASH.region);
@@ -557,16 +588,19 @@ function viewDashboard(){
   const hideChk=el('label',{class:'chk'},
     (()=>{const c=el('input',{type:'checkbox',onchange:e=>{DASH.hidePlanned=e.target.checked;render();}});if(DASH.hidePlanned)c.checked=true;return c;})(),
     'Hide \u2018Planned\u2019');
-  const emailAllBtn=el('button',{class:'btn',title:'Download an Outlook draft (.eml) for every property shown, zipped — To/CC come from each property’s saved recipients',onclick:()=>{
-    const files=props.map(pr=>{ const {subject,html}=buildUpdateEmail(pr.code);
+  const emailAllBtn=el('button',{class:'btn',title:'Download an Outlook draft (.eml) for every included property shown, zipped — recipients & options come from each property’s email settings (⚙)',onclick:()=>{
+    const incl=props.filter(pr=>pr.updateEnabled!==false);
+    const files=incl.map(pr=>{ const {subject,html}=buildUpdateEmail(pr.code);
       return {name:emlFileName(subject), bytes:new TextEncoder().encode(buildEml({subject,to:pr.updateTo,cc:pr.updateCc,html}))}; });
-    if(!files.length){ toast('No properties in view'); return; }
+    if(!files.length){ toast('No properties included — check ⚙ Email setup'); return; }
+    const skipped=props.length-incl.length;
     const d=new Date();
     downloadBlob(makeZip(files), `SP Update Emails ${String(d.getDate()).padStart(2,'0')}-${String(d.getMonth()+1).padStart(2,'0')}-${d.getFullYear()}.zip`);
-    toast(files.length+' drafts zipped — open each .eml to compose');
+    toast(files.length+' drafts zipped'+(skipped?` · ${skipped} excluded in setup`:''));
   }},'⬇ Update emails');
+  const emailSetupBtn=el('button',{class:'btn ghost',title:'Choose which properties are in the bulk download and edit each one’s recipients & options',onclick:openEmailSetup},'⚙ Email setup');
   const bar=topbar('Portfolio','Dashboard', regSeg,
-    el('div',{class:'tb-actions'}, hideChk, emailAllBtn, el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project')));
+    el('div',{class:'tb-actions'}, hideChk, emailSetupBtn, emailAllBtn, el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project')));
   const body=el('div',{class:'grid'});
 
   // property bubble toggles + category filter
@@ -601,7 +635,7 @@ function viewDashboard(){
   // the top and drive every section below; on desktop they sit in the body.
   if(isMobile){ bar.append(el('div',{class:'dash-filterbar'}, filterBar)); } else { body.append(filterBar); }
 
-  const all=S.projects.filter(p=>inReg(p.property)&&catOk(p));
+  const all=S.projects.filter(p=>inReg(p.property)&&catOk(p)&&!isATL(p));   // Above-the-Line hidden from the dashboard
   const notesCount=all.filter(p=>phase(p)==='note').length;
   const active=all.filter(p=>!isComplete(p)&&phase(p)!=='note');   // in-progress = priced, non-complete work (notes excluded)
   const totBudget=props.reduce((a,p)=>a+(Number(p.spBudget)||0),0);
@@ -612,7 +646,7 @@ function viewDashboard(){
   const kpis=el('div',{class:'grid kpis'});
   const kpi=(lab,val,sub,cls)=>el('div',{class:'kpi'+(cls?' '+cls:'')}, el('div',{class:'lab'},lab), el('div',{class:'val'+(typeof val==='string'&&val[0]==='('?' neg':'')},val), el('div',{class:'sub'},sub));
   kpis.append(
-    kpi('Properties',String(props.length),DASH.region||'Minot · Williston'),
+    kpi('Properties',String(props.length),DASH.region||regions.join(' · ')),
     kpi('Active projects',String(active.length),`${all.length} tracked${notesCount?` · ${notesCount} note${notesCount!==1?'s':''}`:''}`),
     kpi('SP budget (2026)',fmt(totBudget),DASH.region?DASH.region:'across portfolio','accent'),
     kpi('Spent to date',fmt(totSpent),'posted per ledger'),
@@ -933,6 +967,11 @@ function viewProjects(){
     el('button',{class:'bub all'+(allS?' on':''),onclick:()=>setAll(FILT.statuses,ALLSTAT)}, allS?'All ✓':'All'));
   STAT.forEach(([k,lab])=>{ const on=FILT.statuses.includes(k);
     statRow.append(el('button',{class:'bub'+(on?' on accent':''),onclick:()=>toggle(FILT.statuses,k)},lab)); });
+  // Above-the-Line toggle — hidden by default (operationally funded work)
+  const atlCount=S.projects.filter(isATL).length;
+  if(atlCount) statRow.append(el('button',{class:'bub'+(FILT.showATL?' on accent':''),
+    title:'Operationally funded ("Above the Line" in the name) — excluded from SP projections; hidden unless toggled on',
+    onclick:()=>{FILT.showATL=!FILT.showATL;render();}},`Above the Line (${atlCount})`));
   fbar.append(statRow);
 
   // category group — checkbox dropdown, with selected shown as bubbles
@@ -957,7 +996,7 @@ function viewProjects(){
   body.append(fbar);
 
   // ---- apply filters ----
-  let list=S.projects.filter(p=>FILT.props.includes(p.property) && FILT.cats.includes(p.category));
+  let list=S.projects.filter(p=>FILT.props.includes(p.property) && FILT.cats.includes(p.category) && (FILT.showATL||!isATL(p)));
   if(FILT.q){const q=FILT.q.toLowerCase();list=list.filter(p=>(p.name+' '+p.contractor+' '+p.plan+' '+p.actionItem+' '+p.category).toLowerCase().includes(q));}
   const stMatch=p=>FILT.statuses.some(s=>
     s==='open'?(!isComplete(p)&&!p.onHold):
@@ -1169,6 +1208,7 @@ function openProject(id,preset){
       if(!p.noContractSet){ const co=projOutflow(p); p.noContract = co>0 && co<OVER_THRESHOLD; if(p.noContract)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); }
       if(typeof drawSteps==='function')drawSteps();
       if(typeof refreshNC==='function')refreshNC();
+      if(typeof refreshGenPanel==='function')refreshGenPanel();
     });
     return n;};
   const propSel=el('select',{onchange:e=>{p.property=e.target.value;}});
@@ -1176,7 +1216,13 @@ function openProject(id,preset){
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
   CATEGORIES.forEach(c=>catSel.append(el('option',{value:c,...(p.category===c?{selected:true}:{})},c)));
 
-  core.append(f('Project name',inp('name',{placeholder:'e.g. Garage roof repairs'})));
+  const nameInp=inp('name',{placeholder:'e.g. Garage roof repairs'});
+  const atlHint=el('div',{style:'display:none;font-size:11.5px;color:var(--wheat-d);background:var(--wheat-soft);border-radius:6px;padding:5px 8px;margin:-6px 0 10px'},
+    '⤴ “Above the Line” — funded from operational cashflow. Excluded from SP cash & budget projections, GL tie-out flags and update emails; listed only in the property view’s collapsed group.');
+  const refreshATL=()=>{ atlHint.style.display=isATL(p)?'':'none'; };
+  nameInp.addEventListener('input',refreshATL);
+  core.append(f('Project name',nameInp), atlHint);
+  refreshATL();
   core.append(el('div',{class:'frow'}, f('Property',propSel), f('Category',catSel)));
   core.append(f('Plan / scope / comments',el('textarea',{oninput:e=>p.plan=e.target.value},p.plan||'')));
   core.append(el('div',{class:'frow'},
@@ -1206,7 +1252,7 @@ function openProject(id,preset){
   const holdWrap=optPill('⏸','On hold','hold',()=>!!p.onHold,v=>p.onHold=v,'Park this project for a future period');
   const pinWrap=optPill('📌','Pinned','pin',()=>!!p.pinned,v=>p.pinned=v,'Pin to the top of the property list');
   const ihWrap=optPill('🛠','In-house','ih-p',()=>!!p.inHouse,v=>{p.inHouse=v;applyMode();},'Own crew — progress tracking instead of bids/contracts');
-  const ncWrap=optPill('📄','No contract','nc',()=>!!p.noContract,v=>{p.noContract=v;p.noContractSet=true; if(v)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); drawSteps();},'Contract steps become N/A (e.g. under $5K)');
+  const ncWrap=optPill('📄','No contract','nc',()=>!!p.noContract,v=>{p.noContract=v;p.noContractSet=true; if(v)CONTRACT_STEPS.forEach(k=>p.steps[k]=false); drawSteps(); if(typeof refreshGenPanel==='function')refreshGenPanel();},'Contract steps become N/A (e.g. under $5K)');
   function refreshNC(){ ncWrap.classList.toggle('on',!!p.noContract); }
   const commitWrap=optPill('💵','Commit to cash','commit',()=>!!p.commitCash,v=>p.commitCash=v,'Count in Outstanding Commitments / projected cash now — even without full bids or a contract');
   // Approved projects are always in the projections, so the toggle is moot.
@@ -1227,12 +1273,7 @@ function openProject(id,preset){
   const ihBar=el('div',{class:'ih-bigbar'}, el('i',{}));
   const ihStat=el('div',{class:'ih-stat'});
   ihBody.append(ihBar, ihStat);
-  // additional progress notes (timestamped)
-  ihBody.append(el('div',{class:'field',style:'margin-top:14px'}, el('label',{},'Progress / additional notes')));
-  const pnList=el('div',{class:'pn-list'});
-  const pnInput=el('input',{placeholder:'Add a dated progress note…',onkeydown:e=>{if(e.key==='Enter'&&e.target.value.trim()){p.progressNotes.push({id:uid('n'),date:today(),note:e.target.value.trim()});e.target.value='';drawIH();}}});
-  ihBody.append(el('div',{class:'pn-add'}, pnInput, el('button',{class:'btn sm',onclick:()=>{if(pnInput.value.trim()){p.progressNotes.push({id:uid('n'),date:today(),note:pnInput.value.trim()});pnInput.value='';drawIH();}}},'Add note')));
-  ihBody.append(pnList);
+  // (timestamped notes moved to the "Notes & activity" panel — available on every project)
   inhousePanel.append(ihBody); b.append(inhousePanel);
   function drawIH(){
     const t=ihTotal(p), d=ihDone(p), pc=ihPct(p);
@@ -1242,14 +1283,6 @@ function openProject(id,preset){
     ihStat.append(el('span',{class:'mono',style:'font-weight:600'},ihFmt(p,d)+' of '+ihFmt(p,t)),
       el('span',{style:'color:var(--ink-3)'},'  ·  '+pct(pc)+' complete'+(t>0?'  ·  '+ihFmt(p,ihRemaining(p))+' remaining':'')));
     inhousePanel.querySelector('.ih-meta').textContent=t>0?pct(pc)+' complete':'no estimate yet';
-    pnList.innerHTML='';
-    p.progressNotes.slice().reverse().forEach(n=>{
-      pnList.append(el('div',{class:'pn-item'},
-        el('span',{class:'pn-date mono'},n.date),
-        el('span',{style:'flex:1'},n.note),
-        el('button',{class:'btn ghost sm',onclick:()=>{p.progressNotes=p.progressNotes.filter(x=>x.id!==n.id);drawIH();}},'✕')));
-    });
-    if(!p.progressNotes.length) pnList.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'No progress notes yet.'));
   }
   function applyUnit(){
     const budget=ihIsBudget(p);
@@ -1343,6 +1376,51 @@ function openProject(id,preset){
   }
   function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
 
+  // --- Generate contract (own always-visible section with a readiness indicator) ---
+  const genPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  const genStatusChip=el('span',{class:'chip'},'');
+  genPanel.append(el('div',{class:'ph'}, el('h3',{},'Generate contract'), el('div',{class:'sp'}), genStatusChip));
+  const genBody=el('div',{class:'pad'});
+  genPanel.append(genBody);
+  function genChecks(){
+    const prop=PROP(p.property)||{};
+    const approved=p.bids.find(b2=>b2.approved);
+    const bidFile=p.bids.some(bd=>(bd.files&&bd.files.length)||bd.fileKey);
+    const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?approved.amount:p.anticipatedCost);
+    const contractor=((approved&&approved.contractor)||p.contractor||'').trim();
+    return [
+      {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid in Bids above', required:true},
+      {ok:total!=null&&Number(total)>0, label:'Contract total', hint:'enter a cost or bid amount', required:true},
+      {ok:!!contractor, label:'Contractor named', hint:'approve a bid or fill the contractor field', required:true},
+      {ok:!!p.bids.some(b2=>b2.approved), label:'Winning bid approved', hint:'approve the winner so its amount & contractor flow in', required:false},
+      {ok:!!(prop.ownerEntity||'').trim(), label:'Owner entity on file', hint:'fill it in the generate dialog once — remembered per property', required:false},
+    ];
+  }
+  function refreshGenPanel(){
+    if(p.inHouse||p.noContract){ genPanel.style.display='none'; return; }
+    genPanel.style.display='';
+    genBody.innerHTML='';
+    const checks=genChecks();
+    const missingReq=checks.filter(c=>c.required&&!c.ok);
+    const ready=!missingReq.length;
+    genStatusChip.className='chip '+(p.contractFileKey?'done':(ready?'good':'hold'));
+    genStatusChip.textContent=p.contractFileKey?'generated ✓':(ready?'ready to generate':`${missingReq.length} item${missingReq.length>1?'s':''} needed`);
+    const listEl=el('div',{style:'display:grid;gap:5px;margin-bottom:12px'});
+    checks.forEach(c=>{
+      listEl.append(el('div',{style:'display:flex;gap:8px;align-items:baseline;font-size:12.5px'},
+        el('span',{style:'font-weight:700;color:'+(c.ok?'#2e7d4f':(c.required?'var(--rust)':'var(--ink-3)'))},c.ok?'✓':(c.required?'✗':'○')),
+        el('span',{style:c.ok?'':'color:var(--ink-2)'},c.label+(c.required?'':' (recommended)')),
+        c.ok?null:el('span',{style:'color:var(--ink-3);font-size:11.5px'},'— '+c.hint)));
+    });
+    genBody.append(listEl);
+    const row=el('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap'});
+    const btn=el('button',{class:'btn accent',onclick:()=>openContractDialog()},'📄 Generate contract');
+    if(isNew){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Save the project first, then generate.')); }
+    else if(!ready){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Complete the required items above.')); }
+    else row.append(btn, el('span',{class:'bs-meta'},p.contractFileKey?'Regenerating replaces the current unexecuted contract (the download stays in Contract below).':'Builds the ICA with the bid embedded (Exhibits A–D).'));
+    genBody.append(row);
+  }
+
   // --- Contract (own section): generated → executed → lien waiver ---
   const hasCt=!!(p.contractFileKey||p.executedContractFileKey||p.lienWaiverFileKey);
   const contractWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(hasCt?{open:''}:{})});
@@ -1353,14 +1431,13 @@ function openProject(id,preset){
   const ctRow=label=>{ const r=el('div',{class:'ct-row'}); r.append(el('span',{class:'ct-lab'},label)); return r; };
   const fileLink=(key,name)=>el('a',{class:'btn ghost sm',href:'/api/files/'+key+'?name='+encodeURIComponent(name||'file.pdf')},'⬇ '+(name||'file.pdf'));
   function refreshGen(){
+    refreshGenPanel();
     ctBody.innerHTML='';
     ctMeta.textContent=[p.contractFileKey?'generated':null,p.executedContractFileKey?'executed':null,p.lienWaiverFileKey?'lien waiver':null].filter(Boolean).join(' · ')||'none yet';
 
-    // 1) Generated (unexecuted) contract — build it here, or drop in one made elsewhere.
-    const hasBidFile=p.bids.some(bd=>bd.fileKey);
+    // 1) Generated (unexecuted) contract — download lives here; generation moved
+    //    to the dedicated "Generate contract" section above.
     const gRow=ctRow('Generated contract');
-    const genBtn=el('button',{class:'btn accent sm',onclick:()=>openContractDialog()},'📄 Generate');
-    if(!hasBidFile){ genBtn.disabled=true; genBtn.title='Attach a bid document in Bids first'; genBtn.style.opacity='.5'; genBtn.style.cursor='default'; }
     const extInp=addDrop(gRow,'.pdf,application/pdf',async file=>{
       toast('Uploading contract…');
       const fd=new FormData(); fd.append('file',file);
@@ -1373,10 +1450,9 @@ function openProject(id,preset){
         drawSteps(); refreshGen(); toast('Contract attached');
       }catch(e){ toast('Upload failed: '+e.message); }
     });
-    gRow.append(genBtn,
-      el('button',{class:'btn ghost sm',title:'Attach a contract generated outside the tracker',onclick:()=>extInp.click()},'⬆ Upload existing'));
-    if(p.contractFileKey) gRow.append(fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'));
-    else gRow.append(el('span',{class:'bs-meta'},hasBidFile?'Builds the ICA with the bid embedded (Exhibits A–D) — or drop in your own.':'Attach a bid to enable generation — or drop in an existing contract.'));
+    if(p.contractFileKey) gRow.append(el('span',{class:'ct-ok'},'✓ Generated'), fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'));
+    gRow.append(el('button',{class:'btn ghost sm',title:'Attach a contract generated outside the tracker',onclick:()=>extInp.click()},'⬆ Upload existing'));
+    if(!p.contractFileKey) gRow.append(el('span',{class:'bs-meta'},'Use “Generate contract” above — or drop in an existing PDF.'));
     ctBody.append(gRow);
 
     // 2) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
@@ -1533,7 +1609,7 @@ function openProject(id,preset){
   }
 
   function drawBids(){ slotsWrap.innerHTML=''; for(let i=0;i<3;i++) slotsWrap.append(bidSlot(i)); refreshMeta(); refreshGen(); }
-  drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap, contractWrap);
+  drawBids(); bidsWrap.append(summary,bidBody); b.append(bidsWrap, genPanel, contractWrap);
 
   // --- lifecycle steps ---
   const stepsPanel=el('div',{class:'panel',style:'margin-top:16px'});
@@ -1593,6 +1669,8 @@ function openProject(id,preset){
     contractWrap.style.display=ih?'none':'';
     stepsPanel.style.display=ih?'none':'';
     sheet.classList.toggle('ih-mode',ih);
+    if(typeof refreshGenPanel==='function')refreshGenPanel();
+    if(ih)genPanel.style.display='none';
   }
   applyMode();
 
@@ -1600,6 +1678,68 @@ function openProject(id,preset){
   const np=el('div',{class:'panel pad',style:'margin-top:16px'});
   np.append(el('div',{class:'field'}, el('label',{},'Notes'), el('textarea',{oninput:e=>p.notes=e.target.value},p.notes||'')));
   b.append(np);
+
+  // --- Notes & activity: timestamped + attributed notes with attachments (all projects) ---
+  const actPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  const actChip=el('span',{class:'chip'},'');
+  actPanel.append(el('div',{class:'ph'}, el('h3',{},'Notes & activity'), el('div',{class:'sp'}), actChip));
+  const actBody=el('div',{class:'pad'});
+  const pendingFiles=[];   // attachments staged for the next posted note
+  const noteInp=el('textarea',{placeholder:'Post a note — decisions, calls, site updates… (saved with the project)',style:'min-height:52px;width:100%'});
+  const stagedWrap=el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0'});
+  function drawStaged(){
+    stagedWrap.innerHTML='';
+    pendingFiles.forEach((fl,i)=>stagedWrap.append(el('span',{class:'chip'},'📎 '+(fl.fileName||'file'),
+      el('button',{class:'btn ghost sm',style:'padding:0 4px;margin-left:4px',title:'Remove attachment',onclick:()=>{pendingFiles.splice(i,1);drawStaged();}},'✕'))));
+  }
+  async function attachNoteFile(file){
+    const fd=new FormData(); fd.append('file',file);
+    toast('Uploading…');
+    try{
+      const r=await fetch('/api/projects/'+p.id+'/note-file',{method:'POST',body:fd});
+      if(!r.ok)throw new Error(await r.text());
+      pendingFiles.push(await r.json()); drawStaged();
+    }catch(e){ toast('Upload failed: '+e.message); }
+  }
+  const attachRow=el('div',{style:'display:flex;gap:8px;align-items:center;margin-top:8px'});
+  const attInp=addDrop(attachRow,'.pdf,.png,.jpg,.jpeg,.xlsx,.xls,.docx,.zip,.msg,.eml',f=>attachNoteFile(f),{multiple:true});
+  function postNote(){
+    const txt=noteInp.value.trim();
+    if(!txt&&!pendingFiles.length){ toast('Write a note or attach a file first.'); return; }
+    p.progressNotes.push({id:uid('n'),date:today(),ts:new Date().toISOString(),username:USER,note:txt,files:pendingFiles.splice(0)});
+    noteInp.value=''; drawStaged(); drawNotes();
+  }
+  attachRow.append(
+    el('button',{class:'btn ghost sm',title:'Attach files to the note (or drop them anywhere on this row)',onclick:()=>attInp.click()},'📎 Attach'),
+    el('div',{style:'flex:1'}),
+    el('button',{class:'btn accent sm',onclick:postNote},'Post note'));
+  const noteList=el('div',{class:'pn-list',style:'margin-top:12px'});
+  const fmtNoteWhen=n=>{
+    if(n.ts){ const d=new Date(n.ts); if(!isNaN(d)) return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
+    return fmtDate(n.date);
+  };
+  function drawNotes(){
+    actChip.textContent=p.progressNotes.length?String(p.progressNotes.length):'none yet';
+    noteList.innerHTML='';
+    p.progressNotes.slice().reverse().forEach(n=>{
+      const body2=el('div',{style:'flex:1;min-width:0'});
+      body2.append(el('div',{style:'font-size:11px;color:var(--ink-3)'},
+        el('span',{class:'mono'},fmtNoteWhen(n)),
+        n.username?el('span',{style:'font-weight:600;color:var(--ink-2)'},'  ·  '+n.username):''));
+      if(n.note) body2.append(el('div',{style:'margin-top:2px;white-space:pre-wrap'},n.note));
+      if(Array.isArray(n.files)&&n.files.length){
+        const fw=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap;margin-top:4px'});
+        n.files.forEach(fl=>fw.append(el('a',{href:'/api/files/'+fl.fileKey+'?name='+encodeURIComponent(fl.fileName||'attachment'),style:'font-size:12px;color:var(--blue)'},'📎 '+(fl.fileName||'attachment'))));
+        body2.append(fw);
+      }
+      noteList.append(el('div',{class:'pn-item',style:'align-items:flex-start'}, body2,
+        el('button',{class:'btn ghost sm',title:'Remove note',onclick:()=>{if(confirm('Remove this note?')){p.progressNotes=p.progressNotes.filter(x=>x.id!==n.id);drawNotes();}}},'✕')));
+    });
+    if(!p.progressNotes.length) noteList.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'No notes yet. Notes are stamped with your name and the time, and save with the project.'));
+  }
+  actBody.append(noteInp, stagedWrap, attachRow, noteList);
+  actPanel.append(actBody); b.append(actPanel);
+  drawNotes();
 
   if(!isNew){
     b.append(el('div',{style:'margin-top:18px;display:flex'}, el('div',{style:'flex:1'}),
@@ -1680,8 +1820,10 @@ function buildUpdateEmail(code){
   const byStage=(a,b)=>(stage(b)-stage(a))||(projOutflow(b)-projOutflow(a));
   const included=cm.outstanding.slice().sort(byStage);
   const inclSet=new Set(included);
+  // Discussed/notes are opt-in per property (off by default); Above-the-Line never appears.
+  const inclDisc=!!p.updateIncludeDiscussed;
   const excluded=projForProp(code)
-    .filter(x=>!inclSet.has(x)&&!isComplete(x)&&phase(x)!=='note')
+    .filter(x=>!inclSet.has(x)&&!isComplete(x)&&!isATL(x)&&(inclDisc||(phase(x)!=='discussed'&&phase(x)!=='note')))
     .sort(byStage);
   const firstName=greetingNameFor(p);
   const nowD=new Date();
@@ -1791,11 +1933,63 @@ function makeZip(files){   // files: [{name, bytes:Uint8Array}]
   chunks.push(new Uint8Array([0x50,0x4B,5,6,...u16(0),...u16(0),...u16(central.length),...u16(central.length),...u32(offset-cdStart),...u32(cdStart),...u16(0)]));
   return new Blob(chunks,{type:'application/zip'});
 }
-/* Remember To/CC + greeting override per property so drafts come pre-addressed. */
-async function saveRecipients(code,to,cc,greeting){
-  const pr=PROP(code); if(pr && pr.updateTo===to && pr.updateCc===cc && (pr.updateGreeting||'')===greeting) return false;
-  try{ await API.send('PATCH','/properties/'+code+'/recipients',{updateTo:to,updateCc:cc,updateGreeting:greeting}); if(pr){pr.updateTo=to;pr.updateCc=cc;pr.updateGreeting=greeting;} return true; }
-  catch(e){ toast('Could not save recipients: '+e.message); return false; }
+/* Remember per-property email settings (To/CC/greeting + include flags) so
+   drafts come pre-addressed and the bulk download knows who's in. */
+async function saveEmailSettings(code,s){
+  const pr=PROP(code);
+  const same=pr && pr.updateTo===s.to && pr.updateCc===s.cc && (pr.updateGreeting||'')===s.greeting
+    && (pr.updateEnabled!==false)===(s.enabled!==false) && (pr.updateIncludeDiscussed===true)===(s.includeDiscussed===true);
+  if(same) return false;
+  try{
+    await API.send('PATCH','/properties/'+code+'/recipients',{updateTo:s.to,updateCc:s.cc,updateGreeting:s.greeting,updateEnabled:s.enabled!==false,updateIncludeDiscussed:s.includeDiscussed===true});
+    if(pr){pr.updateTo=s.to;pr.updateCc=s.cc;pr.updateGreeting=s.greeting;pr.updateEnabled=s.enabled!==false;pr.updateIncludeDiscussed=s.includeDiscussed===true;}
+    return true;
+  }catch(e){ toast('Could not save email settings: '+e.message); return false; }
+}
+
+/* Dashboard "⚙ Email setup": every property in one grid — include checkbox,
+   To / CC / greeting and the discussed toggle. Saves back to property settings. */
+function openEmailSetup(){
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet',style:'max-width:980px'});
+  const inpStyle='width:100%;padding:6px 8px;border:1px solid var(--line);border-radius:7px;background:var(--panel);color:var(--ink);font-size:12.5px';
+  const rows=[];
+  const regOrder=regionNames();
+  const propsSorted=S.properties.slice().sort((a,b)=>(regOrder.indexOf(a.region)-regOrder.indexOf(b.region))||a.code.localeCompare(b.code));
+  const grid=el('div',{style:'overflow:auto'});
+  const t=el('table',{class:'tbl'});
+  t.append(el('thead',{},tr(th('In'),th('Property'),th('To'),th('CC'),th('Greeting'),th('Discussed/notes'))));
+  const tb=el('tbody');
+  propsSorted.forEach(pr=>{
+    const inC=el('input',{type:'checkbox',title:'Include in the bulk "Update emails" download'}); inC.checked=pr.updateEnabled!==false;
+    const toI=el('input',{value:pr.updateTo||'',placeholder:'to@…',style:inpStyle});
+    const ccI=el('input',{value:pr.updateCc||'',placeholder:'cc@… (optional)',style:inpStyle});
+    const grI=el('input',{value:pr.updateGreeting||'',placeholder:'auto',style:inpStyle+';max-width:110px'});
+    const dC=el('input',{type:'checkbox',title:'Include discussed / notes projects in this property’s email'}); dC.checked=pr.updateIncludeDiscussed===true;
+    rows.push({code:pr.code,inC,toI,ccI,grI,dC});
+    tb.append(tr(td(inC),
+      td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(pr.code)};display:inline-block`}),el('strong',{},pr.code))),
+      td(toI),td(ccI),td(grI),td(dC)));
+  });
+  t.append(tb); grid.append(t);
+  const saveAll=async()=>{
+    let n=0;
+    for(const r of rows){
+      const changed=await saveEmailSettings(r.code,{to:r.toI.value.trim(),cc:r.ccI.value.trim(),greeting:r.grI.value.trim(),enabled:r.inC.checked,includeDiscussed:r.dC.checked});
+      if(changed)n++;
+    }
+    scrim.remove();
+    toast(n?`Email settings saved for ${n} propert${n===1?'y':'ies'}`:'No changes');
+    render();
+  };
+  sheet.append(
+    el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Update-email setup'),
+      el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'),
+      el('button',{class:'btn accent',onclick:saveAll},'Save all')),
+    el('div',{class:'sb'},
+      el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'“In” controls the bulk ⬇ Update emails download. “Discussed/notes” adds pre-approval projects and bare notes to that property’s email (off = committed work only). All of this saves to the property and also applies to individual drafts.'),
+      grid));
+  scrim.append(sheet); document.body.append(scrim);
 }
 
 function openUpdateEmail(code){
@@ -1821,15 +2015,19 @@ function openUpdateEmail(code){
     const toI=el('input',{value:pr.updateTo||'',placeholder:'kianna.parisien@monarchinvestment.com; …',style:inpStyle});
     const ccI=el('input',{value:pr.updateCc||'',placeholder:'regional@…; accounting@… (optional)',style:inpStyle});
     const grI=el('input',{value:pr.updateGreeting||'',placeholder:autoName?`auto: ${autoName}`:'auto from the To address',style:inpStyle});
+    const discChk=el('input',{type:'checkbox',onchange:()=>{}}); discChk.checked=pr.updateIncludeDiscussed===true;
+    const enChk=el('input',{type:'checkbox'}); enChk.checked=pr.updateEnabled!==false;
     const closeSettings=async()=>{
-      const changed=await saveRecipients(code,toI.value.trim(),ccI.value.trim(),grI.value.trim());
+      const changed=await saveEmailSettings(code,{to:toI.value.trim(),cc:ccI.value.trim(),greeting:grI.value.trim(),enabled:enChk.checked,includeDiscussed:discChk.checked});
       s2.remove(); refreshRecip();
-      if(changed){ bodyDiv.innerHTML=buildUpdateEmail(code).html; }   // greeting may have changed
+      if(changed){ bodyDiv.innerHTML=buildUpdateEmail(code).html; }   // greeting/content may have changed
     };
     sh2.append(el('div',{class:'sh'}, el('h2',{style:'font-size:15px;flex:1'},'Email settings · '+code), el('button',{class:'btn ghost',onclick:closeSettings},'Done')),
       el('div',{class:'sb'},
         el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12px'},'Saved with the property — drafts (including the dashboard bulk download) come pre-addressed. Greeting is pulled from the To address unless overridden.'),
-        lbl('To'),toI, lbl('CC'),ccI, lbl('Greeting name (override)'),grI));
+        lbl('To'),toI, lbl('CC'),ccI, lbl('Greeting name (override)'),grI,
+        el('label',{class:'chk',style:'display:flex;gap:8px;align-items:center;margin-top:12px;font-size:13px'},discChk,'Include discussed / notes projects in the email (off = committed work only)'),
+        el('label',{class:'chk',style:'display:flex;gap:8px;align-items:center;margin-top:8px;font-size:13px'},enChk,'Include this property in the dashboard "Update emails" bulk download')));
     s2.append(sh2); document.body.append(s2);
   }
   const subInp=el('input',{value:subject,style:inpStyle});
@@ -2131,7 +2329,10 @@ function viewProperty(){
 
   // RIGHT: projects (grouped) + reconciliation + GL
   const right=el('div',{class:'grid',style:'gap:16px;align-content:start'});
-  const projs=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
+  const projsAll=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
+  const atlProjs=projsAll.filter(isATL);            // operational-cashflow work: own group, hidden by default
+  const projs=projsAll.filter(p2=>!isATL(p2));
+  if(PFILT.hide.atl===undefined)PFILT.hide.atl=true;
   const pj=el('div',{class:'panel'});
   const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
   // phase filter chips — click to hide/show a completion group
@@ -2140,6 +2341,11 @@ function viewProperty(){
     filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[ph.key]=!PFILT.hide[ph.key];render();}},
       el('span',{},ph.label), el('span',{class:'pf-n'},String(counts[ph.key]))));
   });
+  if(atlProjs.length){ const hidden=!!PFILT.hide.atl;
+    filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:(hidden?'Show':'Hide')+' — operationally funded, excluded from SP projections',
+      onclick:()=>{PFILT.hide.atl=!PFILT.hide.atl;render();}},
+      el('span',{},'Above the Line'), el('span',{class:'pf-n'},String(atlProjs.length))));
+  }
   // Header + filters stay together in one sticky unit so they're visible while
   // scrolling the projects list (until the whole section scrolls past).
   const stick=el('div',{class:'pj-stick'},
@@ -2173,6 +2379,10 @@ function viewProperty(){
     pb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
     list.forEach(pr=>pb.append(projRow(pr)));
   });
+  if(atlProjs.length&&!PFILT.hide.atl){
+    pb.append(el('div',{class:'grp-h'},'Above the Line · operational cashflow', el('span',{class:'grp-n'},String(atlProjs.length))));
+    atlProjs.slice().sort((a,b)=>(b.dateAdded||'').localeCompare(a.dateAdded||'')).forEach(pr=>pb.append(projRow(pr)));
+  }
   pj.append(pb); right.append(pj);
 
   // reconciliation & flags
@@ -2335,13 +2545,20 @@ function openGLMatch(g,code){
    (notes/vendors/linked projects) plus the tracker pipeline for
    the "future special projects" sentence.
 ========================================================= */
-// Portfolio membership per the QIR tool's data/portfolios.json (Address Key).
-const PORTFOLIOS=[
-  {key:'minot4', name:'Minot 4 Portfolio',            props:['CLND','SPND','TCND','TPND']},
-  {key:'will2',  name:'Williston 2 Portfolio',        props:['BCND','ECND']},
-  {key:'basin',  name:'Basin Portfolio',              props:['FHND','PHND']},
-  {key:'wynd',   name:'The Wyatt at Northern Lights', props:['WYND']},
-];
+// Portfolio membership is the per-property "portfolio" field (editable in
+// Settings). Properties sharing a portfolio name form one portfolio card;
+// a property with no portfolio gets its own property-style card.
+function portfolios(){
+  const by=new Map(); const regOrder=regionNames();
+  const props=S.properties.slice().sort((a,b)=>
+    (regOrder.indexOf(a.region)-regOrder.indexOf(b.region))||a.code.localeCompare(b.code));
+  props.forEach(p=>{
+    const name=(p.portfolio||'').trim()||p.name||p.code;
+    if(!by.has(name))by.set(name,{key:name,name,props:[]});
+    by.get(name).props.push(p.code);
+  });
+  return [...by.values()];
+}
 const fmtQK=n=>'$'+Math.round(Math.abs(n)/1000)+'K';   // report convention: $36K
 // Normalize a GL date to ISO regardless of stored format (ISO, MM/DD/YYYY, M/D/YY).
 function isoDateOf(v){
@@ -2370,7 +2587,7 @@ const joinAnd=arr=>{ arr=arr.filter(Boolean); if(!arr.length)return ''; if(arr.l
 function futureSPList(code){
   const seen=new Set();
   return projForProp(code)
-    .filter(p=>!isComplete(p)&&!isPaidP(p)&&!(p.steps&&p.steps.workStarted)&&phase(p)!=='done')
+    .filter(p=>!isComplete(p)&&!isPaidP(p)&&!(p.steps&&p.steps.workStarted)&&phase(p)!=='done'&&!isATL(p))
     .sort((a,b)=>projOutflow(b)-projOutflow(a))
     .map(p=>lcFirst(p.name)).filter(Boolean)
     .filter(n=>{ const k=n.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true; });
@@ -2458,7 +2675,7 @@ function quarterlySummaryPanel(){
   const draftBox=text=>{ const ta=el('textarea',{class:'qs-draft'}); ta.value=text; return ta; };
   // One report per portfolio: multi-property portfolios get a single high-level
   // summary; standalone sites (WYND) get the property-style narrative.
-  PORTFOLIOS.forEach(pf=>{
+  portfolios().forEach(pf=>{
     const card=el('div',{class:'qs-card'});
     card.append(el('div',{class:'qs-head'}, el('strong',{},pf.name),
       el('span',{class:'bs-meta'},pf.props.join(' · '))));
@@ -2483,7 +2700,8 @@ function viewCash(){
     th('Outstanding','r'),th('Projected cash','r'),
     th('SP remaining','r'),th('Loan amount','r'),th('Rate','r'),th('LTV','r'),th('Matures','r'),th('DCR','r'))));
   const tb=el('tbody');
-  ['Minot','Williston'].forEach(reg=>{
+  regionNames().forEach(reg=>{
+    if(!S.properties.some(p=>p.region===reg))return;
     tb.append(el('tr',{class:'grp'}, el('td',{colspan:12},reg)));
     S.properties.filter(p=>p.region===reg).forEach(p=>{
       const c=S.cash[p.code]||{}; const adj=cashAdjFor(p.code); const cmm=cashModel(p.code);
@@ -2559,6 +2777,28 @@ function viewData(){
   body.append(uploadPanel('Cash cushion report','Cushion','Updates each property’s cash position, SP budget/spend and loan terms.',
     'cushion', S.meta.cashAsOf?`Loaded · as of ${S.meta.cashAsOf}`:'No cushion loaded'));
 
+  // import history (raw files are kept — re-download any past upload)
+  const hist=el('div',{class:'panel',style:'grid-column:1/-1'});
+  hist.append(el('div',{class:'ph'}, el('h3',{},'Import history'), el('div',{class:'sp'}),
+    el('span',{class:'chip'},'uploaded files are kept')));
+  const histPad=el('div',{class:'pad'});
+  histPad.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'Loading…'));
+  hist.append(histPad); body.append(hist);
+  API.get('/imports').then(rows=>{
+    histPad.innerHTML='';
+    if(!rows.length){ histPad.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'No imports recorded yet — history starts with the next confirmed upload.')); return; }
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('When'),th('Type'),th('Label'),th('Rows','r'),th('By'),th('File'))));
+    const tb2=el('tbody');
+    rows.forEach(i=>tb2.append(tr(
+      td(i.createdAt?new Date(i.createdAt).toLocaleString():'—'),
+      td(i.kind==='gl'?'General ledger':'Cash cushion'),
+      td(i.label||'—'), tdn(i.count), td(i.username||'—'),
+      td(i.fileKey?el('a',{href:`/api/files/${i.fileKey}?name=${encodeURIComponent(i.fileName||'import.xlsx')}`,style:'color:var(--blue)'},i.fileName||'download'):'—'))));
+    t.append(tb2);
+    histPad.append(el('div',{style:'overflow:auto'},t));
+  }).catch(()=>{ histPad.innerHTML=''; histPad.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'Could not load import history.')); });
+
   // backup panel
   const bk=el('div',{class:'panel',style:'grid-column:1/-1'});
   bk.append(el('div',{class:'ph'}, el('h3',{},'Backup & restore')));
@@ -2615,21 +2855,24 @@ async function uploadImport(file,kind){
 
 /* ---- GL parser ---- */
 function glPreview(data){
-  const {token,count,period,byProperty}=data;
+  const {token,count,period,byProperty,unknownCodes}=data;
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Confirm general ledger import'),
     el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'),
     el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('POST','/import/gl/confirm',{token}); scrim.remove(); await afterWrite(`Imported ${count} ledger lines`); }catch(e){ toast('Import failed: '+e.message); } }},`Import ${count} lines`));
   const b=el('div',{class:'sb'});
-  b.append(el('p',{style:'margin-top:0;color:var(--ink-3)'},`Found ${count} SP ledger lines${period?` for ${period}`:''}. This replaces the current ledger. Spend by property:`));
+  b.append(el('p',{style:'margin-top:0;color:var(--ink-3)'},`Found ${count} SP ledger lines${period?` for ${period}`:''}. Lines for the properties in this file are replaced; other properties keep their data. Spend by property:`));
+  if(unknownCodes&&unknownCodes.length) b.append(el('p',{style:'font-size:12.5px;color:var(--wheat-d);background:var(--wheat-soft);border-radius:8px;padding:8px 10px'},
+    `Also found ${unknownCodes.length} code${unknownCodes.length>1?'s':''} not set up yet: ${unknownCodes.join(', ')}. Their lines are kept and appear automatically when the property is added in Settings.`));
   const t=el('table',{class:'tbl'});t.append(el('thead',{},tr(th('Property'),th('Net spend','r'))));
-  const tbb=el('tbody');Object.keys(byProperty).sort().forEach(k=>tbb.append(tr(td(k),tdn(byProperty[k],1))));
+  const known=new Set(S.properties.map(p=>p.code));
+  const tbb=el('tbody');Object.keys(byProperty).sort().forEach(k=>tbb.append(tr(td(known.has(k)?k:k+' (new)'),tdn(byProperty[k],1))));
   t.append(tbb);b.append(el('div',{class:'panel',style:'overflow:auto'},t));
   sheet.append(head,b);scrim.append(sheet);document.body.append(scrim);
 }
 function cushionPreview(data){
-  const {token,count,asOf,found}=data;
+  const {token,count,asOf,found,unknownCodes}=data;
   const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet'});
   const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Confirm cash cushion import'),
@@ -2637,6 +2880,8 @@ function cushionPreview(data){
     el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('POST','/import/cushion/confirm',{token}); scrim.remove(); await afterWrite('Cash cushion updated'); }catch(e){ toast('Import failed: '+e.message); } }},'Apply update'));
   const b=el('div',{class:'sb'});
   b.append(el('p',{style:'margin-top:0;color:var(--ink-3)'},`Matched ${count} properties · as of ${asOf}. Mid-month adjustments are preserved and continue to layer on top.`));
+  if(unknownCodes&&unknownCodes.length) b.append(el('p',{style:'font-size:12.5px;color:var(--wheat-d);background:var(--wheat-soft);border-radius:8px;padding:8px 10px'},
+    `Includes ${unknownCodes.length} propert${unknownCodes.length>1?'ies':'y'} not set up yet: ${unknownCodes.join(', ')}. Their snapshots are kept and appear automatically when added in Settings.`));
   const t=el('table',{class:'tbl'});t.append(el('thead',{},tr(th('Property'),th('Cash','r'),th('SP budget','r'),th('SP spent','r'),th('Loan','r'),th('Matures','r'))));
   const tbb=el('tbody');Object.keys(found).sort().forEach(k=>{const c=found[k];tbb.append(tr(td(k),tdn(c.cash,1),tdn(c.spBudget,1),tdn(c.spSpent,1),tdn(c.loanAmount,1),td(c.loanDue||'—','r')));});
   t.append(tbb);b.append(el('div',{class:'panel',style:'overflow:auto'},t));
@@ -2647,6 +2892,186 @@ function cushionPreview(data){
 function exportBackup(){ const a=el('a',{href:'/api/export/backup.json'}); document.body.append(a); a.click(); a.remove(); toast('Backup downloading…'); }
 function importBackup(file){ if(!file)return; const fr=new FileReader(); fr.onload=async e=>{ try{ const d=JSON.parse(e.target.result); if(!d.properties||!d.projects)throw 0; await restoreBackup(d); }catch(err){ toast('That file is not a valid backup.'); } }; fr.readAsText(file); }
 function exportCSV(){ const a=el('a',{href:'/api/export/projects.csv'}); document.body.append(a); a.click(); a.remove(); toast('Projects CSV downloading…'); }
+
+/* =========================================================
+   CHANGE LOG (Admin) — every write, attributed to a user
+========================================================= */
+function viewChangelog(){
+  const bar=topbar('Admin','Change log');
+  const body=el('div',{});
+  async function load(more){
+    if(CLOG.loading)return; CLOG.loading=true;
+    try{
+      const params=new URLSearchParams({limit:'100'});
+      if(more&&CLOG.rows.length)params.set('before',CLOG.rows[CLOG.rows.length-1].ts);
+      if(CLOG.user)params.set('user',CLOG.user);
+      if(CLOG.prop)params.set('property',CLOG.prop);
+      const rows=await API.get('/changelog?'+params.toString());
+      CLOG.rows=more?CLOG.rows.concat(rows):rows;
+      CLOG.done=rows.length<100;
+    }catch(e){ CLOG.done=true; toast('Could not load the change log: '+e.message); }
+    CLOG.loading=false; render();
+  }
+  if(!CLOG.rows.length&&!CLOG.done&&!CLOG.loading) load(false);
+
+  const p=el('div',{class:'panel'});
+  // filters
+  const users=[...new Set(CLOG.rows.map(r=>r.username).filter(Boolean))].sort();
+  const userSel=el('select',{class:'mini-sel',onchange:e=>{CLOG.user=e.target.value;CLOG.rows=[];CLOG.done=false;render();}},
+    el('option',{value:''},'All users'), ...users.map(u=>el('option',{value:u,...(CLOG.user===u?{selected:true}:{})},u)));
+  if(CLOG.user&&!users.includes(CLOG.user)) userSel.append(el('option',{value:CLOG.user,selected:true},CLOG.user));
+  const propSel=el('select',{class:'mini-sel',onchange:e=>{CLOG.prop=e.target.value;CLOG.rows=[];CLOG.done=false;render();}},
+    el('option',{value:''},'All properties'), ...S.properties.map(pr=>el('option',{value:pr.code,...(CLOG.prop===pr.code?{selected:true}:{})},pr.code)));
+  const refresh=el('button',{class:'btn ghost sm',onclick:()=>{CLOG.rows=[];CLOG.done=false;render();}},'↻ Refresh');
+  p.append(el('div',{class:'ph'}, el('h3',{},'Recent changes'), el('div',{class:'sp'}), userSel, propSel, refresh));
+
+  const pad=el('div',{class:'pad'});
+  if(CLOG.loading&&!CLOG.rows.length) pad.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'Loading…'));
+  else if(!CLOG.rows.length) pad.append(el('div',{class:'empty'},'No changes recorded yet — the log starts with the next edit.'));
+  else{
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('When'),th('Who'),th('Property'),th('What changed'))));
+    const tb=el('tbody');
+    CLOG.rows.forEach(r=>{
+      const dt=r.ts?new Date(r.ts):null;
+      tb.append(tr(
+        td(el('span',{class:'mono',style:'font-size:12px;white-space:nowrap'},dt?dt.toLocaleDateString('en-US',{month:'short',day:'numeric'})+' '+dt.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}):'—')),
+        td(el('span',{style:'font-weight:600'},r.username||'—')),
+        td(r.property?propChip(r.property):'—'),
+        td(el('span',{style:'font-size:13px'},r.summary||r.action))));
+    });
+    t.append(tb);
+    pad.append(el('div',{style:'overflow:auto'},t));
+    if(!CLOG.done) pad.append(el('div',{style:'margin-top:12px'},
+      el('button',{class:'btn',onclick:()=>load(true)},CLOG.loading?'Loading…':'Load more')));
+  }
+  p.append(pad); body.append(p);
+  return {bar,body};
+}
+
+/* =========================================================
+   SETTINGS (Admin) — app title, regions, properties
+========================================================= */
+function viewSettings(){
+  const bar=topbar('Admin','Settings');
+  const body=el('div',{class:'grid'});
+  const inpStyle='width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)';
+
+  /* --- app title --- */
+  const tp=el('div',{class:'panel'});
+  tp.append(el('div',{class:'ph'}, el('h3',{},'App title')));
+  const tpad=el('div',{class:'pad'});
+  const titleI=el('input',{value:S.meta.appTitle||'',placeholder:'Monarch SP Tracker',style:inpStyle});
+  tpad.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:13px'},'Shown in the sidebar, the browser tab and the login screen.'));
+  tpad.append(el('div',{style:'display:flex;gap:8px'}, titleI,
+    el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('PATCH','/meta',{appTitle:titleI.value}); await afterWrite('Title updated'); }catch(e){ toast('Failed: '+e.message); } }},'Save')));
+  tp.append(tpad); body.append(tp);
+
+  /* --- regions --- */
+  const rp=el('div',{class:'panel'});
+  rp.append(el('div',{class:'ph'}, el('h3',{},'Regions'), el('div',{class:'sp'}), el('span',{class:'chip'},String((S.regions||[]).length))));
+  const rpad=el('div',{class:'pad'});
+  const regs=(S.regions||[]).slice();
+  regs.forEach((r,i)=>{
+    const row=el('div',{style:'display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)'});
+    const nProps=S.properties.filter(p=>p.region===r.name).length;
+    row.append(
+      el('span',{style:'flex:1;font-weight:600'},r.name),
+      el('span',{class:'chip'},`${nProps} propert${nProps===1?'y':'ies'}`),
+      el('button',{class:'btn ghost sm',title:'Move up',disabled:i===0?'':null,onclick:async()=>{ if(i===0)return;
+        try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{sort:regs[i-1].sort});
+             await API.send('PATCH','/regions/'+encodeURIComponent(regs[i-1].name),{sort:r.sort});
+             await afterWrite('Region order updated'); }catch(e){ toast('Failed: '+e.message); } }},'↑'),
+      el('button',{class:'btn ghost sm',title:'Move down',disabled:i===regs.length-1?'':null,onclick:async()=>{ if(i===regs.length-1)return;
+        try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{sort:regs[i+1].sort});
+             await API.send('PATCH','/regions/'+encodeURIComponent(regs[i+1].name),{sort:r.sort});
+             await afterWrite('Region order updated'); }catch(e){ toast('Failed: '+e.message); } }},'↓'),
+      el('button',{class:'btn ghost sm',title:'Rename',onclick:async()=>{ const n=prompt('Rename region "'+r.name+'" to:',r.name); if(!n||n.trim()===r.name)return;
+        try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{name:n.trim()}); await afterWrite('Region renamed'); }catch(e){ toast('Failed: '+e.message); } }},'✎'),
+      el('button',{class:'btn ghost sm',title:'Delete',onclick:async()=>{ if(!confirm('Delete region "'+r.name+'"? Only possible when it has no properties.'))return;
+        try{ await API.send('DELETE','/regions/'+encodeURIComponent(r.name)); await afterWrite('Region deleted'); }catch(e){ toast(e.message); } }},'🗑'));
+    rpad.append(row);
+  });
+  const newRegI=el('input',{placeholder:'New region name…',style:inpStyle+';flex:1'});
+  rpad.append(el('div',{style:'display:flex;gap:8px;margin-top:12px'}, newRegI,
+    el('button',{class:'btn accent',onclick:async()=>{ const n=newRegI.value.trim(); if(!n){toast('Enter a region name');return;}
+      try{ await API.send('POST','/regions',{name:n}); await afterWrite('Region "'+n+'" added'); }catch(e){ toast('Failed: '+e.message); } }},'+ Add region')));
+  rp.append(rpad); body.append(rp);
+
+  /* --- properties --- */
+  const pp=el('div',{class:'panel',style:'grid-column:1/-1'});
+  pp.append(el('div',{class:'ph'}, el('h3',{},'Properties'), el('div',{class:'sp'}),
+    el('button',{class:'btn accent sm',onclick:()=>openPropertyEditor(null)},'+ Add property')));
+  const ppad=el('div',{class:'pad',style:'overflow:auto'});
+  const t=el('table',{class:'tbl'});
+  t.append(el('thead',{},tr(th(''),th('Code'),th('Name'),th('Region'),th('Manager'),th('Portfolio'),th('Units','r'),th('SP budget','r'),th(''))));
+  const tb=el('tbody');
+  const regOrder=regionNames();
+  S.properties.slice().sort((a,b)=>(regOrder.indexOf(a.region)-regOrder.indexOf(b.region))||a.code.localeCompare(b.code)).forEach(pr=>{
+    tb.append(tr(
+      td(el('span',{style:`display:inline-block;width:12px;height:12px;border-radius:3px;background:${pcolor(pr.code)}`})),
+      td(el('strong',{},pr.code)), td(pr.name), td(pr.region), td(pr.manager||'—'), td(pr.portfolio||'—'),
+      tdn(pr.units||null), tdn(pr.spBudget,1),
+      td(el('button',{class:'btn ghost sm',onclick:()=>openPropertyEditor(pr.code)},'Edit'))));
+  });
+  t.append(tb); ppad.append(t);
+  ppad.append(el('p',{style:'color:var(--ink-3);font-size:12.5px;margin-bottom:0'},
+    'Adding a property whose code already appeared in an imported GL or cushion file picks that data up automatically — nothing needs re-uploading.'));
+  pp.append(ppad); body.append(pp);
+  return {bar,body};
+}
+
+function openPropertyEditor(code){
+  const pr=code?S.properties.find(p=>p.code===code):null;
+  const inpStyle='width:100%;padding:8px 10px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink)';
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet'});
+  const f={};
+  const field=(label,key,val,attrs={})=>{ f[key]=el('input',{value:val==null?'':String(val),style:inpStyle,...attrs});
+    return el('div',{style:'margin-bottom:10px'}, el('div',{style:'font-size:11.5px;color:var(--ink-3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em'},label), f[key]); };
+  const regSel=el('select',{style:inpStyle});
+  regionNames().forEach(r=>regSel.append(el('option',{value:r,...((pr?pr.region:'')===r?{selected:true}:{})},r)));
+  f.region=regSel;
+  const b=el('div',{class:'sb'});
+  const grid2=(...kids)=>el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:0 14px'},...kids);
+  b.append(
+    grid2(field('Code (Yardi pcode)','code',pr?pr.code:'',pr?{disabled:''}:{placeholder:'e.g. ABCD'}),
+          el('div',{style:'margin-bottom:10px'}, el('div',{style:'font-size:11.5px;color:var(--ink-3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em'},'Region'), regSel)),
+    field('Property name','name',pr?pr.name:''),
+    grid2(field('Manager','manager',pr?pr.manager:''),
+          field('Portfolio (quarterly summary group)','portfolio',pr?pr.portfolio:'',{placeholder:'blank = own report card'})),
+    grid2(field('Units','units',pr?pr.units:''),
+          field('SP budget ($)','spBudget',pr?pr.spBudget:'')),
+    grid2((()=>{ f.color=el('input',{type:'color',style:'width:100%;height:38px;padding:2px;border:1px solid var(--line);border-radius:8px;background:var(--panel)'});
+        f.color.value=(pr&&pr.color&&/^#[0-9a-fA-F]{6}$/.test(pr.color))?pr.color:pcolor(pr?pr.code:'')||'#5e97cc';
+        return el('div',{style:'margin-bottom:10px'}, el('div',{style:'font-size:11.5px;color:var(--ink-3);margin-bottom:3px;text-transform:uppercase;letter-spacing:.05em'},'Color'), f.color); })(),
+          field('Contract code (filenames)','contractCode',pr?pr.contractCode:'',{placeholder:'defaults to the property code'})),
+    field('Owner entity (contracts)','ownerEntity',pr?pr.ownerEntity:''),
+    field('Property address','address',pr?pr.address:''),
+    field('Owner notice address','ownerNoticeAddr',pr?pr.ownerNoticeAddr:''));
+  if(pr){
+    b.append(el('div',{style:'margin-top:6px'},
+      el('button',{class:'btn danger sm',onclick:async()=>{ if(!confirm(`Delete ${pr.code} — ${pr.name}? Blocked if it has projects, contracts or cash adjustments. Imported GL/cushion data is kept.`))return;
+        try{ await API.send('DELETE','/properties/'+pr.code); scrim.remove(); await afterWrite('Property deleted'); }catch(e){ toast(e.message); } }},'Delete property')));
+  }
+  const save=async()=>{
+    const payload={ code:pr?pr.code:f.code.value, name:f.name.value, region:f.region.value, manager:f.manager.value,
+      portfolio:f.portfolio.value, color:f.color.value, contractCode:f.contractCode.value, ownerEntity:f.ownerEntity.value,
+      address:f.address.value, ownerNoticeAddr:f.ownerNoticeAddr.value, units:f.units.value, spBudget:f.spBudget.value };
+    try{
+      if(pr) await API.send('PATCH','/properties/'+pr.code,payload);
+      else{
+        const r=await API.send('POST','/properties',payload);
+        if(r.existingGlLines) toast(`${r.existingGlLines} previously imported GL lines are now visible for ${r.code}`);
+      }
+      scrim.remove(); await afterWrite(pr?'Property updated':'Property added');
+    }catch(e){ toast('Save failed: '+e.message); }
+  };
+  const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},pr?`Edit ${pr.code} — ${pr.name}`:'Add property'),
+    el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'),
+    el('button',{class:'btn accent',onclick:save},pr?'Save changes':'Add property'));
+  sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+}
 
 /* ---------- tiny table builders ---------- */
 function tr(...kids){return el('tr',{},...kids);}

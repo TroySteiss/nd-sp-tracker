@@ -19,23 +19,42 @@ const nnull = (v: any): number | null => (v == null || v === '' || isNaN(Number(
 /**
  * Replace all data with the given state, transactionally. Reused by the seed
  * script, the JSON-backup restore endpoint, and "reset to seed".
- * Properties' region/manager/color are taken from the domain reference data
- * (authoritative), not the imported blob.
+ * Properties/regions come from the blob (the DB is the runtime source of truth);
+ * the static PROPERTIES list is only a fallback for blobs that predate it.
  */
 export async function loadStateInto(client: pg.PoolClient, state: AppState): Promise<void> {
   await client.query('truncate contracts, files, gl_lines, cash_adjustments, cash_snapshots, progress_notes, bids, projects, properties restart identity cascade');
+  await client.query('delete from regions').catch(() => { /* pre-migration DB */ });
   const projectIds = new Set((state.projects || []).map((p) => p.id));
 
-  // properties — authoritative reference (name/budget/units/legal fields may come from the blob)
-  for (const ref of PROPERTIES) {
-    const fromBlob: any = (state.properties || []).find((p) => p.code === ref.code) || {};
+  // properties — from the blob; static list fills gaps (old backups without color/portfolio)
+  const blobProps = (state.properties || []).length ? state.properties : PROPERTIES;
+  for (const p of blobProps) {
+    const ref: any = PROPERTIES.find((r) => r.code === p.code) || {};
+    const fromBlob: any = p;
     await client.query(
-      `insert into properties(code,name,region,manager,color,sp_budget,units,owner_entity,address,owner_notice_addr,contract_code,accretion_pct,avg_monthly_interest)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
-      [ref.code, fromBlob.name || ref.name, ref.region, ref.manager, pcolor(ref.code), nnull(fromBlob.spBudget) ?? 0, fromBlob.units ?? 0,
-       fromBlob.ownerEntity || '', fromBlob.address || '', fromBlob.ownerNoticeAddr || '', fromBlob.contractCode || ref.code,
+      `insert into properties(code,name,region,manager,color,portfolio,sp_budget,units,owner_entity,address,owner_notice_addr,contract_code,accretion_pct,avg_monthly_interest)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      [p.code, fromBlob.name || ref.name || p.code, fromBlob.region || ref.region || '', fromBlob.manager || ref.manager || '',
+       fromBlob.color || pcolor(p.code), fromBlob.portfolio || ref.portfolio || '',
+       nnull(fromBlob.spBudget) ?? 0, fromBlob.units ?? 0,
+       fromBlob.ownerEntity || '', fromBlob.address || '', fromBlob.ownerNoticeAddr || '', fromBlob.contractCode || p.code,
        nnull(fromBlob.accretionPct), nnull(fromBlob.avgMonthlyInterest) ?? 0]
     );
+    // update-email settings round-trip (columns exist since migrations 011/012/015)
+    await client.query(
+      'update properties set update_to=$1, update_cc=$2, update_greeting=$3, update_enabled=$4, update_include_discussed=$5 where code=$6',
+      [fromBlob.updateTo || '', fromBlob.updateCc || '', fromBlob.updateGreeting || '', fromBlob.updateEnabled !== false, fromBlob.updateIncludeDiscussed === true, p.code]
+    ).catch(() => { /* pre-migration DB */ });
+  }
+
+  // regions — from the blob when present, otherwise derived from the properties in order
+  const regionRows: { name: string; sort: number }[] = (state.regions || []).length
+    ? state.regions!
+    : [...new Set(blobProps.map((p) => p.region).filter(Boolean))].map((name, i) => ({ name: name as string, sort: i + 1 }));
+  for (const r of regionRows) {
+    await client.query('insert into regions(name,sort) values($1,$2) on conflict (name) do update set sort=excluded.sort', [r.name, r.sort])
+      .catch(() => { /* pre-migration DB */ });
   }
 
   // projects + bids + progress notes
@@ -63,8 +82,8 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
       slot++;
     }
     for (const n of p.progressNotes || []) {
-      await client.query(`insert into progress_notes(id,project_id,date,note) values($1,$2,$3,$4)`,
-        [n.id, p.id, dnull(n.date) || dnull(new Date().toISOString()), n.note || '']);
+      await client.query(`insert into progress_notes(id,project_id,date,note,username,ts,files) values($1,$2,$3,$4,$5,$6,$7)`,
+        [n.id, p.id, dnull(n.date) || dnull(new Date().toISOString()), n.note || '', (n as any).username || '', (n as any).ts || null, JSON.stringify(Array.isArray((n as any).files) ? (n as any).files : [])]);
     }
   }
 
@@ -116,6 +135,7 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
      on conflict (id) do update set gl_period=excluded.gl_period, cash_as_of=excluded.cash_as_of, version=excluded.version`,
     [m.glPeriod || '', dnull(m.cashAsOf), m.version || 1]
   );
+  if (m.appTitle) await client.query('update app_meta set app_title=$1 where id=1', [m.appTitle]).catch(() => { /* pre-migration DB */ });
 }
 
 async function run() {

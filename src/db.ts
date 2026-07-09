@@ -1,7 +1,6 @@
 import pg from 'pg';
 import 'dotenv/config';
 import type { AppState, Project, Bid, ProgressNote, CashSnapshot, CashAdjustment, GLLine } from '../shared/domain.js';
-import { regionFor, managerFor } from '../shared/domain.js';
 
 // Numerics come back from pg as strings by default; coerce numeric (1700) to JS number.
 pg.types.setTypeParser(1700, (v) => (v == null ? null : parseFloat(v)));
@@ -49,12 +48,20 @@ export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<
 /* ---------- Row → domain object mappers ---------- */
 const d = (v: any): string => (v instanceof Date ? v.toISOString().slice(0, 10) : v == null ? '' : String(v));
 
-export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = []): Project {
+/** region/manager come from the properties table (the single source of truth). */
+export type PropLookup = Map<string, { region: string; manager: string }>;
+export async function propLookup(): Promise<PropLookup> {
+  const r = await query<{ code: string; region: string; manager: string }>('select code, region, manager from properties');
+  return new Map(r.rows.map((p) => [p.code, { region: p.region || '', manager: p.manager || '' }]));
+}
+
+export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [], props?: PropLookup): Project {
+  const pr = props?.get(r.property_code);
   return {
     id: r.id,
     property: r.property_code,
-    region: regionFor(r.property_code),
-    manager: managerFor(r.property_code),
+    region: pr?.region || '',
+    manager: pr?.manager || '',
     category: r.category,
     name: r.name,
     description: r.description ?? '',
@@ -100,7 +107,7 @@ export function rowToCash(r: any): CashSnapshot {
 
 /* ---------- Assemble the full state blob (GET /api/state) ---------- */
 export async function assembleState(): Promise<AppState> {
-  const [props, projs, bids, notes, cash, adj, gl, meta, contracts, ctrs] = await Promise.all([
+  const [props, projs, bids, notes, cash, adj, gl, meta, contracts, ctrs, regions] = await Promise.all([
     query('select * from properties order by code'),
     query('select * from projects order by id'),
     query('select * from bids order by project_id, slot'),
@@ -111,6 +118,7 @@ export async function assembleState(): Promise<AppState> {
     query('select * from app_meta where id=1'),
     query('select * from contracts order by effective_date, created_at'),
     query('select * from contractors order by name').catch(() => ({ rows: [] })),
+    query('select * from regions order by sort, name').catch(() => ({ rows: [] })),
   ]);
 
   const bidsByProject = new Map<string, Bid[]>();
@@ -123,14 +131,15 @@ export async function assembleState(): Promise<AppState> {
   const notesByProject = new Map<string, ProgressNote[]>();
   for (const n of notes.rows) {
     const arr = notesByProject.get(n.project_id) || [];
-    arr.push({ id: n.id, date: d(n.date), note: n.note });
+    arr.push({ id: n.id, date: d(n.date), note: n.note, username: n.username ?? '', ts: n.ts ? new Date(n.ts).toISOString() : '', files: Array.isArray(n.files) ? n.files : [] });
     notesByProject.set(n.project_id, arr);
   }
 
-  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', contractCode: r.contract_code ?? r.code, accretionPct: r.accretion_pct, avgMonthlyInterest: r.avg_monthly_interest ?? 0, includeAccretionInProj: r.include_accretion_in_proj !== false, includeReturnsInProj: r.include_returns_in_proj !== false, distributionQuarters: r.distribution_quarters || {}, updateTo: r.update_to ?? '', updateCc: r.update_cc ?? '', updateGreeting: r.update_greeting ?? '' }));
+  const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, color: r.color ?? '', portfolio: r.portfolio ?? '', spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', contractCode: r.contract_code ?? r.code, accretionPct: r.accretion_pct, avgMonthlyInterest: r.avg_monthly_interest ?? 0, includeAccretionInProj: r.include_accretion_in_proj !== false, includeReturnsInProj: r.include_returns_in_proj !== false, distributionQuarters: r.distribution_quarters || {}, updateTo: r.update_to ?? '', updateCc: r.update_cc ?? '', updateGreeting: r.update_greeting ?? '', updateEnabled: r.update_enabled !== false, updateIncludeDiscussed: r.update_include_discussed === true }));
+  const propMap: PropLookup = new Map(props.rows.map((r) => [r.code, { region: r.region || '', manager: r.manager || '' }]));
 
   const contractRecords = contracts.rows.map((r) => ({ id: r.id, projectId: r.project_id, property: r.property_code, outputFilename: r.output_filename, ownerEntity: r.owner_entity ?? '', contractor: r.contractor ?? '', total: r.total, effectiveDate: r.effective_date ? d(r.effective_date) : '', termEnd: r.term_end ? d(r.term_end) : '', scope: r.scope ?? '', fileKey: r.file_key, createdAt: r.created_at ? new Date(r.created_at).toISOString() : '' }));
-  const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || []));
+  const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || [], propMap));
 
   const cashMap: Record<string, CashSnapshot> = {};
   for (const r of cash.rows) cashMap[r.property_code] = rowToCash(r);
@@ -139,9 +148,10 @@ export async function assembleState(): Promise<AppState> {
   const glLines: GLLine[] = gl.rows.map((r) => ({ id: r.id, property: r.property_code, account: r.account, category: r.category, date: r.date ? d(r.date) : '', vendor: r.vendor, control: r.control, amount: Number(r.amount), remarks: r.remarks, linkedProjectId: r.linked_project_id, partial: !!r.partial }));
 
   const m = meta.rows[0] || {};
-  const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '' };
+  const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '', appTitle: m.app_title ?? '' };
 
   const contractors = ctrs.rows.map((r: any) => ({ id: r.id, name: r.name, address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '', category: r.category ?? '', notes: r.notes ?? '' }));
+  const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0 }));
 
-  return { meta: metaObj, properties, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors };
+  return { meta: metaObj, properties, regions: regionList, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors };
 }

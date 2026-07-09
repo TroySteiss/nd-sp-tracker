@@ -1,15 +1,33 @@
 import * as XLSX from 'xlsx';
-import { PROPERTIES, uid, type GLLine, type CashSnapshot } from '../shared/domain.js';
+import { uid, type GLLine, type CashSnapshot } from '../shared/domain.js';
 
-const KNOWN_CODES = PROPERTIES.map((p) => p.code);
+/* Property codes come from the DB (passed in by the routes), not a static list.
+   Rows for codes we don't track yet are KEPT — they surface automatically when
+   the property is added later, so files never need re-uploading. */
+
+// Words that can appear in the code column with amounts but are never pcodes.
+const STOPWORDS = new Set(['total', 'totals', 'grand', 'net', 'gross', 'notes', 'budget', 'period', 'asset', 'assets', 'equity', 'income', 'cash', 'debit', 'credit', 'pcode', 'ledger', 'report']);
+
+/** Normalize a raw token to a property code. Exact match to a known code wins;
+    then a known-code prefix (Yardi alias, e.g. "tpndc" → TPND); else the
+    uppercased token itself (unknown-but-kept). Returns null for non-codes. */
+function normalizeCode(raw: string, knownCodes: string[]): string | null {
+  const t = String(raw || '').trim().toLowerCase().replace(/[^a-z]/g, '');
+  if (!/^[a-z]{3,6}$/.test(t) || STOPWORDS.has(t)) return null;
+  const up = t.toUpperCase();
+  if (knownCodes.includes(up)) return up;
+  const alias = knownCodes.find((k) => k.length >= 4 && up.startsWith(k));
+  return alias || up;
+}
 
 /* ---------- Yardi SP general-ledger import (spec §8.1, ports handleGL) ---------- */
 export interface GLParseResult {
   tx: GLLine[];
   period: string | null;
   byProperty: Record<string, number>;
+  unknownCodes: string[];
 }
-export function parseGL(buffer: Buffer): GLParseResult {
+export function parseGL(buffer: Buffer, knownCodes: string[]): GLParseResult {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: null });
@@ -21,9 +39,9 @@ export function parseGL(buffer: Buffer): GLParseResult {
     const a = (r[0] == null ? '' : String(r[0])).trim();
     if (/Period\s*=/.test(String(r[0]) || '')) period = String(r[0]).replace(/Period\s*=/, '').trim();
     if (/^\d{4}$/.test(a)) { acct = a; cat = (r[4] ? String(r[4]) : '').replace(/^SP\s*/i, '').trim() || a; return; }
-    if (/^[a-zA-Z]{4}$/.test(a)) {
-      const code = a.toLowerCase() === 'tpndc' ? 'TPND' : a.toUpperCase();
-      if (!KNOWN_CODES.includes(code)) return; // ignore unknown property codes
+    if (/^[a-zA-Z]{4,6}$/.test(a)) {
+      const code = normalizeCode(a, knownCodes);
+      if (!code) return;
       const debit = parseFloat(String(r[7] || '0').replace(/[^0-9.\-]/g, '')) || 0;
       const credit = parseFloat(String(r[8] || '0').replace(/[^0-9.\-]/g, '')) || 0;
       const net = debit - credit;
@@ -49,15 +67,17 @@ export function parseGL(buffer: Buffer): GLParseResult {
 
   const byProperty: Record<string, number> = {};
   tx.forEach((t) => { byProperty[t.property] = (byProperty[t.property] || 0) + t.amount; });
-  return { tx, period, byProperty };
+  const unknownCodes = [...new Set(tx.map((t) => t.property).filter((c) => !knownCodes.includes(c)))].sort();
+  return { tx, period, byProperty, unknownCodes };
 }
 
 /* ---------- Cash-cushion import (spec §8.2, ports handleCushion) ---------- */
 export interface CushionParseResult {
-  found: Record<string, CashSnapshot>;
+  found: Record<string, CashSnapshot & { units?: number | null }>;
   asOf: string;
+  unknownCodes: string[];
 }
-export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParseResult {
+export function parseCushion(buffer: Buffer, fallbackAsOf: string, knownCodes: string[]): CushionParseResult {
   const wb = XLSX.read(buffer, { type: 'buffer', cellDates: true });
   const ws = wb.Sheets[wb.SheetNames[0]];
   const rows: any[][] = XLSX.utils.sheet_to_json(ws, { header: 1, raw: false, defval: null });
@@ -94,7 +114,6 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
   let asOf = fallbackAsOf;
   for (const k in hcols) { const m = k.match(/(\d{1,2}\/\d{1,2}\/\d{4})/); if (k.includes('cash and cash') && m) { asOf = m[1]; break; } }
 
-  const known = new Set(KNOWN_CODES.map((c) => c.toLowerCase()));
   const num = (r: any[], c: number): number | null => {
     if (c < 0) return null; const v = r[c]; if (v == null || v === '') return null;
     const n = parseFloat(String(v).replace(/[^0-9.\-]/g, '')); return isNaN(n) ? null : n;
@@ -103,9 +122,11 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
 
   const found: Record<string, CashSnapshot & { units?: number | null }> = {};
   for (let i = hr + 1; i < rows.length; i++) {
-    const pc = str(rows[i], col.pcode).toLowerCase().replace(/[^a-z]/g, ''); // tolerate stray punctuation e.g. "tpnd."
-    if (known.has(pc)) {
-      const r = rows[i]; const code = pc.toUpperCase();
+    // Keep every row whose Pcode looks like a property code — including ones we
+    // don't track yet (their snapshots are stored and surface when added).
+    const code = normalizeCode(str(rows[i], col.pcode), knownCodes);
+    if (code) {
+      const r = rows[i];
       found[code] = {
         asOfDate: asOf, cash: num(r, col.cash), adjCash: num(r, col.adjCash), spBudget: num(r, col.spBudget),
         spSpent: num(r, col.spSpent), spRemaining: num(r, col.spRemaining), noi: num(r, col.noi), ds: num(r, col.ds),
@@ -116,6 +137,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string): CushionParse
       };
     }
   }
-  if (!Object.keys(found).length) throw new Error('No matching ND properties found in the report.');
-  return { found, asOf };
+  if (!Object.keys(found).length) throw new Error('No property rows found in the report.');
+  const unknownCodes = Object.keys(found).filter((c) => !knownCodes.includes(c)).sort();
+  return { found, asOf, unknownCodes };
 }

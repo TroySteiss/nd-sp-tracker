@@ -24,6 +24,14 @@ app.get('/healthz', (_req, res) => res.json({ ok: true }));
 // everything else under /api requires auth
 app.use('/api', requireAuth, api);
 
+// JSON error handler for the wrapped async routes (see routes.ts) — log and
+// answer 500 instead of letting the error take the process down.
+app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: express.NextFunction) => {
+  console.error('API error:', err?.stack || err);
+  if (!res.headersSent) res.status(500).json({ error: err?.message || 'internal error' });
+});
+process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
+
 // static UI
 app.use(express.static(publicDir));
 app.get('*', (_req, res) => res.sendFile(join(publicDir, 'index.html')));
@@ -48,6 +56,6 @@ async function start() {
   if (!initialized) console.error('DB init did not complete — starting server anyway; API calls will error until the database is reachable.');
 
   const port = Number(process.env.PORT) || 3000;
-  app.listen(port, '0.0.0.0', () => console.log(`ND SP Tracker listening on :${port}`));
+  app.listen(port, '0.0.0.0', () => console.log(`SP Tracker listening on :${port}`));
 }
 start();

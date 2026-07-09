@@ -21,7 +21,8 @@ export interface Bid {
   files?: BidFile[];
 }
 export interface BidFile { fileKey?: string | null; fileName?: string | null; fileSize?: number | null; }
-export interface ProgressNote { id: string; date: string; note: string; }
+export interface NoteFile { fileKey?: string | null; fileName?: string | null; fileSize?: number | null; }
+export interface ProgressNote { id: string; date: string; note: string; username?: string; ts?: string; files?: NoteFile[]; }
 export interface Steps { [key: string]: boolean; }
 
 export interface Project {
@@ -76,6 +77,8 @@ export interface Property {
   name: string;
   region: string;
   manager: string;
+  color?: string;
+  portfolio?: string;
   spBudget?: number;
   units?: number;
   ownerEntity?: string;
@@ -87,6 +90,11 @@ export interface Property {
   includeAccretionInProj?: boolean | null;
   includeReturnsInProj?: boolean | null;
   distributionQuarters?: Record<string, number> | null;
+  updateTo?: string;
+  updateCc?: string;
+  updateGreeting?: string;
+  updateEnabled?: boolean;
+  updateIncludeDiscussed?: boolean;
 }
 
 /** Quarters remaining in the calendar year, counting the current quarter, from an as-of date (MM/DD/YYYY or YYYY-MM-DD). */
@@ -171,9 +179,12 @@ export interface GLLine {
   partial?: boolean;
 }
 
+export interface Region { name: string; sort: number; }
+
 export interface AppState {
   meta: Record<string, any>;
   properties: Property[];
+  regions?: Region[];
   cash: Record<string, CashSnapshot>;
   cashAdjustments: CashAdjustment[];
   gl: GLLine[];
@@ -204,20 +215,23 @@ export const OVER_THRESHOLD = 5000;                        // $5K threshold (3 u
 
 export const CATEGORIES = ['APPLIANCES', 'BUILDING REPAIRS', 'CABINETS/COUNTERTOPS', 'CARPETS/VINYL', 'COMMON AREA UPGRADES', 'Concrete/Asphalt', 'DOORS/WINDOWS', 'DRAPES/BLINDS', 'ELECTRICAL - EXTERIOR', 'ELECTRICAL - INTERIOR', 'ELEVATORS', 'FENCING', 'FIRE', 'FURNITURE/EQUIPMENT', 'GENERAL', 'HVAC', 'INSPECTION EXPENSES', 'JANITORIAL', 'LABOR', 'LANDSCAPING', 'OTHER', 'PAINTING - EXTERIOR', 'PAINTING - INTERIOR', 'PARKING', 'PLUMBING', 'POOL', 'REPAIR DOWN UNITS', 'ROOFING', 'SECURITY CAMERA', 'SIGNAGE', 'SUPPLIES', 'UNIT AMENITIES/UPGRADES', 'WOOD REPLACEMENT'];
 
-/* ---------- Portfolio reference data (spec §2) ---------- */
+/* ---------- Seed defaults ONLY (spec §2) ----------
+   The properties table in Postgres is the single source of truth at runtime
+   (regions, managers, colors, portfolios are all editable in Settings).
+   These lists are used solely to seed an empty database / as a fallback when
+   restoring an old backup that predates per-property color/portfolio. */
 export const PROPERTIES: Property[] = [
-  { code: 'CLND', name: 'The Commons & Landing',          region: 'Minot',     manager: 'Holly Haman' },
-  { code: 'SPND', name: 'South Pointe',                    region: 'Minot',     manager: 'Holly Haman' },
-  { code: 'TPND', name: 'The Plaza',                       region: 'Minot',     manager: 'Holly Haman' },
-  { code: 'TCND', name: 'The Chateau',                     region: 'Minot',     manager: 'Holly Haman' },
-  { code: 'WYND', name: 'The Wyatt at Northern Lights',    region: 'Minot',     manager: 'Holly Haman' },
-  { code: 'BCND', name: 'The Reserve at Bison Crossing',   region: 'Williston', manager: 'Brittanee Purdue' },
-  { code: 'ECND', name: 'The Reserve at Elk Crossing',     region: 'Williston', manager: 'Brittanee Purdue' },
-  { code: 'FHND', name: 'Fair Hills Apartments',           region: 'Williston', manager: 'Brittanee Purdue' },
-  { code: 'PHND', name: 'Plantation at Hunters Run',       region: 'Williston', manager: 'Brittanee Purdue' },
+  { code: 'CLND', name: 'The Commons & Landing',          region: 'Minot',     manager: 'Holly Haman',      portfolio: 'Minot 4 Portfolio' },
+  { code: 'SPND', name: 'South Pointe',                    region: 'Minot',     manager: 'Holly Haman',      portfolio: 'Minot 4 Portfolio' },
+  { code: 'TPND', name: 'The Plaza',                       region: 'Minot',     manager: 'Holly Haman',      portfolio: 'Minot 4 Portfolio' },
+  { code: 'TCND', name: 'The Chateau',                     region: 'Minot',     manager: 'Holly Haman',      portfolio: 'Minot 4 Portfolio' },
+  { code: 'WYND', name: 'The Wyatt at Northern Lights',    region: 'Minot',     manager: 'Holly Haman',      portfolio: 'The Wyatt at Northern Lights' },
+  { code: 'BCND', name: 'The Reserve at Bison Crossing',   region: 'Williston', manager: 'Brittanee Purdue', portfolio: 'Williston 2 Portfolio' },
+  { code: 'ECND', name: 'The Reserve at Elk Crossing',     region: 'Williston', manager: 'Brittanee Purdue', portfolio: 'Williston 2 Portfolio' },
+  { code: 'FHND', name: 'Fair Hills Apartments',           region: 'Williston', manager: 'Brittanee Purdue', portfolio: 'Basin Portfolio' },
+  { code: 'PHND', name: 'Plantation at Hunters Run',       region: 'Williston', manager: 'Brittanee Purdue', portfolio: 'Basin Portfolio' },
 ];
 
-/* Per-property color — first-class concept; keyed off code, not region (spec §2). */
 export const PCOLOR: Record<string, string> = {
   /* Minot — shades of blue */
   CLND: '#5e97cc', SPND: '#3f7cb8', TPND: '#2f6199', TCND: '#234e7d', WYND: '#183a5e',
@@ -226,9 +240,8 @@ export const PCOLOR: Record<string, string> = {
 };
 export const pcolor = (code: string): string => PCOLOR[code] || '#7a8190';
 
-/* Map a property code to its region/manager (derived on save, spec §2). */
-export function regionFor(code: string): string { return PROPERTIES.find(p => p.code === code)?.region || ''; }
-export function managerFor(code: string): string { return PROPERTIES.find(p => p.code === code)?.manager || ''; }
+/* Rotating palette for auto-assigning a color to newly created properties. */
+export const COLOR_PALETTE = ['#5e97cc', '#e0973a', '#4f9d69', '#a2599c', '#c05b4d', '#3f7cb8', '#8f6f3a', '#2f8f8f', '#7a5cc0', '#b8501f', '#234e7d', '#6d8f2f'];
 
 /* ---------- Lifecycle / step helpers (spec §5) ---------- */
 export const naKeys = (p: Project): string[] => (p.noContract ? CONTRACT_STEPS : []);
@@ -241,6 +254,12 @@ export function stage(p: Project): number { let last = -1; STEP_KEYS.forEach((k,
 /** applicable steps only (N/A excluded) so progress bars rescale */
 export function stepsDone(p: Project): number { return appKeys(p).filter(k => p.steps && p.steps[k]).length; }
 export function stepsTotal(p: Project): number { return appKeys(p).length; }
+
+/** "Above the Line" in the project name = funded from operational cashflow, not
+    the property's cash position. Excluded from ALL SP projections (cash AND
+    projected-budget-remaining), from GL tie-out flags, and de-emphasized in the
+    UI. Actual GL postings still count in "spent" — the ledger is factual. */
+export const isAboveLine = (p: Project): boolean => /above\s+the\s+line/i.test(p.name || '');
 
 export const isApproved = (p: Project): boolean => !!(p.steps && p.steps.approved);
 export const isPaidP = (p: Project): boolean => !!(p.steps && p.steps.paid);
@@ -357,6 +376,7 @@ export function cashModel(state: AppState, code: string): CashModel {
   const outstanding: Project[] = [], paid: Project[] = [], discussed: Project[] = [];
   let outstandingTotal = 0, paidTotal = 0, discussedTotal = 0;
   projs.forEach(p => {
+    if (isAboveLine(p)) return;                      // operationally funded — never in SP projections
     if (p.inHouse) {
       if (p.onHold || !ihIsBudget(p)) return;        // quantity-tracked in-house has no $ figure
       const t = ihTotal(p), d = ihDone(p);
@@ -384,7 +404,7 @@ export function auditModel(state: AppState, code: string): AuditModel {
   const glTotal = gls.reduce((a, g) => a + (Number(g.amount) || 0), 0);
   const linkedIds = new Set(gls.map(g => g.linkedProjectId).filter(Boolean));
   const unplanned = gls.filter(g => Number(g.amount) > OVER_THRESHOLD && !g.linkedProjectId);  // posted, >$5k, not tied
-  const paid = projForProp(state, code).filter(isPaidP);
+  const paid = projForProp(state, code).filter(p => isPaidP(p) && !isAboveLine(p));            // ATL needs no GL tie-out
   const paidNoGL = paid.filter(p => !linkedIds.has(p.id));                                       // marked paid, no GL backing
   return { gls, glTotal, unplanned, paid, paidNoGL, linkedCount: linkedIds.size };
 }

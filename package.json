@@ -2,7 +2,7 @@
   "name": "nd-sp-tracker",
   "version": "1.0.0",
   "private": true,
-  "description": "North Dakota Special-Projects / Capex Tracker — hosted multi-user version",
+  "description": "Special-Projects / Capex Tracker — hosted multi-user, multi-region version",
   "type": "module",
   "engines": {
     "node": ">=20"

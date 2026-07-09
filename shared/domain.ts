@@ -25,11 +25,17 @@ export interface NoteFile { fileKey?: string | null; fileName?: string | null; f
 export interface ProgressNote { id: string; date: string; note: string; username?: string; ts?: string; files?: NoteFile[]; }
 export interface Steps { [key: string]: boolean; }
 
+/* Multi-property split: cost shared across sites, usually pro-rata by unit
+   count. list[0] is the lead property (mirrors Project.property). */
+export interface SplitAllocation { property: string; pct: number; }
+export interface ProjectSplit { mode: 'units' | 'custom'; list: SplitAllocation[]; }
+
 export interface Project {
   id: string;
   property: string;
   region?: string;
   manager?: string;
+  split?: ProjectSplit | null;
   category: string;
   name: string;
   description?: string;
@@ -351,13 +357,26 @@ export function toggleStep(p: Project, i: number): Project {
 export function glSpentFor(state: AppState, code: string, cat?: string | null): number {
   return state.gl.filter(g => g.property === code && (cat == null || g.category === cat)).reduce((a, g) => a + (Number(g.amount) || 0), 0);
 }
+/* ---------- Multi-property split helpers ---------- */
+export const allocsOf = (p: Project): SplitAllocation[] =>
+  (p.split && Array.isArray(p.split.list) && p.split.list.length ? p.split.list : [{ property: p.property, pct: 100 }]);
+export const isSplit = (p: Project): boolean => allocsOf(p).length > 1;
+/** Fraction (0..1) of the project's cost carried by `code`. */
+export function shareFor(p: Project, code: string): number {
+  const a = allocsOf(p).find(x => x.property === code);
+  return a ? (Number(a.pct) || 0) / 100 : 0;
+}
+export const involvesProp = (p: Project, code: string): boolean => allocsOf(p).some(a => a.property === code);
+/** This property's slice of the project outflow (= full outflow for unsplit projects). */
+export const projOutflowFor = (p: Project, code: string): number => projOutflow(p) * shareFor(p, code);
+
 export function cashAdjFor(state: AppState, code: string): number {
   return state.cashAdjustments.filter(a => a.property === code).reduce((a, b) => a + (Number(b.amount) || 0), 0);
 }
 export function effectiveCash(state: AppState, code: string): number {
   const c = state.cash[code]; const base = c && c.cash != null ? Number(c.cash) : 0; return base + cashAdjFor(state, code);
 }
-export const projForProp = (state: AppState, code: string): Project[] => state.projects.filter(p => p.property === code);
+export const projForProp = (state: AppState, code: string): Project[] => state.projects.filter(p => involvesProp(p, code));
 
 /* ---------- Cash projection (spec §7.1) ---------- */
 export interface CashModel {
@@ -377,21 +396,22 @@ export function cashModel(state: AppState, code: string): CashModel {
   let outstandingTotal = 0, paidTotal = 0, discussedTotal = 0;
   projs.forEach(p => {
     if (isAboveLine(p)) return;                      // operationally funded — never in SP projections
+    const sh = shareFor(p, code);                    // split projects contribute only this site's slice
     if (p.inHouse) {
       if (p.onHold || !ihIsBudget(p)) return;        // quantity-tracked in-house has no $ figure
       const t = ihTotal(p), d = ihDone(p);
       if (t <= 0 && d <= 0) return;                  // note
-      if (d > 0) { paid.push(p); paidTotal += d; }   // completed-to-date = spent (final)
+      if (d > 0) { paid.push(p); paidTotal += d * sh; }   // completed-to-date = spent (final)
       const rem = ihRemaining(p);
-      if (rem > 0 && !isComplete(p)) { outstanding.push(p); outstandingTotal += rem; }  // remaining = projected out
+      if (rem > 0 && !isComplete(p)) { outstanding.push(p); outstandingTotal += rem * sh; }  // remaining = projected out
       return;
     }
-    if (phase(p) === 'active') { outstanding.push(p); outstandingTotal += projOutflow(p); }   // committed, unpaid
-    else if (isPaidP(p)) { paid.push(p); paidTotal += projOutflow(p); }                       // final
+    if (phase(p) === 'active') { outstanding.push(p); outstandingTotal += projOutflow(p) * sh; }   // committed, unpaid
+    else if (isPaidP(p)) { paid.push(p); paidTotal += projOutflow(p) * sh; }                       // final
     else if (phase(p) === 'discussed') {
       // commitCash forces a pre-approval project into outstanding commitments.
-      if (p.commitCash) { outstanding.push(p); outstandingTotal += projOutflow(p); }
-      else { discussed.push(p); discussedTotal += projOutflow(p); }
+      if (p.commitCash) { outstanding.push(p); outstandingTotal += projOutflow(p) * sh; }
+      else { discussed.push(p); discussedTotal += projOutflow(p) * sh; }
     }
   });
   return { snapshot, adj, cashToday, outstanding, outstandingTotal, paid, paidTotal, discussed, discussedTotal, projectedCash: cashToday - outstandingTotal };
@@ -417,7 +437,9 @@ export function glMatchScore(g: GLLine, p: Project): { score: number; reasons: s
   let score = 0; const reasons: string[] = [];
   if (g.category && p.category && String(g.category).toUpperCase() === String(p.category).toUpperCase()) { score += 40; reasons.push('category'); }
   const amt = Math.abs(Number(g.amount) || 0);
-  const tot = Math.abs(p.inHouse ? ihTotal(p) : projOutflow(p));
+  // Split projects post per-property slices to the GL, so score against this property's share.
+  const sh = isSplit(p) ? shareFor(p, g.property) : 1;
+  const tot = Math.abs(p.inHouse ? ihTotal(p) : projOutflow(p)) * (sh || 1);
   if (tot > 0 && amt > 0) {
     const diff = Math.abs(amt - tot) / Math.max(amt, tot);
     if (diff < 0.005) { score += 45; reasons.push('exact $'); }

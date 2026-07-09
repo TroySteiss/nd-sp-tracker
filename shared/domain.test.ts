@@ -5,6 +5,7 @@ import {
   advance, toggleStep, appKeys, isNA, applyCostRules,
   cashModel, auditModel, glMatchScore, glSpentFor, cashAdjFor,
   toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
+  allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -219,6 +220,43 @@ describe('Above the Line (operationally funded)', () => {
     const am = auditModel(st, 'CLND');
     expect(am.paid.length).toBe(0);
     expect(am.paidNoGL.length).toBe(0);
+  });
+});
+
+describe('multi-property split', () => {
+  const split = proj({
+    id: 'S1', property: 'CLND', anticipatedCost: 100000,
+    steps: { planned: true, gotBids: true, approved: true },
+    split: { mode: 'units', list: [{ property: 'CLND', pct: 60 }, { property: 'SPND', pct: 40 }] },
+  });
+  it('defaults to a single 100% allocation when unsplit', () => {
+    const single = proj({ anticipatedCost: 5000 });
+    expect(isSplit(single)).toBe(false);
+    expect(allocsOf(single)).toEqual([{ property: 'CLND', pct: 100 }]);
+    expect(shareFor(single, 'CLND')).toBe(1);
+    expect(shareFor(single, 'SPND')).toBe(0);
+  });
+  it('exposes per-property shares and membership', () => {
+    expect(isSplit(split)).toBe(true);
+    expect(involvesProp(split, 'SPND')).toBe(true);
+    expect(involvesProp(split, 'TPND')).toBe(false);
+    expect(projOutflowFor(split, 'CLND')).toBe(60000);
+    expect(projOutflowFor(split, 'SPND')).toBe(40000);
+  });
+  it('appears in both properties and splits cash projections pro-rata', () => {
+    const st = blankState({ projects: [split], cash: { CLND: { cash: 200000 }, SPND: { cash: 100000 } } });
+    expect(projForProp(st, 'CLND').length).toBe(1);
+    expect(projForProp(st, 'SPND').length).toBe(1);
+    const cmC = cashModel(st, 'CLND'), cmS = cashModel(st, 'SPND');
+    expect(cmC.outstandingTotal).toBe(60000);
+    expect(cmS.outstandingTotal).toBe(40000);
+    expect(cmC.projectedCash).toBe(140000);
+    expect(cmS.projectedCash).toBe(60000);
+  });
+  it('GL match scoring compares against the property share of the total', () => {
+    const g = { id: 'G1', property: 'SPND', category: 'GENERAL', amount: 40000 } as any;
+    const { reasons } = glMatchScore(g, split);
+    expect(reasons).toContain('exact $');
   });
 });
 

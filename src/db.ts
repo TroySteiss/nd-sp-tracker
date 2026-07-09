@@ -62,6 +62,7 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     property: r.property_code,
     region: pr?.region || '',
     manager: pr?.manager || '',
+    split: r.split || null,
     category: r.category,
     name: r.name,
     description: r.description ?? '',

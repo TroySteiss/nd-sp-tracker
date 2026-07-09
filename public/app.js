@@ -118,7 +118,8 @@ async function saveCash(code,obj,msg){ try{ await API.send('PATCH','/cash/'+code
 async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWrite('Reset to starter data'); }catch(e){ toast('Failed: '+e.message); } }
 async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
 /* ---------- login (username + shared password) ---------- */
-let USER='';   // signed-in username (First.Last), from the session
+let USER='';       // signed-in username (First.Last), from the session
+let IS_ADMIN=false; // Admin tabs (Settings / Change log) — server enforces too
 function showLogin(){ const o=document.getElementById('login'); if(o)o.style.display='flex'; }
 function hideLogin(){ const o=document.getElementById('login'); if(o)o.style.display='none'; }
 function setLoginTitle(t){ const h=document.getElementById('login-title'); if(h&&t)h.textContent=t; if(t)document.title=t; }
@@ -134,12 +135,12 @@ async function start(){
     const err=document.getElementById('login-err'); err.textContent='';
     if(!username){ err.textContent='Enter your name (e.g. First.Last).'; return; }
     const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:pw})});
-    if(r.ok){ USER=username; try{localStorage.setItem('sp-username',username);}catch(e){} hideLogin(); await boot(); }
+    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){} hideLogin(); await boot(); }
     else { let msg='Incorrect password.'; try{ msg=(await r.json()).error||msg; }catch(e){} err.textContent=msg; }
   }); }
   try{ const st=await fetch('/api/auth/status').then(r=>r.json());
     setLoginTitle(st.appTitle);
-    if(st.authed){ USER=st.username||''; hideLogin(); await boot(); } else { showLogin(); } }
+    if(st.authed){ USER=st.username||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -170,8 +171,14 @@ const isInterestGL=g=>/interest|cash\s*sweep/i.test(`${g.category||''} ${g.accou
 function glSpentFor(code,cat){ return S.gl.filter(g=>g.property===code && (cat==null||g.category===cat)).reduce((a,g)=>a+(Number(g.amount)||0),0); }
 function cashAdjFor(code){ return S.cashAdjustments.filter(a=>a.property===code).reduce((a,b)=>a+(Number(b.amount)||0),0); }
 function effectiveCash(code){ const c=S.cash[code]; const base=c&&c.cash!=null?Number(c.cash):0; return base+cashAdjFor(code); }
-function projForProp(code){ return S.projects.filter(p=>p.property===code); }
-function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&&!p.onHold).reduce((a,p)=>a+(Number(p.anticipatedCost)||0),0); }
+/* Multi-property split: one project shared across sites, pro-rata by unit count
+   (default) or custom %. allocsOf falls back to a single 100% allocation. */
+const allocsOf=p=>(p&&p.split&&Array.isArray(p.split.list)&&p.split.list.length)?p.split.list:[{property:p.property,pct:100}];
+const isSplitP=p=>allocsOf(p).length>1;
+const shareFor=(p,code)=>{const a=allocsOf(p).find(x=>x.property===code);return a?(Number(a.pct)||0)/100:0;};
+const involvesProp=(p,code)=>allocsOf(p).some(a=>a.property===code);
+function projForProp(code){ return S.projects.filter(p=>involvesProp(p,code)); }
+function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&&!p.onHold).reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0); }
 
 /* ---------- Cash projection + audit model ---------- */
 const OVER_THRESHOLD = 5000;                       // unplanned-spend flag threshold
@@ -232,21 +239,22 @@ function cashModel(code){
   let outstandingTotal=0, paidTotal=0, discussedTotal=0;
   projs.forEach(p=>{
     if(isATL(p)) return;                              // operationally funded — never in SP projections
+    const sh=shareFor(p,code);                        // split projects contribute this site's slice only
     if(p.inHouse){
       if(p.onHold || !ihIsBudget(p)) return;          // quantity-tracked in-house has no $ figure
       const t=ihTotal(p), d=ihDone(p);
       if(t<=0 && d<=0) return;                        // note
-      if(d>0){ paid.push(p); paidTotal+=d; }          // completed-to-date = spent (final)
+      if(d>0){ paid.push(p); paidTotal+=d*sh; }       // completed-to-date = spent (final)
       const rem=ihRemaining(p);
-      if(rem>0 && !isComplete(p)){ outstanding.push(p); outstandingTotal+=rem; }  // remaining = projected out
+      if(rem>0 && !isComplete(p)){ outstanding.push(p); outstandingTotal+=rem*sh; }  // remaining = projected out
       return;
     }
-    if(phase(p)==='active'){ outstanding.push(p); outstandingTotal+=projOutflow(p); }   // committed, unpaid
-    else if(isPaidP(p)){ paid.push(p); paidTotal+=projOutflow(p); }                      // final
+    if(phase(p)==='active'){ outstanding.push(p); outstandingTotal+=projOutflow(p)*sh; }   // committed, unpaid
+    else if(isPaidP(p)){ paid.push(p); paidTotal+=projOutflow(p)*sh; }                      // final
     else if(phase(p)==='discussed'){
       // commitCash forces a pre-approval project into outstanding commitments
-      if(p.commitCash){ outstanding.push(p); outstandingTotal+=projOutflow(p); }
-      else { discussed.push(p); discussedTotal+=projOutflow(p); }
+      if(p.commitCash){ outstanding.push(p); outstandingTotal+=projOutflow(p)*sh; }
+      else { discussed.push(p); discussedTotal+=projOutflow(p)*sh; }
     }
   });
   return {snapshot,adj,cashToday,outstanding,outstandingTotal,paid,paidTotal,discussed,discussedTotal,
@@ -268,7 +276,8 @@ function glMatchScore(g,p){
   let score=0; const reasons=[];
   if(g.category && p.category && String(g.category).toUpperCase()===String(p.category).toUpperCase()){ score+=40; reasons.push('category'); }
   const amt=Math.abs(Number(g.amount)||0);
-  const tot=Math.abs(p.inHouse?ihTotal(p):projOutflow(p));
+  const sh=isSplitP(p)?shareFor(p,g.property):1;   // split projects post per-property slices
+  const tot=Math.abs(p.inHouse?ihTotal(p):projOutflow(p))*(sh||1);
   if(tot>0 && amt>0){
     const diff=Math.abs(amt-tot)/Math.max(amt,tot);
     if(diff<0.005){ score+=45; reasons.push('exact $'); }
@@ -339,9 +348,11 @@ function rail(){
   nav.append(item('cash','$','Cash & Loans'));
   nav.append(item('data','⇪','Upload & Data'));
   nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
-  nav.append(el('div',{class:'grp'},'Admin'));
-  nav.append(item('changelog','≡','Change log'));
-  nav.append(item('settings','⚙','Settings'));
+  if(IS_ADMIN){
+    nav.append(el('div',{class:'grp'},'Admin'));
+    nav.append(item('changelog','≡','Change log'));
+    nav.append(item('settings','⚙','Settings'));
+  }
 
   const foot=el('div',{class:'foot'},
     el('div',{class:'row',style:'margin-bottom:6px'}, el('span',{},'Signed in as'),
@@ -356,6 +367,7 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
+  if(!IS_ADMIN&&(VIEW.tab==='changelog'||VIEW.tab==='settings'))VIEW.tab='dashboard';   // admin-only tabs
   const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
@@ -1149,7 +1161,7 @@ function trackElMini(p){ const t=trackEl(p); return t; }
 ========================================================= */
 function openProject(id,preset){
   const isNew=!id;
-  let p = isNew ? {id:uid('P'),property:VIEW.prop||S.properties[0].code,category:'GENERAL',name:'',description:'',plan:'',contractor:'',actionItem:'',anticipatedCost:null,actualCost:null,dateAdded:today(),plannedStart:'',plannedEnd:'',bids:[],steps:{},notes:'',onHold:false,pinned:false,inHouse:false,ihUnit:'budget',totalToComplete:null,amountCompleted:null,progressNotes:[],noContract:false,noContractSet:false,commitCash:false}
+  let p = isNew ? {id:uid('P'),property:VIEW.prop||S.properties[0].code,category:'GENERAL',name:'',description:'',plan:'',contractor:'',actionItem:'',anticipatedCost:null,actualCost:null,dateAdded:today(),plannedStart:'',plannedEnd:'',bids:[],steps:{},notes:'',onHold:false,pinned:false,inHouse:false,ihUnit:'budget',totalToComplete:null,amountCompleted:null,progressNotes:[],noContract:false,noContractSet:false,commitCash:false,split:null}
                  : JSON.parse(JSON.stringify(S.projects.find(x=>x.id===id)));
   if(isNew&&preset)Object.assign(p,preset);
   p.steps=p.steps||{}; p.bids=p.bids||[]; p.progressNotes=p.progressNotes||[];
@@ -1166,6 +1178,11 @@ function openProject(id,preset){
   function close(){scrim.remove();}
   function save(){
     if(!p.name.trim()){toast('Give the project a name first.');return;}
+    if(p.split&&p.split.list&&p.split.list.length>1&&p.split.mode==='custom'){
+      const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
+      if(Math.abs(sum-100)>0.1){toast(`Split percentages total ${Math.round(sum*100)/100}% — they must equal 100%.`);return;}
+    }
+    if(p.split&&(!p.split.list||p.split.list.length<2))p.split=null;
     p.region=reg(); p.manager=PROP(p.property).manager;
     p.bids=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||bd.approved);
     close(); saveProject(p, isNew?'Project added':'Project saved', isNew);
@@ -1209,9 +1226,14 @@ function openProject(id,preset){
       if(typeof drawSteps==='function')drawSteps();
       if(typeof refreshNC==='function')refreshNC();
       if(typeof refreshGenPanel==='function')refreshGenPanel();
+      if(typeof drawSplit==='function')drawSplit();
     });
     return n;};
-  const propSel=el('select',{onchange:e=>{p.property=e.target.value;}});
+  const propSel=el('select',{onchange:e=>{
+    p.property=e.target.value;
+    if(p.split&&p.split.list&&!p.split.list.some(a=>a.property===p.property)){ p.split.list.unshift({property:p.property,pct:0}); }
+    if(typeof drawSplit==='function')drawSplit();
+  }});
   S.properties.forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
   CATEGORIES.forEach(c=>catSel.append(el('option',{value:c,...(p.category===c?{selected:true}:{})},c)));
@@ -1258,8 +1280,82 @@ function openProject(id,preset){
   // Approved projects are always in the projections, so the toggle is moot.
   function refreshCommit(){ commitWrap.style.display=isApproved(p)?'none':''; }
   refreshCommit();
-  core.append(el('div',{class:'opt-row'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap));
+  const splitPill=optPill('⇄','Split properties','commit',()=>!!(p.split&&p.split.list&&p.split.list.length>1),v=>{
+    if(v){ p.split=(p.split&&p.split.list&&p.split.list.length)?p.split:{mode:'units',list:[{property:p.property,pct:100}]}; }
+    else { p.split=null; }
+    drawSplit();
+  },'Share this project’s cost across multiple properties (by unit count or custom %)');
+  core.append(el('div',{class:'opt-row'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap,splitPill));
   b.append(core);
+
+  // --- multi-property cost split ---
+  const splitPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  const splitMeta=el('span',{class:'chip'},'');
+  splitPanel.append(el('div',{class:'ph'}, el('h3',{},'Cost split'), el('div',{class:'sp'}), splitMeta));
+  const splitBody=el('div',{class:'pad'});
+  splitPanel.append(splitBody);
+  function recomputeSplit(){
+    if(!p.split||!p.split.list)return;
+    if(p.split.mode!=='custom'){
+      const totalUnits=p.split.list.reduce((a,x)=>a+(Number((PROP(x.property)||{}).units)||0),0);
+      p.split.list.forEach(x=>{ const u=Number((PROP(x.property)||{}).units)||0;
+        x.pct=totalUnits?Math.round(u/totalUnits*10000)/100:Math.round(10000/p.split.list.length)/100; });
+    }
+  }
+  function drawSplit(){
+    const on=!!(p.split&&p.split.list);
+    splitPanel.style.display=on?'':'none';
+    splitPill.classList.toggle('on',!!(p.split&&p.split.list&&p.split.list.length>1));
+    if(!on)return;
+    recomputeSplit();
+    splitBody.innerHTML='';
+    splitMeta.textContent=p.split.list.length>1?`${p.split.list.length} properties`:'pick the other properties';
+    splitBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
+      'The total cost is shared between the selected sites — each property’s cash & budget projections carry only its slice. “By unit count” keeps the split pro-rata as unit counts change.'));
+    const seg=el('div',{class:'seg-ctl sm',style:'margin-bottom:10px'},
+      el('button',{class:p.split.mode!=='custom'?'on':'',onclick:()=>{p.split.mode='units';drawSplit();}},'By unit count'),
+      el('button',{class:p.split.mode==='custom'?'on':'',onclick:()=>{p.split.mode='custom';drawSplit();}},'Custom %'));
+    splitBody.append(seg);
+    const row=el('div',{class:'bubbles',style:'margin-bottom:10px'}, el('span',{class:'bub-lab'},'Properties'));
+    S.properties.forEach(pr=>{
+      const on2=p.split.list.some(a=>a.property===pr.code);
+      row.append(el('button',{class:'bub'+(on2?' on':''),style:on2?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
+        title:pr.code===p.property?'Lead property (change it in the Property dropdown above)':'',
+        onclick:()=>{
+          if(on2){ if(pr.code===p.property){toast('The lead property stays in the split — change it in the Property dropdown.');return;}
+            p.split.list=p.split.list.filter(a=>a.property!==pr.code); }
+          else { p.split.list.push({property:pr.code,pct:0}); }
+          drawSplit();
+        }}, el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code));
+    });
+    splitBody.append(row);
+    const total=projOutflow(p);
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('Property'),th('Units','r'),th('Share %','r'),th('$ share','r'))));
+    const tb2=el('tbody');
+    const shareCells=[];
+    p.split.list.forEach(a=>{
+      const u=Number((PROP(a.property)||{}).units)||0;
+      const shareCell=el('td',{class:'num r'},total?fmt(total*(Number(a.pct)||0)/100):'—');
+      shareCells.push({a,cell:shareCell});
+      const pctCell=p.split.mode==='custom'
+        ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=Math.round((Number(e.target.value)||0)*100)/100;drawSplit();}}),'r')
+        : td(el('span',{class:'mono'},(Number(a.pct)||0)+'%'),'r');
+      tb2.append(tr(
+        td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},
+          el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(a.property)};display:inline-block`}),
+          el('strong',{},a.property), a.property===p.property?el('span',{class:'chip',style:'margin-left:4px'},'lead'):'')),
+        tdn(u||null), pctCell, shareCell));
+    });
+    t.append(tb2);
+    splitBody.append(el('div',{style:'overflow:auto'},t));
+    const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
+    if(p.split.mode==='custom'&&Math.abs(sum-100)>0.1)
+      splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Percentages total ${Math.round(sum*100)/100}% — they must equal 100% to save.`));
+    if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},'Enter an anticipated or actual cost above to see dollar shares.'));
+  }
+  b.append(splitPanel);
+  drawSplit();
 
   // --- in-house panel: progress + additional notes ---
   const inhousePanel=el('div',{class:'panel ih-panel',style:'margin-top:16px'});
@@ -1858,8 +1954,10 @@ function buildUpdateEmail(code){
       const [gbg,rbg]=tints[gi%tints.length];
       t+=`<tr><td colspan="${nCols}" style="${tdL}background:${gbg};font-weight:bold;text-transform:uppercase;font-size:11px;letter-spacing:.04em">${esc(lab)}</td></tr>`;
       by.get(lab).forEach(x=>{
-        const amt=isInHouse(x)?ihRemaining(x):projOutflow(x);
-        t+=`<tr><td style="${tdL}background:${rbg}">${esc(x.name||'(untitled)')}</td>${moneyCell(amt,'background:'+rbg+';')}`
+        const sh=shareFor(x,code);
+        const amt=(isInHouse(x)?ihRemaining(x):projOutflow(x))*sh;
+        const nm=(x.name||'(untitled)')+(isSplitP(x)?` (${Math.round(sh*100)}% share of ${fmt(isInHouse(x)?ihRemaining(x):projOutflow(x),false)})`:'');
+        t+=`<tr><td style="${tdL}background:${rbg}">${esc(nm)}</td>${moneyCell(amt,'background:'+rbg+';')}`
           +(full?`<td style="${tdL}background:${rbg};text-align:center">${esc(x.plannedStart?fmtDateShort(x.plannedStart):'—')}</td>`
                +`<td style="${tdL}background:${rbg};text-align:center">${esc(x.plannedEnd?fmtDateShort(x.plannedEnd):'—')}</td>`:'')
           +`<td style="${tdL}background:${rbg}">${esc(projNextStatus(x))}</td>`
@@ -2357,14 +2455,18 @@ function viewProperty(){
   if(!projs.length)pb.append(el('div',{class:'empty'},'No projects yet for this property.'));
   function projRow(pr){
     const ih=isInHouse(pr);
-    const costVal=ih?ihTotal(pr):(pr.actualCost!=null?pr.actualCost:pr.anticipatedCost);
+    const split=isSplitP(pr);
+    const fullCost=ih?ihTotal(pr):(pr.actualCost!=null?pr.actualCost:pr.anticipatedCost);
+    // Split projects show this property's slice (the tooltip carries the total).
+    const costVal=split&&fullCost!=null?Number(fullCost)*shareFor(pr,code):fullCost;
     const hasCost=costVal!=null&&costVal!==''&&!isNaN(Number(costVal));
     const r=el('div',{class:'clickrow proj-row',onclick:()=>openProject(pr.id)});
     const head=el('div',{class:'pr-head'},
       el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
       el('strong',{class:'pr-name'}, pr.name),
+      split?el('span',{class:'chip',title:`Split across ${allocsOf(pr).map(a=>a.property+' '+a.pct+'%').join(' · ')} — total ${fmt(fullCost,false)}`},`⇄ ${Math.round(shareFor(pr,code)*100)}%`):null,
       el('div',{class:'pr-right'},
-        hasCost?el('span',{class:'mono pr-cost'},fmt(costVal,false)):null,
+        hasCost?el('span',{class:'mono pr-cost',title:split?`This property’s share of ${fmt(fullCost,false)} total`:''},fmt(costVal,false)):null,
         el('span',{class:'pr-date'}, el('span',{class:'pr-cat'},pr.category+' · '), fmtDateShort(pr.dateAdded))));
     r.append(head, ih?progressEl(pr):trackEl(pr));
     return r;

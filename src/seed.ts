@@ -62,14 +62,15 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     await client.query(
       `insert into projects(id,property_code,category,name,description,plan,action_item,contractor,
          anticipated_cost,actual_cost,date_added,planned_start,planned_end,steps,notes,on_hold,pinned,
-         in_house,ih_unit,total_to_complete,amount_completed,no_contract,no_contract_set)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23)`,
+         in_house,ih_unit,total_to_complete,amount_completed,no_contract,no_contract_set,split)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
       [
         p.id, p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '',
         p.actionItem || '', p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost),
         dnull(p.dateAdded), dnull(p.plannedStart), dnull(p.plannedEnd), JSON.stringify(p.steps || {}),
         p.notes || '', !!p.onHold, !!p.pinned, !!p.inHouse, p.ihUnit === 'quantity' ? 'quantity' : 'budget',
         nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet,
+        (p as any).split ? JSON.stringify((p as any).split) : null,
       ]
     );
     let slot = 0;

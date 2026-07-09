@@ -2,7 +2,7 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-09 (multi-region rework; ATL projects, notes w/ attachments, generate-contract section, email setup).
+> Last updated: 2026-07-09 (multi-region rework; ATL projects, notes w/ attachments, generate-contract section, email setup; multi-property split projects; admin lock).
 
 ## What this is
 
@@ -40,6 +40,16 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 - Client gets everything from `GET /api/state` (assembleState): meta (incl. `appTitle`), properties
   (incl. `color`, `portfolio`, update-email settings), `regions` (ordered), cash, cashAdjustments,
   gl, projects, contracts, contractors.
+- **Multi-property split**: `projects.split` jsonb `{mode:'units'|'custom', list:[{property,pct}]}`
+  (016). Helpers `allocsOf/isSplit/shareFor/involvesProp/projOutflowFor` in domain.ts (mirrored in
+  app.js). `projForProp` includes split projects; cashModel/glMatchScore/email amounts are
+  share-weighted; the property view shows the slice with a ⇄ chip; editor has a "Cost split" panel
+  (by-unit-count default — pcts recomputed from current units at save; custom % must sum to 100).
+  Server normalizes via `normalizeSplit` (lead property = list[0] = projects.property_code).
+- **Admin lock**: Settings + Change log tabs and their APIs (property/region CRUD, PATCH /meta,
+  GET /changelog) are limited to the allowlist in `src/auth.ts` (`isAdminUser` — names normalized
+  case/punctuation-insensitively; default Troy Steiss + Riley Combs, override with `ADMIN_USERS`
+  env). Per-property email settings + projection settings PATCHes stay open to all users.
 - **"Above the Line"** in a project NAME (`isAboveLine` in domain.ts / `isATL` in app.js) =
   operationally funded: excluded from cash/budget projections (cashModel), GL tie-out (auditModel),
   dashboards, nav counts, quarterly-summary future list, and update emails. Visible only via the

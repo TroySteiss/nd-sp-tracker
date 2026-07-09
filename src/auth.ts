@@ -32,6 +32,19 @@ export function requireAuth(req: Request, res: Response, next: NextFunction) {
   res.status(401).json({ error: 'unauthorized' });
 }
 
+/* Admin allowlist for the Admin tabs (Settings / Change log) and their APIs.
+   Usernames are free-form at login, so match loosely: case-insensitive,
+   ignoring dots/spaces/punctuation — "Troy.Steiss", "troy steiss" and
+   "TroySteiss" all match. Override/extend with ADMIN_USERS (comma-separated). */
+const normUser = (u: any): string => String(u || '').toLowerCase().replace(/[^a-z]/g, '');
+const ADMIN_USERS = new Set((process.env.ADMIN_USERS || 'Troy Steiss,Riley Combs').split(',').map(normUser).filter(Boolean));
+export const isAdminUser = (u?: string): boolean => !!u && ADMIN_USERS.has(normUser(u));
+
+export function requireAdmin(req: Request, res: Response, next: NextFunction) {
+  if (req.session && req.session.authed && isAdminUser(req.session.username)) return next();
+  res.status(403).json({ error: 'Admin access is limited to authorized users' });
+}
+
 export function login(req: Request, res: Response) {
   const { username, password } = req.body || {};
   const expected = process.env.APP_PASSWORD || 'northdakota';
@@ -40,7 +53,7 @@ export function login(req: Request, res: Response) {
   if (typeof password === 'string' && password === expected) {
     req.session.authed = true;
     req.session.username = user;
-    return res.json({ ok: true, username: user });
+    return res.json({ ok: true, username: user, isAdmin: isAdminUser(user) });
   }
   res.status(401).json({ error: 'Incorrect password' });
 }
@@ -54,5 +67,5 @@ export async function status(req: Request, res: Response) {
   let appTitle = '';
   try { appTitle = (await query<{ app_title: string }>('select app_title from app_meta where id=1')).rows[0]?.app_title || ''; } catch { /* pre-migration */ }
   const authed = !!(req.session && req.session.authed && req.session.username);
-  res.json({ authed, username: authed ? req.session.username : '', appTitle });
+  res.json({ authed, username: authed ? req.session.username : '', isAdmin: authed && isAdminUser(req.session.username), appTitle });
 }

@@ -4,6 +4,7 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import type pg from 'pg';
 import { pool, query, tx, assembleState, rowToProject, propLookup } from './db.js';
+import { requireAdmin } from './auth.js';
 import { loadStateInto } from './seed.js';
 import { parseGL, parseCushion } from './importers.js';
 import { buildContract, type ContractVars, type BidAttachment } from './contract.js';
@@ -46,7 +47,7 @@ function logChange(req: Request, e: LogEntry): void {
   ).catch((err) => console.error('change_log insert failed:', err?.message || err));
 }
 
-api.get('/changelog', async (req, res) => {
+api.get('/changelog', requireAdmin, async (req, res) => {
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
   const conds: string[] = []; const params: any[] = [];
   if (req.query.before) { params.push(String(req.query.before)); conds.push(`ts < $${params.length}`); }
@@ -71,21 +72,36 @@ const dnull = (v: any): string | null => {
 api.get('/state', async (_req, res) => { res.json(await assembleState()); });
 
 /* ---------- projects ---------- */
+/** Normalize a multi-property split: valid entries only, pcts to 2dp; the lead
+    property (projects.property_code) is always first. <2 sites ⇒ no split. */
+function normalizeSplit(p: Project): void {
+  const list = (p.split && Array.isArray(p.split.list) ? p.split.list : [])
+    .map((a) => ({ property: String(a.property || '').toUpperCase(), pct: Math.round((Number(a.pct) || 0) * 100) / 100 }))
+    .filter((a) => a.property && a.pct > 0);
+  if (list.length < 2) { p.split = null; return; }
+  const leadIdx = list.findIndex((a) => a.property === p.property);
+  if (leadIdx > 0) list.unshift(list.splice(leadIdx, 1)[0]);
+  else if (leadIdx < 0) p.property = list[0].property;
+  p.split = { mode: p.split!.mode === 'custom' ? 'custom' : 'units', list };
+}
+
 async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): Promise<void> {
   // Server recomputes derived rules: cost→planned tick + no-contract auto-default (spec §10.4).
   applyCostRules(p);
+  normalizeSplit(p);
   const cols = [
     p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '', p.actionItem || '',
     p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost), dnull(p.dateAdded), dnull(p.plannedStart), dnull(p.plannedEnd),
     JSON.stringify(p.steps || {}), p.notes || '', !!p.onHold, !!p.pinned, !!p.inHouse, p.ihUnit === 'quantity' ? 'quantity' : 'budget',
     nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet, !!p.commitCash,
+    p.split ? JSON.stringify(p.split) : null,
   ];
   if (isNew) {
     await client.query(
       `insert into projects(property_code,category,name,description,plan,action_item,contractor,anticipated_cost,actual_cost,
          date_added,planned_start,planned_end,steps,notes,on_hold,pinned,in_house,ih_unit,total_to_complete,amount_completed,
-         no_contract,no_contract_set,commit_cash,id)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+         no_contract,no_contract_set,commit_cash,split,id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
       [...cols, p.id]
     );
   } else {
@@ -93,7 +109,7 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
       `update projects set property_code=$1,category=$2,name=$3,description=$4,plan=$5,action_item=$6,contractor=$7,
          anticipated_cost=$8,actual_cost=$9,date_added=$10,planned_start=$11,planned_end=$12,steps=$13,notes=$14,on_hold=$15,
          pinned=$16,in_house=$17,ih_unit=$18,total_to_complete=$19,amount_completed=$20,no_contract=$21,no_contract_set=$22,commit_cash=$23,
-         updated_at=now() where id=$24`,
+         split=$24, updated_at=now() where id=$25`,
       [...cols, p.id]
     );
   }
@@ -152,6 +168,8 @@ function projectDiff(old: any, p: Project): string[] {
   const unticked = STEP_KEYS.filter((k) => oldSteps[k] && !newSteps[k]).map((k) => STEP_LABELS[k] || k);
   if (ticked.length) out.push(`step${ticked.length > 1 ? 's' : ''} ticked: ${ticked.join(', ')}`);
   if (unticked.length) out.push(`step${unticked.length > 1 ? 's' : ''} cleared: ${unticked.join(', ')}`);
+  const splitStr = (s: any) => (s && Array.isArray(s.list) && s.list.length > 1) ? s.list.map((a: any) => `${a.property} ${a.pct}%`).join(' / ') : 'none';
+  if (splitStr(old.split) !== splitStr(p.split)) out.push(`split ${splitStr(old.split)} → ${splitStr(p.split)}`);
   if ((old.description || '') !== (p.description || '')) out.push('description edited');
   if ((old.plan || '') !== (p.plan || '')) out.push('plan edited');
   if ((old.action_item || '') !== (p.actionItem || '')) out.push('action item edited');
@@ -646,7 +664,7 @@ async function ensureRegion(name: string, client?: pg.PoolClient): Promise<void>
   await q('insert into regions(name,sort) select $1, coalesce(max(sort),0)+1 from regions on conflict (name) do nothing', [name]);
 }
 
-api.post('/regions', async (req, res) => {
+api.post('/regions', requireAdmin, async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'region name required' });
   const exists = await query('select 1 from regions where name=$1', [name]);
@@ -656,7 +674,7 @@ api.post('/regions', async (req, res) => {
   res.json({ ok: true, name });
 });
 
-api.patch('/regions/:name', async (req, res) => {
+api.patch('/regions/:name', requireAdmin, async (req, res) => {
   const oldName = req.params.name;
   const b = req.body || {};
   const exists = await query('select * from regions where name=$1', [oldName]);
@@ -674,7 +692,7 @@ api.patch('/regions/:name', async (req, res) => {
   res.json({ ok: true });
 });
 
-api.delete('/regions/:name', async (req, res) => {
+api.delete('/regions/:name', requireAdmin, async (req, res) => {
   const n = (await query('select count(*)::int as n from properties where region=$1', [req.params.name])).rows[0]?.n ?? 0;
   if (n > 0) return res.status(400).json({ error: `region has ${n} propert${n === 1 ? 'y' : 'ies'} — move or delete them first` });
   await query('delete from regions where name=$1', [req.params.name]);
@@ -693,7 +711,7 @@ function propFromBody(b: any): Record<string, any> {
   };
 }
 
-api.post('/properties', async (req, res) => {
+api.post('/properties', requireAdmin, async (req, res) => {
   const b = req.body || {};
   const code = String(b.code || '').trim().toUpperCase();
   if (!PROP_CODE_RE.test(code)) return res.status(400).json({ error: 'code must be 2–8 letters/digits' });
@@ -722,7 +740,7 @@ api.post('/properties', async (req, res) => {
   res.json({ ok: true, code, existingGlLines: glCount, hadSnapshot: !!snap });
 });
 
-api.patch('/properties/:code', async (req, res) => {
+api.patch('/properties/:code', requireAdmin, async (req, res) => {
   const code = req.params.code.toUpperCase();
   const old = (await query('select * from properties where code=$1', [code])).rows[0];
   if (!old) return res.status(404).json({ error: 'property not found' });
@@ -753,7 +771,7 @@ api.patch('/properties/:code', async (req, res) => {
   res.json({ ok: true });
 });
 
-api.delete('/properties/:code', async (req, res) => {
+api.delete('/properties/:code', requireAdmin, async (req, res) => {
   const code = req.params.code.toUpperCase();
   const [nProj, nContract, nAdj] = await Promise.all([
     query('select count(*)::int as n from projects where property_code=$1', [code]),
@@ -773,7 +791,7 @@ api.delete('/properties/:code', async (req, res) => {
 });
 
 /* ---------- app meta (editable title) ---------- */
-api.patch('/meta', async (req, res) => {
+api.patch('/meta', requireAdmin, async (req, res) => {
   const title = String(req.body?.appTitle || '').trim().slice(0, 80);
   if (!title) return res.status(400).json({ error: 'appTitle required' });
   const old = (await query('select app_title from app_meta where id=1')).rows[0]?.app_title || '';

@@ -70,6 +70,9 @@ const pcolor=code=>{
 /* Ordered region names (regions table; falls back to whatever the properties use). */
 const regionNames=()=> (S&&S.regions&&S.regions.length)? S.regions.map(r=>r.name)
   : [...new Set(((S&&S.properties)||[]).map(p=>p.region).filter(Boolean))];
+/* Properties in display order: grouped by region (regions-table order), then code. */
+const propsByRegion=()=>{ const ro=regionNames();
+  return ((S&&S.properties)||[]).slice().sort((a,b)=>(ro.indexOf(a.region)-ro.indexOf(b.region))||a.code.localeCompare(b.code)); };
 const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';
 
 /* seedState removed — initial data is seeded server-side into Postgres */
@@ -216,6 +219,20 @@ function phase(p){
   if(isApproved(p)) return 'active';
   if(!hasCost(p)) return 'note';
   return 'discussed';
+}
+/* Single, mutually-exclusive status bucket per project — drives the Projects
+   tab filter chips and board grouping (finer-grained than phase()). */
+function projStatus(p){
+  if(p.onHold)return 'hold';
+  if(isComplete(p))return 'done';
+  if(isInHouse(p))return 'inhouse';
+  if(isPaidP(p))return 'paid';
+  const ph=phase(p);
+  if(ph==='note')return 'note';
+  if(ph==='discussed')return 'discussed';
+  if(p.steps&&(p.steps.workStarted||p.steps.workCompleted))return 'working';
+  if(p.steps&&(p.steps.contractGenerated||p.steps.signed))return 'contracted';
+  return 'approved';
 }
 const PHASES=[
   {key:'active',   label:'In progress',      chip:'',     desc:'Approved & in the pipeline, not yet paid'},
@@ -617,7 +634,7 @@ function viewDashboard(){
 
   // property bubble toggles + category filter
   const pbWrap=el('div',{class:'bubbles'}, el('span',{class:'bub-lab'},'Properties'));
-  S.properties.filter(p=>!DASH.region||p.region===DASH.region).forEach(pr=>{
+  propsByRegion().filter(p=>!DASH.region||p.region===DASH.region).forEach(pr=>{
     const on=DASH.props.includes(pr.code);
     pbWrap.append(el('button',{class:'bub'+(on?' on':''),style:on?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
       onclick:()=>{const i=DASH.props.indexOf(pr.code);if(i<0)DASH.props.push(pr.code);else DASH.props.splice(i,1);render();}},
@@ -941,13 +958,18 @@ function viewProjects(){
     el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project'));
   const body=el('div',{});
 
-  // ---- filters: all selected by default; every group can select-all / clear-all ----
-  const ALLPROPS=S.properties.map(p=>p.code);
-  const STAT=[['open','Open'],['note','Notes'],['discussed','Discussed'],['approved','Approved'],['contracted','Contracted'],['working','Work In Progress'],['paid','Paid / Closeout'],['inhouse','In-house'],['hold','On Hold'],['done','Completed']];
+  // ---- filters ----
+  // Statuses are mutually exclusive (projStatus). Completed / on-hold /
+  // paid-closeout / notes are OFF by default — active pipeline work only.
+  const orderedProps=propsByRegion();
+  const ALLPROPS=orderedProps.map(p=>p.code);
+  const STAT=[['working','Work In Progress'],['contracted','Contracted'],['approved','Approved'],['discussed','Discussed'],['inhouse','In-house'],['paid','Paid / Closeout'],['note','Notes'],['hold','On Hold'],['done','Completed']];
   const ALLSTAT=STAT.map(s=>s[0]);
+  const DEFAULT_STATS=['working','contracted','approved','discussed','inhouse'];
   const ALLCATS=[...new Set(S.projects.map(p=>p.category))].sort();
   if(!Array.isArray(FILT.props))FILT.props=ALLPROPS.slice();
-  if(!Array.isArray(FILT.statuses))FILT.statuses=ALLSTAT.slice();
+  if(!Array.isArray(FILT.statuses))FILT.statuses=DEFAULT_STATS.slice();
+  FILT.statuses=FILT.statuses.filter(s=>ALLSTAT.includes(s));   // drop stale keys (e.g. old 'open')
   if(!Array.isArray(FILT.cats))FILT.cats=ALLCATS.slice();
   FILT.cats=FILT.cats.filter(c=>ALLCATS.includes(c));
   const toggle=(arr,v)=>{const i=arr.indexOf(v);if(i<0)arr.push(v);else arr.splice(i,1);render();};
@@ -964,21 +986,36 @@ function viewProjects(){
 
   const fbar=el('div',{class:'filter-panel'});
 
-  // property group
+  // property group — region quick-picks first, then properties in region order
   const allP=isAll(FILT.props,ALLPROPS);
   const propRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Property'),
     el('button',{class:'bub all'+(allP?' on':''),onclick:()=>setAll(FILT.props,ALLPROPS)}, allP?'All ✓':'All'));
-  S.properties.forEach(pr=>{ const on=FILT.props.includes(pr.code);
+  regionNames().forEach(reg=>{
+    const codes=orderedProps.filter(pr=>pr.region===reg).map(pr=>pr.code);
+    if(!codes.length)return;
+    const regOn=codes.every(c=>FILT.props.includes(c));
+    propRow.append(el('button',{class:'bub'+(regOn?' on accent':''),title:`Toggle every ${reg} property`,
+      onclick:()=>{ if(regOn){ FILT.props=FILT.props.filter(c=>!codes.includes(c)); } else { codes.forEach(c=>{ if(!FILT.props.includes(c))FILT.props.push(c); }); } render(); }},
+      reg+' ▾'));
+  });
+  propRow.append(el('span',{style:'width:1px;align-self:stretch;background:var(--line);margin:0 2px'}));
+  orderedProps.forEach(pr=>{ const on=FILT.props.includes(pr.code);
     propRow.append(el('button',{class:'bub'+(on?' on':''),style:on?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
       onclick:()=>toggle(FILT.props,pr.code)}, el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code)); });
   fbar.append(propRow);
 
-  // status group
-  const allS=isAll(FILT.statuses,ALLSTAT);
+  // status group — chips show live counts (within the other active filters)
+  const preStatus=S.projects.filter(p=>FILT.props.includes(p.property)&&FILT.cats.includes(p.category)&&(FILT.showATL||!isATL(p))&&inDateRange(p,FILT)
+    &&(!FILT.q||((p.name+' '+p.contractor+' '+p.plan+' '+p.actionItem+' '+p.category).toLowerCase().includes(FILT.q.toLowerCase()))));
+  const statCounts={}; preStatus.forEach(p=>{ const s=projStatus(p); statCounts[s]=(statCounts[s]||0)+1; });
+  const isDefault=FILT.statuses.length===DEFAULT_STATS.length&&DEFAULT_STATS.every(s=>FILT.statuses.includes(s));
   const statRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Status'),
-    el('button',{class:'bub all'+(allS?' on':''),onclick:()=>setAll(FILT.statuses,ALLSTAT)}, allS?'All ✓':'All'));
+    el('button',{class:'bub all'+(isDefault?' on':''),title:'Active pipeline only — hides Completed, On Hold, Paid/Closeout and Notes',
+      onclick:()=>{FILT.statuses=DEFAULT_STATS.slice();render();}},'Active ✓'),
+    el('button',{class:'bub all'+(isAll(FILT.statuses,ALLSTAT)?' on':''),onclick:()=>setAll(FILT.statuses,ALLSTAT)},'All'));
   STAT.forEach(([k,lab])=>{ const on=FILT.statuses.includes(k);
-    statRow.append(el('button',{class:'bub'+(on?' on accent':''),onclick:()=>toggle(FILT.statuses,k)},lab)); });
+    statRow.append(el('button',{class:'bub'+(on?' on accent':''),onclick:()=>toggle(FILT.statuses,k)},
+      lab, statCounts[k]?el('span',{style:'margin-left:5px;opacity:.75;font-size:10px'},String(statCounts[k])):null)); });
   // Above-the-Line toggle — hidden by default (operationally funded work)
   const atlCount=S.projects.filter(isATL).length;
   if(atlCount) statRow.append(el('button',{class:'bub'+(FILT.showATL?' on accent':''),
@@ -1007,33 +1044,37 @@ function viewProjects(){
   fbar.append(dateFilterGroup(FILT));
   body.append(fbar);
 
-  // ---- apply filters ----
-  let list=S.projects.filter(p=>FILT.props.includes(p.property) && FILT.cats.includes(p.category) && (FILT.showATL||!isATL(p)));
-  if(FILT.q){const q=FILT.q.toLowerCase();list=list.filter(p=>(p.name+' '+p.contractor+' '+p.plan+' '+p.actionItem+' '+p.category).toLowerCase().includes(q));}
-  const stMatch=p=>FILT.statuses.some(s=>
-    s==='open'?(!isComplete(p)&&!p.onHold):
-    s==='inhouse'?isInHouse(p):
-    s==='hold'?p.onHold:
-    s==='note'?(phase(p)==='note'):
-    s==='discussed'?(phase(p)==='discussed'):
-    s==='approved'?(isApproved(p)&&!p.steps.contractGenerated&&!p.steps.signed&&!isComplete(p)):
-    s==='contracted'?(isApproved(p)&&(p.steps.contractGenerated||p.steps.signed)&&!p.steps.workStarted&&!isComplete(p)):
-    s==='working'?(isApproved(p)&&(p.steps.workStarted||p.steps.workCompleted)&&!isPaidP(p)&&!isComplete(p)):
-    s==='paid'?isPaidP(p):
-    s==='done'?isComplete(p):
-    false);
-  list=list.filter(stMatch);
-  list=list.filter(p=>inDateRange(p,FILT));
+  // ---- apply filters (statuses are mutually exclusive via projStatus) ----
+  let list=preStatus.filter(p=>FILT.statuses.includes(projStatus(p)));
 
-  body.append(el('div',{style:'font-size:12.5px;color:var(--ink-3);margin:4px 0 12px'},`${list.length} project${list.length!==1?'s':''}`));
+  const shownTotal=list.reduce((a,p)=>a+(isInHouse(p)?ihTotal(p):projOutflow(p)),0);
+  const hiddenN=preStatus.length-list.length;
+  body.append(el('div',{style:'font-size:12.5px;color:var(--ink-3);margin:4px 0 12px'},
+    `${list.length} project${list.length!==1?'s':''}${shownTotal?` · ${fmt(shownTotal,false)} total`:''}${hiddenN?` · ${hiddenN} hidden by status filter`:''}`));
 
   if(!list.length){ body.append(el('div',{class:'empty'}, el('div',{class:'big'},'No projects match'),'Adjust the filters or add a new project.')); return {bar,body}; }
 
   if(FILT.view==='board'){
-    const board=el('div',{class:'board'});
-    list.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||(a.onHold-b.onHold)|| (stage(b)-stage(a)) || (b.dateAdded||'').localeCompare(a.dateAdded||''));
-    list.forEach(p=>board.append(projectCard(p)));
-    body.append(board);
+    // Board grouped by status in pipeline order; pinned cards float to the top.
+    const LBL=Object.fromEntries(STAT);
+    const groupHead=(label,n,total)=>el('div',{style:'display:flex;align-items:center;gap:8px;margin:16px 2px 8px;font-family:var(--disp);font-weight:600;font-size:11px;text-transform:uppercase;letter-spacing:.06em;color:var(--ink-3);border-bottom:1px solid var(--line);padding-bottom:5px'},
+      label, el('span',{class:'chip'},String(n)),
+      el('div',{style:'flex:1'}), total?el('span',{class:'mono',style:'font-size:11px'},fmt(total,false)):'');
+    const pinned=list.filter(p=>p.pinned);
+    if(pinned.length){
+      body.append(groupHead('📌 Pinned',pinned.length,0));
+      const pb2=el('div',{class:'board'}); pinned.forEach(p=>pb2.append(projectCard(p))); body.append(pb2);
+    }
+    ALLSTAT.forEach(k=>{
+      const grp=list.filter(p=>!p.pinned&&projStatus(p)===k);
+      if(!grp.length)return;
+      grp.sort((a,b)=>(stage(b)-stage(a))||(b.dateAdded||'').localeCompare(a.dateAdded||''));
+      const gTotal=grp.reduce((a,p)=>a+(isInHouse(p)?ihTotal(p):projOutflow(p)),0);
+      body.append(groupHead(LBL[k],grp.length,gTotal));
+      const board=el('div',{class:'board'});
+      grp.forEach(p=>board.append(projectCard(p)));
+      body.append(board);
+    });
   } else {
     body.append(projectsTable(list));
   }
@@ -1089,6 +1130,7 @@ function projectCard(p){
   const ih=isInHouse(p);
   const c=el('div',{class:'pcard'+(ih?' inhouse':''),onclick:()=>openProject(p.id)});
   const top=el('div',{class:'top'}, propChip(p.property));
+  if(isSplitP(p))top.append(el('span',{class:'chip',title:allocsOf(p).map(a=>a.property+' '+a.pct+'%').join(' · ')},'⇄ split'));
   if(ih)top.append(el('span',{class:'chip ih'},'In-house'));
   if(p.pinned)top.append(el('span',{class:'pin-i',title:'Pinned'},'📌'));
   if(p.onHold)top.append(el('span',{class:'chip hold'},'On hold'));
@@ -1138,13 +1180,16 @@ function projectsTable(list){
   const tbl=el('table',{class:'tbl'});
   tbl.append(el('thead',{},tr(th('Property'),th('Project'),th('Category'),th('Added'),th('Contractor'),th('Lifecycle'),th('Cost','r'),th('Status'))));
   const tb=el('tbody');
-  list.sort((a,b)=>(a.property).localeCompare(b.property)||(stage(b)-stage(a)));
+  const propOrder=propsByRegion().map(p=>p.code);
+  list.sort((a,b)=>(propOrder.indexOf(a.property)-propOrder.indexOf(b.property))||(stage(b)-stage(a)));
   list.forEach(p=>{
     const ih=isInHouse(p);
     const cost=ih?ihTotal(p):(p.actualCost!=null?p.actualCost:p.anticipatedCost);
     tb.append(el('tr',{class:'clickrow',onclick:()=>openProject(p.id)},
       td(propChip(p.property)),
-      td(el('div',{style:'font-weight:600;max-width:280px'},p.name, ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
+      td(el('div',{style:'font-weight:600;max-width:280px'},p.name,
+        isSplitP(p)?el('span',{class:'chip',style:'margin-left:6px',title:allocsOf(p).map(a=>a.property+' '+a.pct+'%').join(' · ')},'⇄'):null,
+        ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
       td(el('span',{style:'font-size:12px'},p.category)),
       td(el('span',{style:'font-size:12px;white-space:nowrap;color:var(--ink-3)'},fmtDate(p.dateAdded))),
       td(el('span',{style:'font-size:12px'},ih?'own crew':(p.contractor||'—'))),
@@ -1234,7 +1279,7 @@ function openProject(id,preset){
     if(p.split&&p.split.list&&!p.split.list.some(a=>a.property===p.property)){ p.split.list.unshift({property:p.property,pct:0}); }
     if(typeof drawSplit==='function')drawSplit();
   }});
-  S.properties.forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
+  propsByRegion().forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
   CATEGORIES.forEach(c=>catSel.append(el('option',{value:c,...(p.category===c?{selected:true}:{})},c)));
 
@@ -1317,7 +1362,7 @@ function openProject(id,preset){
       el('button',{class:p.split.mode==='custom'?'on':'',onclick:()=>{p.split.mode='custom';drawSplit();}},'Custom %'));
     splitBody.append(seg);
     const row=el('div',{class:'bubbles',style:'margin-bottom:10px'}, el('span',{class:'bub-lab'},'Properties'));
-    S.properties.forEach(pr=>{
+    propsByRegion().forEach(pr=>{
       const on2=p.split.list.some(a=>a.property===pr.code);
       row.append(el('button',{class:'bub'+(on2?' on':''),style:on2?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
         title:pr.code===p.property?'Lead property (change it in the Property dropdown above)':'',

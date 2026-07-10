@@ -1,0 +1,7 @@
+# Railway build config (Nixpacks). "..." keeps the default Node packages and
+# adds LibreOffice for server-side Office→PDF conversion (bid documents attach
+# as .docx/.xlsx and must become PDFs to embed into contract Exhibit A & B),
+# plus Liberation fonts (metric-compatible with Arial/Times/Courier so Word
+# layouts convert faithfully).
+[phases.setup]
+nixPkgs = ["...", "libreoffice", "liberation_ttf"]

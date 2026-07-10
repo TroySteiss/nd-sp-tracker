@@ -102,7 +102,7 @@ try{ applyTheme(localStorage.getItem('theme') || (matchMedia('(prefers-color-sch
 })();
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
-function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
+function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize,originalFileKey:f.originalFileKey||null,originalFileName:f.originalFileName||null})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
 async function saveProjectSilent(p){ const payload={...p,bids:cleanBids(p)}; if(S.projects.find(x=>x.id===p.id)) await API.send('PATCH','/projects/'+p.id,payload); else await API.send('POST','/projects',payload); }
 async function saveProject(p,msg,isNew){
   const payload={...p,bids:cleanBids(p)};
@@ -1474,7 +1474,8 @@ function openProject(id,preset){
       const r=await fetch(`/api/projects/${p.id}/bids/${slot}/file`,{method:'POST',body:fd});
       if(!r.ok)throw new Error(await r.text());
       const meta=await r.json();
-      bd.files.push({fileKey:meta.fileKey,fileName:meta.fileName,fileSize:meta.fileSize}); bd.file=null;
+      bd.files.push({fileKey:meta.fileKey,fileName:meta.fileName,fileSize:meta.fileSize,originalFileKey:meta.originalFileKey||null,originalFileName:meta.originalFileName||null}); bd.file=null;
+      if(meta.originalFileKey) toast('Converted to PDF for the contract — original kept');
       syncBidPrimary(bd);
       drawBids();
     }catch(e){ toast('Upload failed: '+e.message); }
@@ -1506,21 +1507,22 @@ function openProject(id,preset){
             multi?el('span',{style:'font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600'},bidFileLabel(bd,fi)):null,
             el('div',{style:'display:flex;gap:6px;align-items:center;min-width:0'},
               el('a',{href:'/api/bids/file/'+fl.fileKey,target:'_blank',title:'View in a new tab'},fl.fileName||'bid'),
-              el('span',{class:'bs-sz'},fl.fileSize?fileSize(fl.fileSize):''))),
+              el('span',{class:'bs-sz'},fl.fileSize?fileSize(fl.fileSize):''),
+              fl.originalFileKey?el('a',{href:dlUrl(fl.originalFileKey,fl.originalFileName),style:'font-size:10.5px;color:var(--ink-3)',title:'Download the original file (“'+(fl.originalFileName||'original')+'”) — the PDF above is the converted copy that embeds into the contract',onclick:e=>e.stopPropagation()},'original'):null)),
           dlBtn(fl.fileKey,fl.fileName),
           el('button',{class:'btn ghost sm',title:'Remove this file',onclick:()=>{bd.files.splice(fi,1);syncBidPrimary(bd);drawBids();}},'✕'));
         filesWrap.append(row);
       });
       // + add another file line
       const addRow=el('div',{class:'bs-file',style:'margin-top:2px'});
-      const addInp=addDrop(addRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f),{multiple:true});
+      const addInp=addDrop(addRow,'.pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx',f=>attachBid(bd,f),{multiple:true});
       addRow.append(el('button',{class:'btn sm ghost',onclick:()=>addInp.click(),title:'Attach one or more files — embedded into the contract in this order'},'＋ Add file'));
       filesWrap.append(addRow);
     } else {
       const fileRow=el('div',{class:'bs-file'});
       fileRow.style.cssText+='border:2px dashed var(--line-2);border-radius:6px;padding:4px 8px;transition:background .15s;';
       const lbl=el('button',{class:'btn sm ghost',onclick:()=>inp.click()},'⇪ Attach bid document');
-      const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.zip',f=>attachBid(bd,f),{multiple:true});
+      const inp=addDrop(fileRow,'.pdf,.png,.jpg,.jpeg,.doc,.docx,.xls,.xlsx',f=>attachBid(bd,f),{multiple:true});
       fileRow.append(lbl);
       filesWrap.append(fileRow);
     }
@@ -1542,7 +1544,7 @@ function openProject(id,preset){
     const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?approved.amount:p.anticipatedCost);
     const contractor=((approved&&approved.contractor)||p.contractor||'').trim();
     return [
-      {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid (PDF, JPG or PNG) in Bids above — it embeds as the contract scope', required:true},
+      {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid in Bids above — it embeds as the contract scope (Word/Excel converts to PDF automatically)', required:true},
       {ok:total!=null&&Number(total)>0, label:'Contract total', hint:'enter a cost or bid amount', required:true},
       {ok:!!contractor, label:'Contractor named', hint:'approve a bid or fill the contractor field', required:true},
       {ok:!!p.bids.some(b2=>b2.approved), label:'Winning bid approved', hint:'approve the winner so its amount & contractor flow in', required:false},

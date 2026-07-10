@@ -2,7 +2,7 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-09 (multi-region rework; ATL projects, notes w/ attachments, generate-contract section, email setup; multi-property split projects; admin lock).
+> Last updated: 2026-07-10 (multi-region rework; ATL projects, notes w/ attachments, generate-contract section, email setup; multi-property split projects; admin lock; Office→PDF conversion).
 
 ## What this is
 
@@ -19,7 +19,11 @@ Express (src/server.ts) ── static: public/
    ├── src/auth.ts        login/logout/status; express-session in Postgres ("session" table)
    ├── src/routes.ts      ALL /api endpoints + change-log helper (async errors wrapped → JSON 500)
    │     ├── src/importers.ts   xlsx parsing (GL + cushion), DB-driven known codes
-   │     ├── src/contract.ts    Independent Contractor Agreement PDF (pdf-lib)
+   │     ├── src/contract.ts    Independent Contractor Agreement PDF (pdf-lib) — REFUSES to
+   │     │                      generate if the bid can't embed (no placeholder scope, ever)
+   │     ├── src/convert.ts     Office→PDF via headless LibreOffice (bid uploads auto-convert;
+   │     │                      original kept; nixpacks.toml installs LO on Railway;
+   │     │                      /healthz reports docConvert; SOFFICE_PATH env override)
    │     └── src/seed.ts        loadStateInto() = full-state replace (seed/reset/restore)
    ├── src/db.ts          pool, tx(), assembleState() → the /api/state blob, rowToProject
    ├── src/migrate.ts     runs migrations/*.sql in filename order on boot (tracked in _migrations)
@@ -137,8 +141,11 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 - `npm run migrate` / `seed` — CLI; but server also migrates + seeds-if-empty on every boot.
 - `npm test` (vitest, shared/domain.test.ts) · `npm run typecheck` · `npm run build` (esbuild;
   build:server lists every src/*.ts entry explicitly — add new files there!).
-- Deploy: Railway, `railway.json`; DB env `DATABASE_URL`, auth env `APP_PASSWORD`, `SESSION_SECRET`.
-- Local DB: postgres:postgres@localhost:5432/sp_tracker (Postgres 17 via winget).
+- Deploy: Railway, `railway.json` + `nixpacks.toml` (installs LibreOffice + Liberation fonts for
+  Office→PDF conversion — makes the image big and the first such build slow); DB env `DATABASE_URL`,
+  auth env `APP_PASSWORD`, `SESSION_SECRET`, optional `ADMIN_USERS`, `SOFFICE_PATH`.
+- Local DB: postgres:postgres@localhost:5432/sp_tracker (Postgres 17 via winget). Local LibreOffice
+  installed at C:\Program Files\LibreOffice (winget) for dev conversion parity.
 
 ## Gotchas
 

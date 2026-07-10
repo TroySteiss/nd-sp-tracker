@@ -2,6 +2,7 @@ import 'dotenv/config';
 import express from 'express';
 import { join } from 'node:path';
 import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
+import { conversionAvailable } from './convert.js';
 import { api } from './routes.js';
 import { runMigrations } from './migrate.js';
 import { seedIfEmpty } from './seed-if-empty.js';
@@ -19,7 +20,7 @@ app.use(sessionMiddleware());
 app.post('/api/login', login);
 app.post('/api/logout', logout);
 app.get('/api/auth/status', status);
-app.get('/healthz', (_req, res) => res.json({ ok: true }));
+app.get('/healthz', (_req, res) => res.json({ ok: true, docConvert: conversionAvailable() }));
 
 // everything else under /api requires auth
 app.use('/api', requireAuth, api);

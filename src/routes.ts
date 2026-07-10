@@ -7,6 +7,7 @@ import { pool, query, tx, assembleState, rowToProject, propLookup } from './db.j
 import { requireAdmin } from './auth.js';
 import { loadStateInto } from './seed.js';
 import { parseGL, parseCushion } from './importers.js';
+import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, type ContractVars, type BidAttachment } from './contract.js';
 import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, type Project, type AppState } from '../shared/domain.js';
 
@@ -220,10 +221,27 @@ api.delete('/projects/:id', async (req, res) => {
 api.post('/projects/:id/bids/:slot/file', memUpload.single('file'), async (req, res) => {
   const f = req.file;
   if (!f) return res.status(400).json({ error: 'no file' });
-  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+
+  // Bid documents embed into contract Exhibit A & B, so Office files are
+  // converted to PDF here (original kept for the record). If conversion is
+  // impossible, refuse now — never store a bid that can't become the scope.
+  let converted: { key: string; name: string; size: number } | null = null;
+  let originalKey: string | null = null;
+  if (isOfficeDoc(f.originalname)) {
+    const pdf = await officeToPdf(f.buffer, f.originalname);
+    if (!pdf) return res.status(400).json({ error: `"${f.originalname}" could not be converted to PDF on this server — save it as a PDF in Word/Excel and attach that instead.` });
+    const pdfName = f.originalname.replace(/\.[^.]+$/, '') + '.pdf';
+    originalKey = await storeFile(f.originalname, f.mimetype, f.buffer);
+    converted = { key: await storeFile(pdfName, 'application/pdf', pdf), name: pdfName, size: pdf.length };
+  }
+
+  const key = converted ? converted.key : await storeFile(f.originalname, f.mimetype, f.buffer);
   const proj = (await query('select name, property_code from projects where id=$1', [req.params.id])).rows[0];
-  if (proj) logChange(req, { action: 'bid.file', entityType: 'project', entityId: req.params.id, property: proj.property_code, summary: `Bid file "${f.originalname}" uploaded on "${proj.name}"` });
-  res.json({ fileKey: key, fileName: f.originalname, fileSize: f.size });
+  if (proj) logChange(req, { action: 'bid.file', entityType: 'project', entityId: req.params.id, property: proj.property_code, summary: `Bid file "${f.originalname}" uploaded on "${proj.name}"${converted ? ' (converted to PDF)' : ''}` });
+  res.json({
+    fileKey: key, fileName: converted ? converted.name : f.originalname, fileSize: converted ? converted.size : f.size,
+    originalFileKey: originalKey, originalFileName: originalKey ? f.originalname : null,
+  });
 });
 
 /* ---------- note attachment upload (stored like bid files; the note object

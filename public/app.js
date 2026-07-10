@@ -1542,7 +1542,7 @@ function openProject(id,preset){
     const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?approved.amount:p.anticipatedCost);
     const contractor=((approved&&approved.contractor)||p.contractor||'').trim();
     return [
-      {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid in Bids above', required:true},
+      {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid (PDF, JPG or PNG) in Bids above — it embeds as the contract scope', required:true},
       {ok:total!=null&&Number(total)>0, label:'Contract total', hint:'enter a cost or bid amount', required:true},
       {ok:!!contractor, label:'Contractor named', hint:'approve a bid or fill the contractor field', required:true},
       {ok:!!p.bids.some(b2=>b2.approved), label:'Winning bid approved', hint:'approve the winner so its amount & contractor flow in', required:false},

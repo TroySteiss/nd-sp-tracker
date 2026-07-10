@@ -283,9 +283,17 @@ api.post('/projects/:id/contract', async (req, res) => {
     }
   }
 
+  // The scope (Exhibit A & B) must be the embedded bid — never a placeholder.
+  if (!attachments.length) {
+    return res.status(400).json({ error: 'No bid document is attached to the saved project — attach the winning bid (PDF, JPG or PNG) in Bids, save, then generate.' });
+  }
+
   let pdf: Uint8Array;
   try { pdf = await buildContract(vars, attachments); }
-  catch (e: any) { return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) }); }
+  catch (e: any) {
+    if (e?.code === 'NO_SCOPE') return res.status(400).json({ error: e.message });
+    return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) });
+  }
 
   // Filename: [CONTRACT_CODE]_[Unit?]_[ContractorCamel]_[MMDDYYYY]_Unexecuted.pdf
   const propRow = (await query('select contract_code from properties where code=$1', [proj.property_code])).rows[0];

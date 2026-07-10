@@ -241,7 +241,13 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
     } catch { /* skip unreadable attachment */ }
     if (att.label && items.length > before) items[before].label = att.label;
   }
-  if (!items.length) { center('[ Bid document attached separately ]', yy - 14, 10, roman); return; }
+  // NEVER emit a contract whose scope is a placeholder — if nothing embeddable
+  // made it into Exhibit A & B, refuse generation so it gets fixed first.
+  if (!items.length) {
+    const err: any = new Error('The bid document could not be embedded into Exhibit A & B — only PDF, JPG or PNG files can be embedded. Replace the bid attachment with one of those formats and generate again.');
+    err.code = 'NO_SCOPE';
+    throw err;
+  }
 
   // Draw an optional caption above an item; returns the new top (shifted down past the caption).
   const caption = (pg: PDFPage, label: string | undefined, top: number) => {

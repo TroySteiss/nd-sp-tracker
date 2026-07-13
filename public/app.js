@@ -54,7 +54,8 @@ let VIEW={tab:'dashboard',prop:null};
 let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
-let CFILT={prop:'',q:'',sort:'date_desc',status:''};  // contracts view filters + sort
+let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts view filters + sort
+let IHF={region:''};   // in-house view region toggle
 let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
 let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
@@ -73,6 +74,19 @@ const regionNames=()=> (S&&S.regions&&S.regions.length)? S.regions.map(r=>r.name
 /* Properties in display order: grouped by region (regions-table order), then code. */
 const propsByRegion=()=>{ const ro=regionNames();
   return ((S&&S.properties)||[]).slice().sort((a,b)=>(ro.indexOf(a.region)-ro.indexOf(b.region))||a.code.localeCompare(b.code)); };
+const regionOfCode=code=>(((S&&S.properties)||[]).find(p=>p.code===code)||{}).region||'';
+/* Dashboard-style region toggle (All / <regions>) — tied to the regions table. */
+function regionSeg(get,set){
+  return el('div',{class:'seg-ctl'},
+    el('button',{class:get()===''?'on':'',onclick:()=>{set('');render();}},'All'),
+    ...regionNames().map(r=>el('button',{class:get()===r?'on':'',onclick:()=>{set(r);render();}},r)));
+}
+/* Green marker for discussed/planned projects whose cost IS counted in the cash
+   projections (committed to cash before approval). */
+const inProjDiscussed=p=>!isATL(p)&&!p.onHold&&!isInHouse(p)&&phase(p)==='discussed'&&!!p.commitCash;
+const projSym=p=>inProjDiscussed(p)
+  ? el('span',{title:'Included in cash projections — committed to cash',style:'color:#1fa356;font-weight:800;margin-left:5px'},'$')
+  : null;
 const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';
 
 /* seedState removed — initial data is seeded server-side into Postgres */
@@ -459,7 +473,8 @@ function viewContracts(){
     const ex=latestByProj.get(c.projectId);
     if(!ex||String(c.createdAt||'')>String(ex.createdAt||'')) latestByProj.set(c.projectId,c);
   });
-  const allDeduped=[...latestByProj.values()];
+  // The topbar region toggle scopes EVERYTHING below (KPIs, by-property, lists).
+  const allDeduped=[...latestByProj.values()].filter(c=>!CFILT.region||regionOfCode(c.property)===CFILT.region);
 
   // Status of a contract record
   const statusOf=c=>{
@@ -474,7 +489,8 @@ function viewContracts(){
 
   // Planned: approved projects with no generated contract
   const projectsWithContract=new Set(latestByProj.keys());
-  const allPlanned=S.projects.filter(p=>isApproved(p)&&!p.noContract&&!p.noContractSet&&!isComplete(p)&&!p.onHold&&!projectsWithContract.has(p.id));
+  const allPlanned=S.projects.filter(p=>isApproved(p)&&!p.noContract&&!p.noContractSet&&!isComplete(p)&&!p.onHold&&!projectsWithContract.has(p.id)
+    &&(!CFILT.region||regionOfCode(p.property)===CFILT.region));
 
   // Apply property + search filters to deduped list
   let list=allDeduped.slice();
@@ -505,7 +521,7 @@ function viewContracts(){
   const searchInp=el('input',{type:'search',placeholder:'Search contractor, scope, file…',value:CFILT.q||'',style:'min-width:200px',onchange:e=>{CFILT.q=e.target.value;render();}});
   const propSel=el('select',{onchange:e=>{CFILT.prop=e.target.value;render();}},
     el('option',{value:''},'All properties'),
-    ...S.properties.map(p=>el('option',{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
+    ...propsByRegion().filter(p=>!CFILT.region||p.region===CFILT.region).map(p=>el('option',{value:p.code,...(CFILT.prop===p.code?{selected:true}:{})},`${p.code} — ${p.name}`)));
   const statusSel=el('select',{onchange:e=>{CFILT.status=e.target.value;render();}},
     el('option',{value:'',...(CFILT.status===''?{selected:true}:{})},'All statuses'),
     el('option',{value:'executed',...(CFILT.status==='executed'?{selected:true}:{})},'Executed'),
@@ -516,7 +532,7 @@ function viewContracts(){
   const sortSel=el('select',{onchange:e=>{CFILT.sort=e.target.value;render();}},
     ...[['date_desc','Newest first'],['date_asc','Oldest first'],['total_desc','Total (high→low)'],['contractor','Contractor (A–Z)'],['property','Property']]
       .map(([v,l])=>el('option',{value:v,...(CFILT.sort===v?{selected:true}:{})},l)));
-  const bar=topbar('Pipeline','Contracts', searchInp, propSel, statusSel, sortSel);
+  const bar=topbar('Pipeline','Contracts', regionSeg(()=>CFILT.region,v=>{CFILT.region=v;CFILT.prop='';}), searchInp, propSel, statusSel, sortSel);
 
   const body=el('div',{class:'grid'});
 
@@ -873,7 +889,7 @@ function discussedPanel(list){
   view.slice(0,80).forEach(p2=>{
     const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
     r.append(propChip(p2.property),
-      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name),
+      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name,projSym(p2)),
         el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category+(p2.dateAdded?' · '+p2.dateAdded:''))),
       el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(cost(p2),false)));
     b.append(r);
@@ -972,6 +988,7 @@ function dateFilterGroup(state){
 }
 function viewProjects(){
   const bar=topbar('Pipeline','Projects',
+    regionSeg(()=>FILT.region||'',v=>{FILT.region=v;}),
     el('button',{class:'btn accent',onclick:()=>openProject(null)},'+ New project'));
   const body=el('div',{});
 
@@ -1003,26 +1020,19 @@ function viewProjects(){
 
   const fbar=el('div',{class:'filter-panel'});
 
-  // property group — region quick-picks first, then properties in region order
+  // property group — the topbar region toggle narrows the bubbles shown here
+  const visProps=orderedProps.filter(pr=>!FILT.region||pr.region===FILT.region);
   const allP=isAll(FILT.props,ALLPROPS);
   const propRow=el('div',{class:'fgroup'}, el('span',{class:'bub-lab'},'Property'),
     el('button',{class:'bub all'+(allP?' on':''),onclick:()=>setAll(FILT.props,ALLPROPS)}, allP?'All ✓':'All'));
-  regionNames().forEach(reg=>{
-    const codes=orderedProps.filter(pr=>pr.region===reg).map(pr=>pr.code);
-    if(!codes.length)return;
-    const regOn=codes.every(c=>FILT.props.includes(c));
-    propRow.append(el('button',{class:'bub'+(regOn?' on accent':''),title:`Toggle every ${reg} property`,
-      onclick:()=>{ if(regOn){ FILT.props=FILT.props.filter(c=>!codes.includes(c)); } else { codes.forEach(c=>{ if(!FILT.props.includes(c))FILT.props.push(c); }); } render(); }},
-      reg+' ▾'));
-  });
-  propRow.append(el('span',{style:'width:1px;align-self:stretch;background:var(--line);margin:0 2px'}));
-  orderedProps.forEach(pr=>{ const on=FILT.props.includes(pr.code);
+  visProps.forEach(pr=>{ const on=FILT.props.includes(pr.code);
     propRow.append(el('button',{class:'bub'+(on?' on':''),style:on?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
       onclick:()=>toggle(FILT.props,pr.code)}, el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code)); });
   fbar.append(propRow);
 
   // status group — chips show live counts (within the other active filters)
   const preStatus=S.projects.filter(p=>FILT.props.includes(p.property)&&FILT.cats.includes(p.category)&&(FILT.showATL||!isATL(p))&&inDateRange(p,FILT)
+    &&(!FILT.region||regionOfCode(p.property)===FILT.region)
     &&(!FILT.q||((p.name+' '+p.contractor+' '+p.plan+' '+p.actionItem+' '+p.category).toLowerCase().includes(FILT.q.toLowerCase()))));
   const statCounts={}; preStatus.forEach(p=>{ const s=projStatus(p); statCounts[s]=(statCounts[s]||0)+1; });
   const isDefault=FILT.statuses.length===DEFAULT_STATS.length&&DEFAULT_STATS.every(s=>FILT.statuses.includes(s));
@@ -1104,10 +1114,11 @@ let _t;function debounced(){clearTimeout(_t);_t=setTimeout(render,180);}
 ========================================================= */
 function viewInHouse(){
   const bar=topbar('Own crew','In-house projects',
+    regionSeg(()=>IHF.region,v=>{IHF.region=v;}),
     el('button',{class:'btn accent',onclick:()=>openProject(null,{inHouse:true})},'+ New in-house project'));
   const body=el('div',{});
-  const list=S.projects.filter(isInHouse);
-  if(!list.length){ body.append(el('div',{class:'empty'}, el('div',{class:'big'},'No in-house projects yet'),'Add one here, or toggle “In-house (own crew)” on any project in its editor.')); return {bar,body}; }
+  const list=S.projects.filter(isInHouse).filter(p=>!IHF.region||regionOfCode(p.property)===IHF.region);
+  if(!list.length){ body.append(el('div',{class:'empty'}, el('div',{class:'big'},IHF.region?'No in-house projects in '+IHF.region:'No in-house projects yet'),'Add one here, or toggle “In-house (own crew)” on any project in its editor.')); return {bar,body}; }
   const bud=list.filter(ihIsBudget);
   const tot=bud.reduce((a,p)=>a+ihTotal(p),0), done=bud.reduce((a,p)=>a+ihDone(p),0);
   const inProg=list.filter(p=>!isComplete(p)&&!p.onHold).length;
@@ -1156,7 +1167,7 @@ function projectCard(p){
   else if(!ih&&phase(p)==='discussed')top.append(el('span',{class:'chip discussed'},'Discussed'));
   top.append(el('div',{style:'flex:1'}), el('span',{style:'font-size:11px;color:var(--ink-3)'},p.category));
   c.append(top);
-  c.append(el('div',{class:'nm'},p.name));
+  c.append(el('div',{class:'nm'},p.name,projSym(p)));
   c.append(el('div',{class:'meta'}, p.contractor? '◷ '+p.contractor : (p.actionItem? p.actionItem.slice(0,70):'—')));
   c.append(el('div',{class:'card-added'}, 'Added '+fmtDate(p.dateAdded)));
   if(ih){
@@ -1204,7 +1215,7 @@ function projectsTable(list){
     const cost=ih?ihTotal(p):(p.actualCost!=null?p.actualCost:p.anticipatedCost);
     tb.append(el('tr',{class:'clickrow',onclick:()=>openProject(p.id)},
       td(propChip(p.property)),
-      td(el('div',{style:'font-weight:600;max-width:280px'},p.name,
+      td(el('div',{style:'font-weight:600;max-width:280px'},p.name,projSym(p),
         isSplitP(p)?el('span',{class:'chip',style:'margin-left:6px',title:allocsOf(p).map(a=>a.property+' '+a.pct+'%').join(' · ')},'⇄'):null,
         ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
       td(el('span',{style:'font-size:12px'},p.category)),
@@ -2573,7 +2584,7 @@ function viewProperty(){
     const r=el('div',{class:'clickrow proj-row',onclick:()=>openProject(pr.id)});
     const head=el('div',{class:'pr-head'},
       el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
-      el('strong',{class:'pr-name'}, pr.name),
+      el('strong',{class:'pr-name'}, pr.name), projSym(pr),
       split?el('span',{class:'chip',title:`Split across ${allocsOf(pr).map(a=>a.property+' '+a.pct+'%').join(' · ')} — total ${fmt(fullCost,false)}`},`⇄ ${Math.round(shareFor(pr,code)*100)}%`):null,
       el('div',{class:'pr-right'},
         hasCost?el('span',{class:'mono pr-cost',title:split?`This property’s share of ${fmt(fullCost,false)} total`:''},fmt(costVal,false)):null,

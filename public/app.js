@@ -466,10 +466,11 @@ function viewContracts(){
     const pr=projById.get(c.projectId);
     if(pr&&pr.executedContractFileKey) return 'executed';
     if(pr&&pr.steps&&pr.steps.signed) return 'countersigned';
+    if(pr&&pr.contractorSignedFileKey) return 'ctrsigned';
     return 'generated';
   };
-  const ST_LABEL={executed:'Executed',countersigned:'Signed & Countersigned',generated:'Generated — awaiting countersign'};
-  const ST_CHIP={executed:'done',countersigned:'good',generated:'hold'};
+  const ST_LABEL={executed:'Executed',countersigned:'Signed & Countersigned',ctrsigned:'Contractor signed — awaiting countersign',generated:'Generated — sent for signature'};
+  const ST_CHIP={executed:'done',countersigned:'good',ctrsigned:'hold',generated:''};
 
   // Planned: approved projects with no generated contract
   const projectsWithContract=new Set(latestByProj.keys());
@@ -509,7 +510,8 @@ function viewContracts(){
     el('option',{value:'',...(CFILT.status===''?{selected:true}:{})},'All statuses'),
     el('option',{value:'executed',...(CFILT.status==='executed'?{selected:true}:{})},'Executed'),
     el('option',{value:'countersigned',...(CFILT.status==='countersigned'?{selected:true}:{})},'Signed — awaiting file'),
-    el('option',{value:'generated',...(CFILT.status==='generated'?{selected:true}:{})},'Generated — awaiting countersign'),
+    el('option',{value:'ctrsigned',...(CFILT.status==='ctrsigned'?{selected:true}:{})},'Contractor signed — awaiting countersign'),
+    el('option',{value:'generated',...(CFILT.status==='generated'?{selected:true}:{})},'Generated — sent for signature'),
     el('option',{value:'planned',...(CFILT.status==='planned'?{selected:true}:{})},'Planned — no contract yet'));
   const sortSel=el('select',{onchange:e=>{CFILT.sort=e.target.value;render();}},
     ...[['date_desc','Newest first'],['date_asc','Oldest first'],['total_desc','Total (high→low)'],['contractor','Contractor (A–Z)'],['property','Property']]
@@ -697,6 +699,10 @@ function viewDashboard(){
 
   /* Awaiting approval — moved above the pipeline so the most actionable list is first. */
   body.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)));
+
+  /* Awaiting signature — contractor returned a signed contract, no countersigned copy yet. */
+  const awaitingSig=all.filter(p=>p.contractorSignedFileKey&&!p.executedContractFileKey&&!isComplete(p));
+  body.append(attentionPanel('Awaiting signature · contractor signed, not countersigned',awaitingSig));
 
   /* Pipeline funnel — contractor lifecycle, stacked one colour per property (in-house excluded) */
   let hold=0; active.forEach(p=>{ if(p.onHold)hold++; });
@@ -1532,10 +1538,11 @@ function openProject(id,preset){
   }
   function refreshMeta(){ const filled=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey).length; bidMeta.textContent=`${filled}/3 filled${p.bids.some(b=>b.approved)?' · winner selected':''}`; }
 
-  // --- Generate contract (own always-visible section with a readiness indicator) ---
-  const genPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  // --- Generate contract (collapsed dropdown; the header chip carries the
+  //     readiness status, the expanded body is just the Generate button) ---
+  const genPanel=el('details',{class:'panel acc',style:'margin-top:16px'});
   const genStatusChip=el('span',{class:'chip'},'');
-  genPanel.append(el('div',{class:'ph'}, el('h3',{},'Generate contract'), el('div',{class:'sp'}), genStatusChip));
+  genPanel.append(el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Generate contract'), el('div',{class:'sp'}), genStatusChip));
   const genBody=el('div',{class:'pad'});
   genPanel.append(genBody);
   function genChecks(){
@@ -1561,24 +1568,16 @@ function openProject(id,preset){
     const ready=!missingReq.length;
     genStatusChip.className='chip '+(p.contractFileKey?'done':(ready?'good':'hold'));
     genStatusChip.textContent=p.contractFileKey?'generated ✓':(ready?'ready to generate':`${missingReq.length} item${missingReq.length>1?'s':''} needed`);
-    const listEl=el('div',{style:'display:grid;gap:5px;margin-bottom:12px'});
-    checks.forEach(c=>{
-      listEl.append(el('div',{style:'display:flex;gap:8px;align-items:baseline;font-size:12.5px'},
-        el('span',{style:'font-weight:700;color:'+(c.ok?'#2e7d4f':(c.required?'var(--rust)':'var(--ink-3)'))},c.ok?'✓':(c.required?'✗':'○')),
-        el('span',{style:c.ok?'':'color:var(--ink-2)'},c.label+(c.required?'':' (recommended)')),
-        c.ok?null:el('span',{style:'color:var(--ink-3);font-size:11.5px'},'— '+c.hint)));
-    });
-    genBody.append(listEl);
     const row=el('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap'});
     const btn=el('button',{class:'btn accent',onclick:()=>openContractDialog()},'📄 Generate contract');
     if(isNew){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Save the project first, then generate.')); }
-    else if(!ready){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Complete the required items above.')); }
-    else row.append(btn, el('span',{class:'bs-meta'},p.contractFileKey?'Regenerating replaces the current unexecuted contract (the download stays in Contract below).':'Builds the ICA with the bid embedded (Exhibits A–D).'));
+    else if(!ready){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Needs: '+missingReq.map(c=>c.label.toLowerCase()).join(', ')+'.')); }
+    else row.append(btn);
     genBody.append(row);
   }
 
-  // --- Contract (own section): generated → executed → lien waiver ---
-  const hasCt=!!(p.contractFileKey||p.executedContractFileKey||p.lienWaiverFileKey);
+  // --- Contract (own section): generated → contractor signed → executed → lien waiver ---
+  const hasCt=!!(p.contractFileKey||p.contractorSignedFileKey||p.executedContractFileKey||p.lienWaiverFileKey);
   const contractWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(hasCt?{open:''}:{})});
   const ctMeta=el('span',{class:'bs-meta'},'');
   contractWrap.append(el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Contract'), el('div',{class:'sp'}), ctMeta));
@@ -1597,6 +1596,7 @@ function openProject(id,preset){
       const out=await API.send('POST','/projects/'+p.id+'/remove-attachment',{kind});
       if(kind==='executed'&&p.lienWaiverFileKey===p.executedContractFileKey){p.lienWaiverFileKey=null;p.lienWaiverFileName=null;}
       if(kind==='contract'){p.contractFileKey=null;p.contractFileName=null;}
+      if(kind==='contractorSigned'){p.contractorSignedFileKey=null;p.contractorSignedFileName=null;}
       if(kind==='executed'){p.executedContractFileKey=null;p.executedContractFileName=null;}
       if(kind==='lienWaiver'){p.lienWaiverFileKey=null;p.lienWaiverFileName=null;}
       Object.assign(p.steps,out.steps||{});
@@ -1607,7 +1607,10 @@ function openProject(id,preset){
   function refreshGen(){
     refreshGenPanel();
     ctBody.innerHTML='';
-    ctMeta.textContent=[p.contractFileKey?'generated':null,p.executedContractFileKey?'executed':null,p.lienWaiverFileKey?'lien waiver':null].filter(Boolean).join(' · ')||'none yet';
+    ctMeta.textContent=[p.contractFileKey?'generated':null,
+      p.contractorSignedFileKey&&!p.executedContractFileKey?'awaiting countersign':null,
+      p.contractorSignedFileKey&&p.executedContractFileKey?'contractor signed':null,
+      p.executedContractFileKey?'executed':null,p.lienWaiverFileKey?'lien waiver':null].filter(Boolean).join(' · ')||'none yet';
 
     // 1) Generated (unexecuted) contract — download lives here; generation moved
     //    to the dedicated "Generate contract" section above.
@@ -1629,7 +1632,32 @@ function openProject(id,preset){
     if(!p.contractFileKey) gRow.append(el('span',{class:'bs-meta'},'Use “Generate contract” above — or drop in an existing PDF.'));
     ctBody.append(gRow);
 
-    // 2) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
+    // 2) Contractor-signed (one-party) contract — the project shows on the
+    //    dashboard as "Awaiting signature" until the executed contract arrives.
+    const csRow=ctRow('Contractor signed');
+    if(p.contractorSignedFileKey){
+      csRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.contractorSignedFileKey,p.contractorSignedFileName||'contractor-signed.pdf'), rmBtn('contractorSigned','contractor-signed contract'));
+      if(!p.executedContractFileKey) csRow.append(el('span',{class:'chip hold'},'awaiting countersign'));
+    } else {
+      csRow.classList.add('ct-drop');
+      const csBtn=el('button',{class:'btn ghost sm',onclick:()=>csInput.click()},'⬆ Upload contractor-signed');
+      csRow.append(csBtn, el('span',{class:'bs-meta'},'One-party signed — shows as “Awaiting signature” on the dashboard until countersigned.'));
+      const csInput=addDrop(csRow,'.pdf,application/pdf',async file=>{
+        csBtn.disabled=true; csBtn.textContent='Uploading…';
+        const fd=new FormData(); fd.append('file',file);
+        try{
+          const r=await fetch('/api/projects/'+p.id+'/contractor-signed',{method:'POST',body:fd});
+          if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');csBtn.disabled=false;csBtn.textContent='⬆ Upload contractor-signed';return;}
+          const out=await r.json();
+          p.contractorSignedFileKey=out.fileKey; p.contractorSignedFileName=out.fileName;
+          Object.assign(p.steps,out.steps);
+          drawSteps(); refreshGen(); toast('Contractor-signed contract attached — awaiting countersignature');
+        }catch(e){toast('Upload failed: '+e.message);csBtn.disabled=false;csBtn.textContent='⬆ Upload contractor-signed';}
+      });
+    }
+    ctBody.append(csRow);
+
+    // 3) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
     const eRow=ctRow('Executed contract');
     if(p.executedContractFileKey){
       eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'), rmBtn('executed','executed contract'));

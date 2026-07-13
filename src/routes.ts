@@ -586,6 +586,31 @@ api.post('/projects/:id/contract-file', memUpload.single('file'), async (req, re
   res.json({ fileKey: key, fileName: f.originalname, steps });
 });
 
+/* ---------- Contractor-signed contract upload (one-party signed; the project
+   counts as "awaiting signature" until the executed contract is attached) ---------- */
+api.post('/projects/:id/contractor-signed', memUpload.single('file'), async (req, res) => {
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  const projRow = await query('select * from projects where id=$1', [req.params.id]);
+  if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
+  const proj = projRow.rows[0];
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  // A contractor-signed contract implies the contract was generated & sent —
+  // same cascade as the generated-contract upload (but NOT "signed": that
+  // stays tied to the countersigned/executed document).
+  const steps: Record<string, boolean> = { ...(proj.steps || {}), contractGenerated: true };
+  const noContract = !!proj.no_contract;
+  STEP_KEYS.slice(0, STEP_KEYS.indexOf('contractGenerated')).forEach((k) => {
+    if (!(noContract && CONTRACT_STEPS.includes(k))) steps[k] = true;
+  });
+  await query(
+    'update projects set contractor_signed_file_key=$1, contractor_signed_file_name=$2, steps=$3, updated_at=now() where id=$4',
+    [key, f.originalname, JSON.stringify(steps), proj.id]
+  );
+  logChange(req, { action: 'contract.contractorSigned', entityType: 'project', entityId: proj.id, property: proj.property_code, summary: `Contractor-signed contract "${f.originalname}" attached to "${proj.name}" — awaiting countersignature` });
+  res.json({ fileKey: key, fileName: f.originalname, steps });
+});
+
 /* ---------- Executed contract upload ---------- */
 api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req, res) => {
   const f = req.file;
@@ -663,8 +688,12 @@ api.post('/projects/:id/remove-attachment', async (req, res) => {
     if (!fileKey) return res.status(400).json({ error: 'no lien waiver to remove' });
     steps.lienWaiver = false;
     await query('update projects set lien_waiver_file_key=null, lien_waiver_file_name=null, steps=$1, updated_at=now() where id=$2', [JSON.stringify(steps), proj.id]);
+  } else if (kind === 'contractorSigned') {
+    fileKey = proj.contractor_signed_file_key; fileName = proj.contractor_signed_file_name || 'contractor-signed.pdf'; label = 'Contractor-signed contract';
+    if (!fileKey) return res.status(400).json({ error: 'no contractor-signed contract to remove' });
+    await query('update projects set contractor_signed_file_key=null, contractor_signed_file_name=null, updated_at=now() where id=$1', [proj.id]);
   } else {
-    return res.status(400).json({ error: 'kind must be contract | executed | lienWaiver' });
+    return res.status(400).json({ error: 'kind must be contract | contractorSigned | executed | lienWaiver' });
   }
 
   logChange(req, {

@@ -62,6 +62,8 @@ export interface Project {
   commitCash?: boolean;
   contractFileKey?: string | null;
   contractFileName?: string | null;
+  contractorSignedFileKey?: string | null;
+  contractorSignedFileName?: string | null;
   executedContractFileKey?: string | null;
   executedContractFileName?: string | null;
   lienWaiverFileKey?: string | null;

@@ -1510,7 +1510,8 @@ function openProject(id,preset){
               el('span',{class:'bs-sz'},fl.fileSize?fileSize(fl.fileSize):''),
               fl.originalFileKey?el('a',{href:dlUrl(fl.originalFileKey,fl.originalFileName),style:'font-size:10.5px;color:var(--ink-3)',title:'Download the original file (“'+(fl.originalFileName||'original')+'”) — the PDF above is the converted copy that embeds into the contract',onclick:e=>e.stopPropagation()},'original'):null)),
           dlBtn(fl.fileKey,fl.fileName),
-          el('button',{class:'btn ghost sm',title:'Remove this file',onclick:()=>{bd.files.splice(fi,1);syncBidPrimary(bd);drawBids();}},'✕'));
+          el('button',{class:'btn ghost sm',title:'Remove this file — recorded in the change log when you save; the file stays in storage',
+            onclick:()=>{if(confirm('Remove “'+(fl.fileName||'this file')+'” from the bid? Recorded in the change log when you save.')){bd.files.splice(fi,1);syncBidPrimary(bd);drawBids();}}},'✕'));
         filesWrap.append(row);
       });
       // + add another file line
@@ -1588,6 +1589,21 @@ function openProject(id,preset){
   const fileLink=(key,name)=>el('span',{style:'display:inline-flex;gap:6px;align-items:center;min-width:0'},
     el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:()=>window.open('/api/bids/file/'+key,'_blank')},'👁'),
     dlBtn(key,name,'⬇ '+(name||'file.pdf')));
+  // Remove a contract-section attachment: the file stays in storage and the
+  // removal is recorded in the change log with user + time.
+  async function removeAttachment(kind,label){
+    if(!confirm(`Remove the ${label} from this project?\n\nThe file stays in storage and the removal is recorded in the change log.`))return;
+    try{
+      const out=await API.send('POST','/projects/'+p.id+'/remove-attachment',{kind});
+      if(kind==='executed'&&p.lienWaiverFileKey===p.executedContractFileKey){p.lienWaiverFileKey=null;p.lienWaiverFileName=null;}
+      if(kind==='contract'){p.contractFileKey=null;p.contractFileName=null;}
+      if(kind==='executed'){p.executedContractFileKey=null;p.executedContractFileName=null;}
+      if(kind==='lienWaiver'){p.lienWaiverFileKey=null;p.lienWaiverFileName=null;}
+      Object.assign(p.steps,out.steps||{});
+      syncDerivedSteps(p); drawSteps(); refreshGen(); toast(label.charAt(0).toUpperCase()+label.slice(1)+' removed — logged');
+    }catch(e){ toast('Remove failed: '+e.message); }
+  }
+  const rmBtn=(kind,label)=>el('button',{class:'btn ghost sm',title:'Remove — recorded in the change log; the file stays in storage',onclick:()=>removeAttachment(kind,label)},'✕');
   function refreshGen(){
     refreshGenPanel();
     ctBody.innerHTML='';
@@ -1608,7 +1624,7 @@ function openProject(id,preset){
         drawSteps(); refreshGen(); toast('Contract attached');
       }catch(e){ toast('Upload failed: '+e.message); }
     });
-    if(p.contractFileKey) gRow.append(el('span',{class:'ct-ok'},'✓ Generated'), fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'));
+    if(p.contractFileKey) gRow.append(el('span',{class:'ct-ok'},'✓ Generated'), fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'), rmBtn('contract','generated contract'));
     gRow.append(el('button',{class:'btn ghost sm',title:'Attach a contract generated outside the tracker',onclick:()=>extInp.click()},'⬆ Upload existing'));
     if(!p.contractFileKey) gRow.append(el('span',{class:'bs-meta'},'Use “Generate contract” above — or drop in an existing PDF.'));
     ctBody.append(gRow);
@@ -1616,7 +1632,7 @@ function openProject(id,preset){
     // 2) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
     const eRow=ctRow('Executed contract');
     if(p.executedContractFileKey){
-      eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'));
+      eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'), rmBtn('executed','executed contract'));
     } else {
       eRow.classList.add('ct-drop');
       const execBtn=el('button',{class:'btn ghost sm',onclick:()=>execInput.click()},'⬆ Upload executed');
@@ -1661,6 +1677,7 @@ function openProject(id,preset){
         const withContract=p.lienWaiverFileKey===p.executedContractFileKey;
         lRow.append(el('span',{class:'ct-ok lien'},withContract?'✓ Received — signed with contract':'✓ Received'));
         if(!withContract) lRow.append(fileLink(p.lienWaiverFileKey,p.lienWaiverFileName||'lien-waiver.pdf'));
+        lRow.append(rmBtn('lienWaiver','lien waiver'));
       } else {
         lRow.classList.add('ct-drop');
         const lwBtn=el('button',{class:'btn ghost sm',onclick:()=>lwInput.click()},'⬆ Upload lien waiver');
@@ -1887,7 +1904,10 @@ function openProject(id,preset){
       if(n.note) body2.append(el('div',{style:'margin-top:2px;white-space:pre-wrap'},n.note));
       if(Array.isArray(n.files)&&n.files.length){
         const fw=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap;margin-top:4px'});
-        n.files.forEach(fl=>fw.append(el('a',{href:'/api/files/'+fl.fileKey+'?name='+encodeURIComponent(fl.fileName||'attachment'),style:'font-size:12px;color:var(--blue)'},'📎 '+(fl.fileName||'attachment'))));
+        n.files.forEach(fl=>fw.append(el('span',{style:'display:inline-flex;align-items:center;gap:3px'},
+          el('a',{href:'/api/files/'+fl.fileKey+'?name='+encodeURIComponent(fl.fileName||'attachment'),style:'font-size:12px;color:var(--blue)'},'📎 '+(fl.fileName||'attachment')),
+          el('button',{class:'btn ghost sm',style:'padding:0 4px;font-size:10px',title:'Remove this attachment — logged on save; the file stays in storage',
+            onclick:()=>{if(confirm('Remove attachment “'+(fl.fileName||'file')+'” from this note? Recorded in the change log when you save.')){n.files=n.files.filter(x=>x!==fl);drawNotes();}}},'✕'))));
         body2.append(fw);
       }
       noteList.append(el('div',{class:'pn-item',style:'align-items:flex-start'}, body2,

@@ -195,16 +195,24 @@ api.patch('/projects/:id', async (req, res) => {
   if (!existing.rowCount) return res.status(404).json({ error: 'not found' });
   const p = { ...(req.body as Project), id: req.params.id };
   if (!p.property || !p.name) return res.status(400).json({ error: 'property and name are required' });
-  const oldNoteCount = (await query('select count(*)::int as n from progress_notes where project_id=$1', [p.id])).rows[0]?.n ?? 0;
-  const oldBids = (await query('select contractor, amount, approved from bids where project_id=$1 order by slot', [p.id])).rows
-    .map((b) => ({ contractor: b.contractor || '', amount: b.amount == null ? null : Number(b.amount), approved: !!b.approved }));
+  const oldNotes = (await query('select note, files from progress_notes where project_id=$1', [p.id])).rows;
+  const oldNoteCount = oldNotes.length;
+  const oldBidRows = (await query('select contractor, amount, approved, files from bids where project_id=$1 order by slot', [p.id])).rows;
+  const oldBids = oldBidRows.map((b) => ({ contractor: b.contractor || '', amount: b.amount == null ? null : Number(b.amount), approved: !!b.approved }));
   stampNotes(req, p);
   await tx((c) => writeProject(c, p, false));
   const changes = projectDiff(existing.rows[0], p);   // p.steps reflects post-write rules (applyCostRules mutates)
   const newBids = (p.bids || []).map((b) => ({ contractor: b.contractor || '', amount: nnull(b.amount), approved: !!b.approved }));
   if (JSON.stringify(oldBids) !== JSON.stringify(newBids)) changes.push('bids updated');
+  // Attachment audit: name every bid/note file that appeared or disappeared in this save.
+  const fileSet = (rows: any[]) => new Map(rows.flatMap((r: any) => (Array.isArray(r.files) ? r.files : [])).filter((f: any) => f && f.fileKey).map((f: any) => [f.fileKey, f.fileName || f.fileKey]));
+  const oldFiles = fileSet([...(oldBidRows as any[]), ...(oldNotes as any[])]);
+  const newFiles = fileSet([...((p.bids || []) as any[]), ...((p.progressNotes || []) as any[])]);
+  for (const [k, name] of oldFiles) if (!newFiles.has(k)) changes.push(`attachment "${name}" removed (file retained in storage)`);
+  for (const [k, name] of newFiles) if (!oldFiles.has(k)) changes.push(`attachment "${name}" added`);
   const newNoteCount = (p.progressNotes || []).length;
   if (newNoteCount > oldNoteCount) changes.push(`progress note added`);
+  if (newNoteCount < oldNoteCount) changes.push(`progress note removed`);
   if (changes.length) logChange(req, { action: 'project.update', entityType: 'project', entityId: p.id, property: p.property, summary: `Project "${p.name}": ${changes.join('; ')}` });
   const r = await query('select * from projects where id=$1', [p.id]);
   res.json(rowToProject(r.rows[0], p.bids || [], p.progressNotes || [], await propLookup()));
@@ -621,6 +629,50 @@ api.post('/projects/:id/lien-waiver', memUpload.single('file'), async (req, res)
   );
   logChange(req, { action: 'contract.lienwaiver', entityType: 'project', entityId: req.params.id, property: projRow.rows[0].property_code, summary: `Lien waiver "${f.originalname}" attached to "${projRow.rows[0].name}"` });
   res.json({ fileKey: key, fileName: f.originalname });
+});
+
+/* ---------- Remove a contract-section attachment (file bytes are RETAINED in
+   storage and the removal is change-logged — nothing disappears untracked) ---------- */
+api.post('/projects/:id/remove-attachment', async (req, res) => {
+  const kind = String(req.body?.kind || '');
+  const proj = (await query('select * from projects where id=$1', [req.params.id])).rows[0];
+  if (!proj) return res.status(404).json({ error: 'project not found' });
+  const steps: Record<string, boolean> = { ...(proj.steps || {}) };
+  let fileKey: string | null = null, fileName = '', label = '';
+
+  if (kind === 'contract') {
+    fileKey = proj.contract_file_key; fileName = proj.contract_file_name || 'contract.pdf'; label = 'Generated contract';
+    if (!fileKey) return res.status(400).json({ error: 'no generated contract to remove' });
+    steps.contractGenerated = false;
+    await query('update projects set contract_file_key=null, contract_file_name=null, steps=$1, updated_at=now() where id=$2', [JSON.stringify(steps), proj.id]);
+  } else if (kind === 'executed') {
+    fileKey = proj.executed_contract_file_key; fileName = proj.executed_contract_file_name || 'executed.pdf'; label = 'Executed contract';
+    if (!fileKey) return res.status(400).json({ error: 'no executed contract to remove' });
+    steps.signed = false;
+    // A lien waiver signed within the contract shares the same file — it goes too.
+    const sharedLW = proj.lien_waiver_file_key === proj.executed_contract_file_key;
+    if (sharedLW) steps.lienWaiver = false;
+    await query(
+      sharedLW
+        ? 'update projects set executed_contract_file_key=null, executed_contract_file_name=null, lien_waiver_file_key=null, lien_waiver_file_name=null, steps=$1, updated_at=now() where id=$2'
+        : 'update projects set executed_contract_file_key=null, executed_contract_file_name=null, steps=$1, updated_at=now() where id=$2',
+      [JSON.stringify(steps), proj.id]);
+    if (sharedLW) label = 'Executed contract (incl. lien waiver signed within)';
+  } else if (kind === 'lienWaiver') {
+    fileKey = proj.lien_waiver_file_key; fileName = proj.lien_waiver_file_name || 'lien-waiver.pdf'; label = 'Lien waiver';
+    if (!fileKey) return res.status(400).json({ error: 'no lien waiver to remove' });
+    steps.lienWaiver = false;
+    await query('update projects set lien_waiver_file_key=null, lien_waiver_file_name=null, steps=$1, updated_at=now() where id=$2', [JSON.stringify(steps), proj.id]);
+  } else {
+    return res.status(400).json({ error: 'kind must be contract | executed | lienWaiver' });
+  }
+
+  logChange(req, {
+    action: 'attachment.remove', entityType: 'project', entityId: proj.id, property: proj.property_code,
+    summary: `${label} "${fileName}" removed from "${proj.name}" (file retained in storage)`,
+    details: { kind, fileKey, fileName },
+  });
+  res.json({ ok: true, steps });
 });
 
 /* ---------- Contractor directory ---------- */

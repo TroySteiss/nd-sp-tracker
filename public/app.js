@@ -819,22 +819,25 @@ function viewDashboard(){
             units:Number(pr.units)||0,madePct,effectiveSentPct,futureQtrs,inclAccretion};
   };
   // Reusable stat-cell block, shared by property rows and subtotal rows.
+  // Reads the SAME field names produced by calcProjStats (per-property) and
+  // sumStats (subtotals) so property rows and subtotal rows both populate.
   const statCells=(o,fy,extra)=>{
-    const endTone=o.projEnd<0?'bad':(o.projEnd<o.cash*0.25?'warn':'good');
-    const cpd=o.units?o.projEnd/o.units:null;
+    const cash=o.cashToday, projRem=o.projRemainingSpendInt, accretion=o.futureAccretion, projEnd=o.projEndCash, ybp=o.yyyyBudgetProj;
+    const endTone=projEnd<0?'bad':(projEnd<cash*0.25?'warn':'good');
+    const cpd=o.units?projEnd/o.units:null;
     const cpdTone=cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));
-    const ybpTone=o.ybp<0?'bad':(o.budget&&o.ybp<o.budget*0.15?'warn':'good');
+    const ybpTone=ybp<0?'bad':(o.budget&&ybp<o.budget*0.15?'warn':'good');
     return el('div',{class:'headstats',style:'flex:1'},
       hstat('Spent to date', fmt(o.spent), 'none', ''),
-      hstat('Current cash', fmt(o.cash), 'none', ''),
-      hstat(`Proj addt Expenses ${fy}`, fmt(o.projRem), 'none', ''),
-      hstat(`Remaining in ${fy}`, fmt(o.ybp), ybpTone, ''),
-      hstat(`${fy} Remaining Accretion`, fmt(o.accretion), o.accretion>=0?'good':'bad', extra||''),
-      hstat(`Proj ${fy} end Cash`, fmt(o.projEnd), endTone, ''),
+      hstat('Current cash', fmt(cash), 'none', ''),
+      hstat(`Proj addt Expenses ${fy}`, fmt(projRem), 'none', ''),
+      hstat(`Remaining in ${fy}`, fmt(ybp), ybpTone, ''),
+      hstat(`${fy} Remaining Accretion`, fmt(accretion), accretion>=0?'good':'bad', extra||''),
+      hstat(`Proj ${fy} end Cash`, fmt(projEnd), endTone, ''),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, ''));
   };
-  const sumStats=arr=>{ const t={spent:0,cash:0,projRem:0,accretion:0,projEnd:0,units:0,budget:0,ybp:0};
-    arr.forEach(s=>{t.spent+=s.spent;t.cash+=s.cashToday;t.projRem+=s.projRemainingSpendInt;t.accretion+=s.futureAccretion;t.projEnd+=s.projEndCash;t.units+=s.units;t.budget+=s.budget;t.ybp+=s.yyyyBudgetProj;});
+  const sumStats=arr=>{ const t={spent:0,cashToday:0,projRemainingSpendInt:0,futureAccretion:0,projEndCash:0,units:0,budget:0,yyyyBudgetProj:0};
+    arr.forEach(s=>{t.spent+=s.spent;t.cashToday+=s.cashToday;t.projRemainingSpendInt+=s.projRemainingSpendInt;t.futureAccretion+=s.futureAccretion;t.projEndCash+=s.projEndCash;t.units+=s.units;t.budget+=s.budget;t.yyyyBudgetProj+=s.yyyyBudgetProj;});
     return t; };
   const propRowEl=(pr,s)=>el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
     el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',

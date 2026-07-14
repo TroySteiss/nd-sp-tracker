@@ -2,7 +2,8 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-10 (multi-region rework; ATL projects, notes w/ attachments, generate-contract section, email setup; multi-property split projects; admin lock; Office→PDF conversion).
+> Last updated: 2026-07-14 (multi-region; ATL; notes+attachments; split projects; admin lock;
+> Office→PDF; removable attachments; contractor-signed slot; approval lock; in-app countersigning).
 
 ## What this is
 
@@ -54,6 +55,18 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   GET /changelog) are limited to the allowlist in `src/auth.ts` (`isAdminUser` — names normalized
   case/punctuation-insensitively; default Troy Steiss + Riley Combs, override with `ADMIN_USERS`
   env). Per-property email settings + projection settings PATCHes stay open to all users.
+- **Approval lock**: only admins may set/unset the `approved` step or approve a bid — enforced in
+  `POST/PATCH /projects` (403, compares old vs new `steps.approved` + set of approved bids) and on
+  contract generation (auto-cascades approval). Mirrored in the editor UI (bid Approve, lifecycle
+  switch, Advance, cascade all gated on `IS_ADMIN`).
+- **In-app countersigning**: `signatures` table (018, one PNG per user in files). `stampSignature`
+  in contract.ts draws a signature PNG onto a stored PDF at click-placed coords. `POST
+  /projects/:id/countersign` (admin-only; `preview:true` returns a data-URL without saving) stamps
+  the contractor-signed PDF → attaches as executed + ticks `signed`. Client modal renders the PDF
+  with pdf.js (lazy CDN, **render with `intent:'print'`** so it completes in background tabs),
+  click to place, draw/reuse signature. `GET/PUT /signature` store the reusable signature. `✉
+  Email` on the executed row builds a multipart .eml (buildEml supports attachments) with the PDF,
+  pre-addressed to the contractor from the directory.
 - **"Above the Line"** in a project NAME (`isAboveLine` in domain.ts / `isATL` in app.js) =
   operationally funded: excluded from cash/budget projections (cashModel), GL tie-out (auditModel),
   dashboards, nav counts, quarterly-summary future list, and update emails. Visible only via the

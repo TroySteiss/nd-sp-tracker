@@ -1643,7 +1643,7 @@ function openProject(id,preset){
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
     const sheet=el('div',{class:'sheet',style:'max-width:900px'});
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
-    const st={page:1,numPages:1,xPct:null,yPct:null,markPage:null,saved:null,drew:false};
+    const st={page:1,numPages:1,xPct:null,yPct:null,markPage:null,saved:null,drew:false,widthPct:null};
 
     // left: PDF page with click-to-place
     const canvasWrap=el('div',{style:'position:relative;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:52vh;background:var(--surface-2)'});
@@ -1695,7 +1695,7 @@ function openProject(id,preset){
       if(st.xPct==null){ err.textContent='Click the spot on the contract where the signature goes (the “By:” line of the Owner block).'; return null; }
       const drawn=st.drew?trimSigCanvas(sigCanvas):null;
       if(!useSavedChk.checked&&!drawn){ err.textContent='Draw a signature (or tick “Use my saved signature”).'; return null; }
-      return { page:st.markPage, xPct:st.xPct, yPct:st.yPct, widthPct:0.2,
+      return { page:st.markPage, xPct:st.xPct, yPct:st.yPct, widthPct:st.widthPct||0.2,
         name:nameI.value.trim(), title:titleI.value.trim(), fillLines:fillChk.checked,
         dataUrl:useSavedChk.checked?null:drawn };
     };
@@ -1742,7 +1742,7 @@ function openProject(id,preset){
       el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'));
     const bodyRow=el('div',{class:'sb',style:'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap'});
     bodyRow.append(el('div',{style:'flex:1;min-width:320px'},
-      el('p',{style:'margin:0 0 8px;color:var(--ink-3);font-size:12.5px'},'1 · Find the signature page (‹ ›) and click the Owner “By:” line — the green corner marks where the signature lands. 2 · Draw or reuse your signature. 3 · Preview, then confirm.'),
+      el('p',{style:'margin:0 0 8px;color:var(--ink-3);font-size:12.5px'},'The signature is pre-placed on the Owner “By:” line (green marker). Click anywhere to move it if needed, draw or reuse your signature, then preview and confirm.'),
       canvasWrap), right);
     sheet.append(head,bodyRow); scrim.append(sheet); document.body.append(scrim);
 
@@ -1750,7 +1750,15 @@ function openProject(id,preset){
       const pdfjs=await loadPdfJs();
       const buf=await fetch('/api/bids/file/'+p.contractorSignedFileKey).then(r=>{if(!r.ok)throw new Error('could not read the stored file');return r.arrayBuffer();});
       pdfDoc=await pdfjs.getDocument({data:buf}).promise;
-      st.numPages=pdfDoc.numPages; st.page=Math.max(1,st.numPages>4?st.numPages-3:st.numPages); // signature page is usually just before the exhibits
+      st.numPages=pdfDoc.numPages;
+      // Pre-place on the Owner "By:" line: the anchor captured at generation is
+      // exact; older/externally-signed PDFs fall back to a text scan; last
+      // resort is the signature page (before the exhibits).
+      let placed=null;
+      if(p.sigAnchor&&p.sigAnchor.page){ placed={page:Math.min(p.sigAnchor.page,st.numPages),xPct:p.sigAnchor.xPct,yPct:p.sigAnchor.yPct,widthPct:p.sigAnchor.widthPct}; }
+      if(!placed){ try{ placed=await findSignSpot(pdfDoc); }catch(e){} }
+      if(placed){ st.page=placed.page; st.xPct=placed.xPct; st.yPct=placed.yPct; st.markPage=placed.page; if(placed.widthPct)st.widthPct=placed.widthPct; }
+      else { st.page=Math.max(1,st.numPages>4?st.numPages-3:st.numPages); }
       await renderPage();
       const sig=await API.get('/signature');
       if(sig.exists){ st.saved=true; savedImg.src=sig.dataUrl; savedRow.style.display='flex'; useSavedChk.checked=true; if(sig.title&&!titleI.value)titleI.value=sig.title; }
@@ -2286,6 +2294,24 @@ function buildEml({subject,to,cc,html,attachments}){
   });
   return out+'--'+B+'--\r\n';
 }
+/* Locate the Owner signature spot by scanning page text (fallback when a
+   contract has no stored anchor). Finds the acknowledgement line under the
+   Owner "By:" line and returns {page, xPct, yPct} from the page's top-left. */
+async function findSignSpot(pdfDoc){
+  for(let pn=1;pn<=pdfDoc.numPages;pn++){
+    const page=await pdfDoc.getPage(pn);
+    const vp=page.getViewport({scale:1});
+    const tc=await page.getTextContent();
+    const it=tc.items.find(i=>/as Agent for and on behalf of Owner/i.test(i.str||''))
+          ||tc.items.find(i=>/IN WITNESS WHEREOF/i.test(i.str||''));
+    if(it&&it.transform){
+      const e=it.transform[4], f=it.transform[5];   // PDF-space x,y (from bottom-left) of the text
+      return { page:pn, xPct:Math.max(0.05,(e+24)/vp.width), yPct:(vp.height-(f+14))/vp.height, widthPct:0.22 };
+    }
+  }
+  return null;
+}
+
 /* Lazy-load pdf.js (CDN) for the countersign click-to-place preview. */
 async function loadPdfJs(){
   if(window.pdfjsLib) return window.pdfjsLib;

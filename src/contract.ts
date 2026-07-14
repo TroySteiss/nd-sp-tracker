@@ -46,7 +46,9 @@ function tokenize(s: string): Word[] {
   return words;
 }
 
-export async function buildContract(vars: ContractVars, attachments: BidAttachment[]): Promise<Uint8Array> {
+export interface SigAnchor { page: number; xPct: number; yPct: number; widthPct: number; }
+
+export async function buildContract(vars: ContractVars, attachments: BidAttachment[]): Promise<{ bytes: Uint8Array; sigAnchor: SigAnchor }> {
   const doc = await PDFDocument.create();
   const roman = await doc.embedFont(StandardFonts.TimesRoman);
   const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
@@ -117,7 +119,8 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   y -= 8;
   space(108);
   paragraph('IN WITNESS WHEREOF, the parties hereto have executed this Agreement as of the Effective Date.', { gap: 10 });
-  signatureBlock(page, y, roman, bold, vars);
+  const sigPageObj = page;                 // the signature block lives on this page (before the exhibits)
+  const byLineY = signatureBlock(page, y, roman, bold, vars);   // PDF-y of the Owner "By:" line
   y -= 108;
 
   // ---------- Exhibit A & B (bid embedded) ----------
@@ -138,7 +141,19 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
     p.drawText(label, { x: (pw - w) / 2, y: 24, size: 9, font: roman, color: rgb(0, 0, 0) });
   });
 
-  return doc.save();
+  // Signature anchor: the Owner "By:" line on the (now known) signature page.
+  // Countersigning defaults to this exact spot regardless of how many exhibit
+  // pages the embedded bid produced.
+  const { width: spw, height: sph } = sigPageObj.getSize();
+  const sigIdx = pages.indexOf(sigPageObj);
+  const sigAnchor: SigAnchor = {
+    page: (sigIdx < 0 ? pages.length : sigIdx + 1),
+    xPct: (MARGIN + 26) / spw,             // just past the "By: " label, over the underscores
+    yPct: (sph - (byLineY + 2)) / sph,     // signature bottom rests on the "By:" line
+    widthPct: 0.22,
+  };
+
+  return { bytes: await doc.save(), sigAnchor };
 }
 
 /* ---------- In-app countersign: stamp a signature PNG onto an existing PDF ----------
@@ -177,17 +192,20 @@ export async function stampSignature(pdfBytes: Buffer, sigPng: Buffer, o: StampO
   return doc.save();
 }
 
-/* ---------- signature two-column table ---------- */
-function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFont, v: ContractVars) {
+/* ---------- signature two-column table. Returns the PDF-y of the Owner "By:"
+   line so the caller can anchor in-app countersigning there. ---------- */
+function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFont, v: ContractVars): number {
   const colL = MARGIN, colR = MARGIN + CONTENT_W / 2 + 10;
   const line = (x: number, yy: number, label: string, f = roman) => page.drawText(label, { x, y: yy, size: 10, font: f, color: rgb(0, 0, 0) });
   let yy = top;
   line(colL, yy, `Owner: ${v.ownerEntity}`, bold); line(colR, yy, `Contractor: ${v.contractorName}`, bold); yy -= 22;
+  const byLineY = yy;
   line(colL, yy, 'By: __________________,'); line(colR, yy, 'By: __________________'); yy -= 12;
   line(colL, yy, 'as Agent for and on behalf of Owner'); yy -= 18;
   line(colL, yy, 'Name: ________________'); line(colR, yy, 'Name: ________________'); yy -= 18;
   line(colL, yy, 'Title: _________________'); line(colR, yy, 'Title: _________________'); yy -= 18;
   line(colL, yy, 'Date: _________________'); line(colR, yy, 'Date: _________________');
+  return byLineY;
 }
 
 /* ---------- Exhibit A&B: header page + bid documents ---------- */

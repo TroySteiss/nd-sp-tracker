@@ -64,6 +64,7 @@ export interface Project {
   contractFileName?: string | null;
   contractorSignedFileKey?: string | null;
   contractorSignedFileName?: string | null;
+  sigAnchor?: { page: number; xPct: number; yPct: number; widthPct: number } | null;
   executedContractFileKey?: string | null;
   executedContractFileName?: string | null;
   lienWaiverFileKey?: string | null;

@@ -334,7 +334,8 @@ api.post('/projects/:id/contract', async (req, res) => {
   }
 
   let pdf: Uint8Array;
-  try { pdf = await buildContract(vars, attachments); }
+  let sigAnchor: any = null;
+  try { const built = await buildContract(vars, attachments); pdf = built.bytes; sigAnchor = built.sigAnchor; }
   catch (e: any) {
     if (e?.code === 'NO_SCOPE') return res.status(400).json({ error: e.message });
     return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) });
@@ -359,8 +360,8 @@ api.post('/projects/:id/contract', async (req, res) => {
         if (!(noContract && CONTRACT_STEPS.includes(k))) steps[k] = true;
       });
     }
-    await c.query('update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, updated_at=now() where id=$4',
-      [fileKey, fileName, JSON.stringify(steps), proj.id]);
+    await c.query('update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, sig_anchor=$4, updated_at=now() where id=$5',
+      [fileKey, fileName, JSON.stringify(steps), JSON.stringify(sigAnchor), proj.id]);
     // record the contract in the contracts table
     await c.query(
       `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key)
@@ -725,11 +726,14 @@ api.post('/projects/:id/countersign', requireAdmin, async (req, res) => {
 
   const now = new Date();
   const dateText = `${String(now.getMonth() + 1).padStart(2, '0')}/${String(now.getDate()).padStart(2, '0')}/${now.getFullYear()}`;
+  // Fall back to the anchor captured at generation when the client omits coords.
+  const anc = proj.sig_anchor || {};
+  const num = (v: any, d: number) => (v == null || v === '' || isNaN(Number(v)) ? d : Number(v));
   let out: Uint8Array;
   try {
     out = await stampSignature(src.bytes, sig, {
-      page: Number(b.page) || 1, xPct: Number(b.xPct) || 0.13, yPct: Number(b.yPct) || 0.5,
-      widthPct: Number(b.widthPct) || 0.2, name: String(b.name || ''), title, dateText, fillLines: b.fillLines !== false,
+      page: num(b.page, anc.page || 1), xPct: num(b.xPct, anc.xPct ?? 0.13), yPct: num(b.yPct, anc.yPct ?? 0.5),
+      widthPct: num(b.widthPct, anc.widthPct ?? 0.2), name: String(b.name || ''), title, dateText, fillLines: b.fillLines !== false,
     });
   } catch (e: any) { return res.status(400).json({ error: 'could not stamp the signature: ' + (e?.message || e) }); }
 

@@ -1719,8 +1719,29 @@ function openProject(id,preset){
               toast('Countersigned — executed contract attached. Use ✉ Email on the Executed row to send it.');
             }catch(e){ toast('Failed: '+e.message); }
           }},'✓ Confirm & attach as executed')));
-        ps.append(el('div',{class:'sb'}, el('iframe',{src:out.preview,style:'width:100%;height:62vh;border:1px solid var(--line);border-radius:8px;background:#fff'})));
+        // Render the STAMPED signature page itself (not the whole PDF in a
+        // browser viewer, which opens at page 1 / a lingering page and made the
+        // preview look like it landed on the lien waiver).
+        const wrap=el('div',{style:'max-height:64vh;overflow:auto;border:1px solid var(--line);border-radius:8px;background:var(--surface-2);text-align:center'});
+        const cvs=el('canvas',{style:'max-width:100%;display:inline-block'});
+        wrap.append(cvs);
+        const dl=el('a',{href:out.preview,download:'countersigned-preview.pdf',style:'font-size:12px;color:var(--blue)'},'open full PDF');
+        ps.append(el('div',{class:'sb'},
+          el('div',{style:'display:flex;justify-content:space-between;align-items:baseline;margin-bottom:6px'},
+            el('span',{style:'font-size:12px;color:var(--ink-3)'},'Signature page '+body2.page+' — this is exactly what attaches as the executed contract.'), dl),
+          wrap));
         pv.append(ps); document.body.append(pv);
+        try{
+          const bytes=Uint8Array.from(atob(out.preview.split(',')[1]),c=>c.charCodeAt(0));
+          const pdfjs=await loadPdfJs();
+          const doc2=await pdfjs.getDocument({data:bytes}).promise;
+          const pg=await doc2.getPage(Math.min(body2.page,doc2.numPages));
+          const vp=pg.getViewport({scale:1});
+          const sc=Math.min(1.7,760/vp.width);
+          const v2=pg.getViewport({scale:sc});
+          cvs.width=v2.width; cvs.height=v2.height;
+          await pg.render({canvasContext:cvs.getContext('2d'),viewport:v2,intent:'print'}).promise;
+        }catch(e){ wrap.append(el('div',{style:'padding:18px;color:var(--rust);font-size:13px'},'Could not render the preview page: '+e.message)); }
       }catch(e){ err.textContent=e.message; }
       prevBtn.disabled=false; prevBtn.textContent='👁 Preview stamped page';
     }

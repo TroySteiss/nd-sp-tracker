@@ -141,6 +141,42 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   return doc.save();
 }
 
+/* ---------- In-app countersign: stamp a signature PNG onto an existing PDF ----------
+   (page/xPct/yPct come from a click in the UI, measured from the page's top-left;
+   optionally fills the Name/Title/Date lines using the Monarch template spacing.) */
+export interface StampOpts {
+  page: number;              // 1-based page number
+  xPct: number; yPct: number;  // click point (signature bottom-left), fraction of page size from TOP-left
+  widthPct?: number;         // signature width as fraction of page width (default 0.20)
+  name?: string; title?: string; dateText?: string;
+  fillLines?: boolean;       // also print Name/Title/Date at template offsets below the signature
+}
+export async function stampSignature(pdfBytes: Buffer, sigPng: Buffer, o: StampOpts): Promise<Uint8Array> {
+  const doc = await PDFDocument.load(pdfBytes, { ignoreEncryption: true });
+  const pages = doc.getPages();
+  const idx = Math.min(Math.max(1, Math.round(o.page)), pages.length) - 1;
+  const pg = pages[idx];
+  const { width: pw, height: ph } = pg.getSize();
+  const img = await doc.embedPng(sigPng);
+  const sigW = pw * (o.widthPct && o.widthPct > 0.05 && o.widthPct < 0.8 ? o.widthPct : 0.2);
+  const sigH = sigW * (img.height / img.width);
+  const x = Math.max(0, Math.min(1, o.xPct)) * pw;
+  const yTop = Math.max(0, Math.min(1, o.yPct)) * ph;
+  const y = ph - yTop;                       // convert top-left fraction → PDF bottom-left coords
+  pg.drawImage(img, { x, y, width: sigW, height: sigH });
+  const roman = await doc.embedFont(StandardFonts.TimesRoman);
+  if (o.fillLines !== false) {
+    // Template spacing under the "By:" line: Name (-30), Title (-48), Date (-66).
+    const put = (label: string, v: string | undefined, dy: number) => {
+      if (v && v.trim()) pg.drawText(v.trim(), { x: x + 38, y: y - dy, size: 10, font: roman, color: rgb(0, 0, 0) });
+    };
+    put('name', o.name, 30);
+    put('title', o.title, 48);
+    put('date', o.dateText, 66);
+  }
+  return doc.save();
+}
+
 /* ---------- signature two-column table ---------- */
 function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFont, v: ContractVars) {
   const colL = MARGIN, colR = MARGIN + CONTENT_W / 2 + 10;

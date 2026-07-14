@@ -1505,7 +1505,10 @@ function openProject(id,preset){
       el('span',{class:'bs-no'},'Bid '+(i+1)),
       bd.approved?el('span',{class:'chip done',style:'margin-left:8px'},'Selected'):null,
       el('div',{style:'flex:1'}),
-      el('button',{class:'bs-appr'+(bd.approved?' on':''),onclick:()=>{
+      el('button',{class:'bs-appr'+(bd.approved?' on':''),
+        ...(IS_ADMIN?{}:{title:'Bid approval is limited to Troy Steiss and Riley Combs',style:'opacity:.45;cursor:not-allowed'}),
+        onclick:()=>{
+        if(!IS_ADMIN){ toast('Bid approval is limited to Troy Steiss and Riley Combs.'); return; }
         const willApprove=!bd.approved;
         p.bids.forEach((x,j)=>x.approved=(j===i)?willApprove:false);
         if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor; if(bd.amount!=null)p.anticipatedCost=bd.amount; }
@@ -1615,6 +1618,144 @@ function openProject(id,preset){
     }catch(e){ toast('Remove failed: '+e.message); }
   }
   const rmBtn=(kind,label)=>el('button',{class:'btn ghost sm',title:'Remove — recorded in the change log; the file stays in storage',onclick:()=>removeAttachment(kind,label)},'✕');
+
+  /* Outlook draft with the executed contract attached, pre-addressed to the
+     contractor (email from the directory when it's on file). */
+  async function emailExecuted(){
+    try{
+      const ctr=(S.contractors||[]).find(c=>c.name.trim().toLowerCase()===String(p.contractor||'').trim().toLowerCase());
+      const to=(ctr&&ctr.email)||'';
+      const buf=await fetch('/api/bids/file/'+p.executedContractFileKey).then(r=>{if(!r.ok)throw new Error('could not read the stored file');return r.arrayBuffer();});
+      let bin=''; new Uint8Array(buf).forEach(x=>bin+=String.fromCharCode(x));
+      const subject='Fully executed contract — '+(p.name||'')+' ('+p.property+')';
+      const para=t=>'<p style="font-family:Calibri,Arial,sans-serif;font-size:13px">'+t+'</p>';
+      const html=para('Hi,')+para('Attached is the fully executed contract for '+esc(p.name||'')+' at '+esc((PROP(p.property)||{}).name||p.property)+'. Please keep a copy for your records.')+para('Thank you!');
+      const eml=buildEml({subject,to,cc:'',html,attachments:[{name:p.executedContractFileName||'Executed.pdf',mime:'application/pdf',b64:btoa(bin)}]});
+      downloadBlob(new Blob([eml],{type:'message/rfc822'}), emlFileName(subject));
+      toast(to?'Draft downloaded — pre-addressed to '+to:'Draft downloaded — add the contractor’s email (not in the directory)');
+    }catch(e){ toast('Email draft failed: '+e.message); }
+  }
+
+  /* In-app countersign: click where the signature goes on the contractor-signed
+     PDF, draw (or reuse) a signature, preview the stamped page, confirm — the
+     result attaches as the executed contract. */
+  async function openCountersign(){
+    const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+    const sheet=el('div',{class:'sheet',style:'max-width:900px'});
+    const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
+    const st={page:1,numPages:1,xPct:null,yPct:null,markPage:null,saved:null,drew:false};
+
+    // left: PDF page with click-to-place
+    const canvasWrap=el('div',{style:'position:relative;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:52vh;background:var(--surface-2)'});
+    const pdfCanvas=el('canvas',{style:'display:block;cursor:crosshair'});
+    const marker=el('div',{style:'position:absolute;display:none;pointer-events:none;width:110px;height:30px;border-left:2px solid #1fa356;border-bottom:2px solid #1fa356;transform:translateY(-100%)'});
+    canvasWrap.append(pdfCanvas,marker);
+    const pageLbl=el('span',{class:'mono',style:'font-size:12px'},'…');
+    const nav=(d)=>async()=>{ st.page=Math.min(Math.max(1,st.page+d),st.numPages); await renderPage(); };
+    let pdfDoc=null;
+    async function renderPage(){
+      const page=await pdfDoc.getPage(st.page);
+      const vp=page.getViewport({scale:1});
+      const scale=Math.min(1.6,520/vp.height*(vp.height/vp.width>1.2?1.35:1));
+      const v2=page.getViewport({scale});
+      pdfCanvas.width=v2.width; pdfCanvas.height=v2.height;
+      // intent:'print' renders synchronously-scheduled (no requestAnimationFrame),
+      // so it also completes in backgrounded tabs.
+      await page.render({canvasContext:pdfCanvas.getContext('2d'),viewport:v2,intent:'print'}).promise;
+      pageLbl.textContent=st.page+' / '+st.numPages;
+      marker.style.display=(st.xPct!=null&&st.markPage===st.page)?'':'none';
+      if(st.xPct!=null&&st.markPage===st.page){ marker.style.left=(st.xPct*pdfCanvas.width)+'px'; marker.style.top=(st.yPct*pdfCanvas.height)+'px'; }
+    }
+    pdfCanvas.addEventListener('click',e=>{
+      st.xPct=e.offsetX/pdfCanvas.width; st.yPct=e.offsetY/pdfCanvas.height; st.markPage=st.page;
+      marker.style.left=e.offsetX+'px'; marker.style.top=e.offsetY+'px'; marker.style.display='';
+      err.textContent='';
+    });
+
+    // right: signature draw pad + saved signature + fields
+    const sigCanvas=el('canvas',{width:420,height:130,style:'border:1px dashed var(--line);border-radius:8px;background:#fff;touch-action:none;cursor:crosshair;width:100%'});
+    const sctx=sigCanvas.getContext('2d'); sctx.lineWidth=2.4; sctx.lineCap='round'; sctx.lineJoin='round'; sctx.strokeStyle='#101828';
+    let penDown=false;
+    const sigXY=e=>{ const r=sigCanvas.getBoundingClientRect(); return [ (e.clientX-r.left)*(sigCanvas.width/r.width), (e.clientY-r.top)*(sigCanvas.height/r.height) ]; };
+    sigCanvas.addEventListener('pointerdown',e=>{ penDown=true; sigCanvas.setPointerCapture(e.pointerId); const [x,y]=sigXY(e); sctx.beginPath(); sctx.moveTo(x,y); });
+    sigCanvas.addEventListener('pointermove',e=>{ if(!penDown)return; const [x,y]=sigXY(e); sctx.lineTo(x,y); sctx.stroke(); st.drew=true; useSavedChk.checked=false; });
+    sigCanvas.addEventListener('pointerup',()=>{ penDown=false; });
+    const clearSig=()=>{ sctx.clearRect(0,0,sigCanvas.width,sigCanvas.height); st.drew=false; };
+    const useSavedChk=el('input',{type:'checkbox'});
+    const savedRow=el('div',{style:'display:none;align-items:center;gap:8px;margin-top:6px'});
+    const savedImg=el('img',{style:'height:34px;background:#fff;border:1px solid var(--line);border-radius:6px;padding:2px 8px'});
+    savedRow.append(useSavedChk, el('span',{style:'font-size:12px'},'Use my saved signature'), savedImg);
+    const inpStyle='width:100%;padding:7px 9px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-size:13px';
+    const nameI=el('input',{value:USER.replace(/[._]+/g,' '),style:inpStyle});
+    const titleI=el('input',{placeholder:'e.g. Asset Manager',style:inpStyle});
+    const fillChk=el('input',{type:'checkbox'}); fillChk.checked=true;
+    const saveChk=el('input',{type:'checkbox'}); saveChk.checked=true;
+
+    const collect=()=>{
+      if(st.xPct==null){ err.textContent='Click the spot on the contract where the signature goes (the “By:” line of the Owner block).'; return null; }
+      const drawn=st.drew?trimSigCanvas(sigCanvas):null;
+      if(!useSavedChk.checked&&!drawn){ err.textContent='Draw a signature (or tick “Use my saved signature”).'; return null; }
+      return { page:st.markPage, xPct:st.xPct, yPct:st.yPct, widthPct:0.2,
+        name:nameI.value.trim(), title:titleI.value.trim(), fillLines:fillChk.checked,
+        dataUrl:useSavedChk.checked?null:drawn };
+    };
+    async function preview(){
+      const body2=collect(); if(!body2)return;
+      prevBtn.disabled=true; prevBtn.textContent='Stamping…'; err.textContent='';
+      try{
+        const out=await API.send('POST','/projects/'+p.id+'/countersign',{...body2,preview:true});
+        const pv=el('div',{class:'scrim modal-center',style:'z-index:2100'});
+        const ps=el('div',{class:'sheet',style:'max-width:840px'});
+        ps.append(el('div',{class:'sh'}, el('h2',{style:'font-size:15px;flex:1'},'Preview — check the signature placement'),
+          el('button',{class:'btn ghost',onclick:()=>pv.remove()},'⟲ Adjust'),
+          el('button',{class:'btn accent',onclick:async()=>{
+            try{
+              if(saveChk.checked&&st.drew&&!useSavedChk.checked) await API.send('PUT','/signature',{dataUrl:body2.dataUrl,title:titleI.value.trim()});
+              const fin=await API.send('POST','/projects/'+p.id+'/countersign',body2);
+              p.executedContractFileKey=fin.fileKey; p.executedContractFileName=fin.fileName;
+              Object.assign(p.steps,fin.steps||{});
+              syncDerivedSteps(p); drawSteps(); refreshGen();
+              pv.remove(); scrim.remove();
+              toast('Countersigned — executed contract attached. Use ✉ Email on the Executed row to send it.');
+            }catch(e){ toast('Failed: '+e.message); }
+          }},'✓ Confirm & attach as executed')));
+        ps.append(el('div',{class:'sb'}, el('iframe',{src:out.preview,style:'width:100%;height:62vh;border:1px solid var(--line);border-radius:8px;background:#fff'})));
+        pv.append(ps); document.body.append(pv);
+      }catch(e){ err.textContent=e.message; }
+      prevBtn.disabled=false; prevBtn.textContent='👁 Preview stamped page';
+    }
+    const prevBtn=el('button',{class:'btn accent',onclick:preview},'👁 Preview stamped page');
+
+    const lbl=t=>el('div',{style:'font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.05em;margin:10px 0 4px'},t);
+    const right=el('div',{style:'width:300px;flex-shrink:0'});
+    right.append(
+      lbl('Signature (draw with mouse / touch)'), sigCanvas,
+      el('div',{style:'display:flex;gap:8px;margin-top:4px'}, el('button',{class:'btn ghost sm',onclick:clearSig},'Clear'),
+        el('label',{style:'display:flex;gap:5px;align-items:center;font-size:12px'},saveChk,'Save as my signature')),
+      savedRow,
+      lbl('Printed name'), nameI, lbl('Title'), titleI,
+      el('label',{style:'display:flex;gap:6px;align-items:center;font-size:12px;margin-top:10px'},fillChk,'Also fill Name / Title / Date lines below the signature'),
+      el('div',{style:'margin-top:14px'},prevBtn), err);
+
+    const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Countersign · '+(p.contractorSignedFileName||'contract')),
+      el('span',{},pageLbl), el('button',{class:'btn ghost sm',onclick:nav(-1)},'‹'), el('button',{class:'btn ghost sm',onclick:nav(1)},'›'),
+      el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'));
+    const bodyRow=el('div',{class:'sb',style:'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap'});
+    bodyRow.append(el('div',{style:'flex:1;min-width:320px'},
+      el('p',{style:'margin:0 0 8px;color:var(--ink-3);font-size:12.5px'},'1 · Find the signature page (‹ ›) and click the Owner “By:” line — the green corner marks where the signature lands. 2 · Draw or reuse your signature. 3 · Preview, then confirm.'),
+      canvasWrap), right);
+    sheet.append(head,bodyRow); scrim.append(sheet); document.body.append(scrim);
+
+    try{
+      const pdfjs=await loadPdfJs();
+      const buf=await fetch('/api/bids/file/'+p.contractorSignedFileKey).then(r=>{if(!r.ok)throw new Error('could not read the stored file');return r.arrayBuffer();});
+      pdfDoc=await pdfjs.getDocument({data:buf}).promise;
+      st.numPages=pdfDoc.numPages; st.page=Math.max(1,st.numPages>4?st.numPages-3:st.numPages); // signature page is usually just before the exhibits
+      await renderPage();
+      const sig=await API.get('/signature');
+      if(sig.exists){ st.saved=true; savedImg.src=sig.dataUrl; savedRow.style.display='flex'; useSavedChk.checked=true; if(sig.title&&!titleI.value)titleI.value=sig.title; }
+    }catch(e){ err.textContent=e.message; }
+  }
   function refreshGen(){
     refreshGenPanel();
     ctBody.innerHTML='';
@@ -1648,7 +1789,10 @@ function openProject(id,preset){
     const csRow=ctRow('Contractor signed');
     if(p.contractorSignedFileKey){
       csRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.contractorSignedFileKey,p.contractorSignedFileName||'contractor-signed.pdf'), rmBtn('contractorSigned','contractor-signed contract'));
-      if(!p.executedContractFileKey) csRow.append(el('span',{class:'chip hold'},'awaiting countersign'));
+      if(!p.executedContractFileKey){
+        csRow.append(el('span',{class:'chip hold'},'awaiting countersign'));
+        if(IS_ADMIN) csRow.append(el('button',{class:'btn accent sm',title:'Sign in-app: place your signature on the document and attach the result as the executed contract — no download/scan/reattach',onclick:()=>openCountersign()},'✒ Countersign'));
+      }
     } else {
       csRow.classList.add('ct-drop');
       const csBtn=el('button',{class:'btn ghost sm',onclick:()=>csInput.click()},'⬆ Upload contractor-signed');
@@ -1671,7 +1815,9 @@ function openProject(id,preset){
     // 3) Executed (finalized) contract — attaching it auto-ticks "Signed & Countersigned".
     const eRow=ctRow('Executed contract');
     if(p.executedContractFileKey){
-      eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'), rmBtn('executed','executed contract'));
+      eRow.append(el('span',{class:'ct-ok'},'✓ Attached'), fileLink(p.executedContractFileKey,p.executedContractFileName||'executed.pdf'),
+        el('button',{class:'btn ghost sm',title:'Download an Outlook draft with the executed contract attached, pre-addressed to the contractor',onclick:()=>emailExecuted()},'✉ Email'),
+        rmBtn('executed','executed contract'));
     } else {
       eRow.classList.add('ct-drop');
       const execBtn=el('button',{class:'btn ghost sm',onclick:()=>execInput.click()},'⬆ Upload executed');
@@ -1833,6 +1979,8 @@ function openProject(id,preset){
       const keys=appKeys(p).filter(k=>!AUTO_STEPS.includes(k));
       let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
       const next=keys[cur+1];
+      if(next&&!IS_ADMIN&&(next==='approved'||(STEP_KEYS.indexOf(next)>APPROVED_IDX&&!p.steps.approved))){
+        toast('Bid approval is limited to Troy Steiss and Riley Combs.'); return; }
       if(next){ p.steps[next]=true; const gi=STEP_KEYS.indexOf(next);
         if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k)&&!AUTO_STEPS.includes(k))p.steps[k]=true; }); }
         drawSteps(); }
@@ -1853,8 +2001,13 @@ function openProject(id,preset){
       } else if(auto){
         // Derived from the attachment — no manual switch.
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Ticks automatically when the file is attached in the Contract section'},on?'✓ auto':'auto')));
+      } else if(s.key==='approved'&&!IS_ADMIN){
+        // The approval decision is limited to the admin allowlist.
+        row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Bid approval is limited to Troy Steiss and Riley Combs'},on?'✓ locked':'🔒 T/R only')));
       } else {
         const sw=el('button',{class:'switch'+(on?' on':''),title:'toggle',onclick:()=>{
+          if(!IS_ADMIN&&i>APPROVED_IDX&&!p.steps[s.key]&&!p.steps.approved){
+            toast('Ticking this would auto-approve the project — bid approval is limited to Troy Steiss and Riley Combs.'); return; }
           const nv=!p.steps[s.key];
           p.steps[s.key]=nv;
           if(i<=APPROVED_IDX){
@@ -2109,16 +2262,51 @@ function buildUpdateEmail(code){
 }
 
 /* RFC-822 unsent draft (X-Unsent: 1) — Outlook opens it as a compose window
-   with the HTML rendered and To/Cc pre-filled; mailto can't carry formatting. */
-function buildEml({subject,to,cc,html}){
+   with the HTML rendered and To/Cc pre-filled; mailto can't carry formatting.
+   Optional attachments: [{name, mime, b64}] → multipart/mixed. */
+function buildEml({subject,to,cc,html,attachments}){
   const htmlDoc='<html><head><meta charset="utf-8"></head><body>'+html+'</body></html>';
   const bytes=new TextEncoder().encode(htmlDoc);
   let bin=''; bytes.forEach(b=>bin+=String.fromCharCode(b));
-  const b64=btoa(bin).replace(/(.{76})/g,'$1\r\n');
+  const wrap76=s=>s.replace(/(.{76})/g,'$1\r\n');
+  const b64=wrap76(btoa(bin));
   const hv=s=>String(s||'').replace(/[\r\n]+/g,' ').trim();
-  return (hv(to)?'To: '+hv(to)+'\r\n':'')+(hv(cc)?'Cc: '+hv(cc)+'\r\n':'')
-    +'Subject: '+hv(subject)+'\r\nX-Unsent: 1\r\nMIME-Version: 1.0\r\n'
-    +'Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64;
+  const head=(hv(to)?'To: '+hv(to)+'\r\n':'')+(hv(cc)?'Cc: '+hv(cc)+'\r\n':'')
+    +'Subject: '+hv(subject)+'\r\nX-Unsent: 1\r\nMIME-Version: 1.0\r\n';
+  if(!attachments||!attachments.length){
+    return head+'Content-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64;
+  }
+  const B='=_sp_'+Math.random().toString(36).slice(2);
+  let out=head+'Content-Type: multipart/mixed; boundary="'+B+'"\r\n\r\n';
+  out+='--'+B+'\r\nContent-Type: text/html; charset=utf-8\r\nContent-Transfer-Encoding: base64\r\n\r\n'+b64+'\r\n';
+  attachments.forEach(a=>{
+    const nm=String(a.name||'attachment').replace(/["\r\n]/g,'');
+    out+='--'+B+'\r\nContent-Type: '+(a.mime||'application/octet-stream')+'; name="'+nm+'"\r\n'
+      +'Content-Transfer-Encoding: base64\r\nContent-Disposition: attachment; filename="'+nm+'"\r\n\r\n'+wrap76(a.b64)+'\r\n';
+  });
+  return out+'--'+B+'--\r\n';
+}
+/* Lazy-load pdf.js (CDN) for the countersign click-to-place preview. */
+async function loadPdfJs(){
+  if(window.pdfjsLib) return window.pdfjsLib;
+  await new Promise((ok,fail)=>{ const s=document.createElement('script');
+    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
+    s.onload=ok; s.onerror=()=>fail(new Error('could not load the PDF renderer — check your connection'));
+    document.head.append(s); });
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  return window.pdfjsLib;
+}
+/* Crop a drawn-signature canvas to its ink (plus padding); null if blank. */
+function trimSigCanvas(c){
+  const ctx=c.getContext('2d'), w=c.width, h=c.height;
+  const d=ctx.getImageData(0,0,w,h).data;
+  let minX=w,minY=h,maxX=-1,maxY=-1;
+  for(let y=0;y<h;y++)for(let x=0;x<w;x++){ if(d[(y*w+x)*4+3]>10){ if(x<minX)minX=x; if(x>maxX)maxX=x; if(y<minY)minY=y; if(y>maxY)maxY=y; } }
+  if(maxX<0) return null;
+  const pad=6, tw=maxX-minX+1+pad*2, th=maxY-minY+1+pad*2;
+  const t=document.createElement('canvas'); t.width=tw; t.height=th;
+  t.getContext('2d').drawImage(c,minX-pad,minY-pad,tw,th,0,0,tw,th);
+  return t.toDataURL('image/png');
 }
 const emlFileName=subject=>String(subject).replace(/[\\/:*?"<>|]/g,'-')+'.eml';
 function downloadBlob(blob,name){

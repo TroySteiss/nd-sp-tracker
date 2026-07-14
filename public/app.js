@@ -91,7 +91,35 @@ const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';
 
 /* seedState removed — initial data is seeded server-side into Postgres */
 
-async function boot(){ await refreshState(); render(); }
+async function boot(){ await refreshState(); render(); startLiveSync(); }
+
+/* ---------- live sync across users ----------
+   Poll a tiny heartbeat (/api/version = latest change id + who). When another
+   user makes a change, refetch state and re-render — but only when it's safe
+   (no editor/modal open), so an in-progress edit is never clobbered; otherwise
+   defer until the modal closes. My own changes are already applied locally. */
+let LIVE={id:undefined,pending:null};
+async function pollVersion(){
+  if(document.hidden||!S) return;
+  let v; try{ v=await fetch('/api/version',{cache:'no-store',headers:{'Accept':'application/json'}}).then(r=>r.ok?r.json():null); }catch(e){ return; }
+  if(!v) return;
+  if(LIVE.id===undefined){ LIVE.id=v.id; return; }              // first sample = baseline
+  if(v.id && v.id!==LIVE.id){
+    LIVE.id=v.id;
+    if(!(v.actor&&v.actor===USER)) LIVE.pending=v.actor||'another user';   // someone else changed data
+  }
+  if(LIVE.pending && !document.querySelector('.scrim')){         // safe to apply (nothing open)
+    const who=LIVE.pending; LIVE.pending=null;
+    const sc=document.querySelector('.content'); const top=sc?sc.scrollTop:0;
+    try{ await refreshState(); render(); const sc2=document.querySelector('.content'); if(sc2)sc2.scrollTop=top; toast('↻ Updated by '+String(who).replace(/[._]+/g,' ')); }catch(e){}
+  }
+}
+function startLiveSync(){
+  if(startLiveSync._on) return; startLiveSync._on=true;
+  setInterval(pollVersion, 10000);
+  document.addEventListener('visibilitychange',()=>{ if(!document.hidden) pollVersion(); });
+  window.addEventListener('focus', pollVersion);
+}
 /* ---------- Theme (light / dark) ---------- */
 function applyTheme(t){ if(t==='dark') document.documentElement.setAttribute('data-theme','dark'); else document.documentElement.removeAttribute('data-theme'); }
 function isDark(){ return document.documentElement.getAttribute('data-theme')==='dark'; }

@@ -72,6 +72,19 @@ const dnull = (v: any): string | null => {
 /* ---------- bootstrap ---------- */
 api.get('/state', async (_req, res) => { res.json(await assembleState()); });
 
+/* ---------- live-sync heartbeat: the latest change_log id + who made it.
+   Clients poll this cheaply and refetch /state only when it changes, so edits
+   propagate between users without a manual reload. Any authenticated user may
+   read it (minimal info: id, time, actor — no change detail). ---------- */
+api.get('/version', async (_req, res) => {
+  res.setHeader('Cache-Control', 'no-store');
+  try {
+    const r = await query<{ id: string; ts: any; username: string }>('select id, ts, username from change_log order by ts desc limit 1');
+    const row = r.rows[0];
+    res.json(row ? { id: row.id, ts: row.ts instanceof Date ? row.ts.toISOString() : row.ts, actor: row.username || '' } : { id: null });
+  } catch { res.json({ id: null }); }
+});
+
 /* ---------- projects ---------- */
 /** Normalize a multi-property split: valid entries only, pcts to 2dp; the lead
     property (projects.property_code) is always first. <2 sites ⇒ no split. */

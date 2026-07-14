@@ -790,50 +790,67 @@ function viewDashboard(){
     return {spent,cashToday,projRemainingSpendInt,futureAccretion,projEndCash,cpd,budget,yyyyBudgetProj,fy,
             units:Number(pr.units)||0,madePct,effectiveSentPct,futureQtrs,inclAccretion};
   };
+  // Reusable stat-cell block, shared by property rows and subtotal rows.
+  const statCells=(o,fy,extra)=>{
+    const endTone=o.projEnd<0?'bad':(o.projEnd<o.cash*0.25?'warn':'good');
+    const cpd=o.units?o.projEnd/o.units:null;
+    const cpdTone=cpd==null?'none':(cpd>=3000?'good':(cpd>=2000?'warn':'bad'));
+    const ybpTone=o.ybp<0?'bad':(o.budget&&o.ybp<o.budget*0.15?'warn':'good');
+    return el('div',{class:'headstats',style:'flex:1'},
+      hstat('Spent to date', fmt(o.spent), 'none', ''),
+      hstat('Current cash', fmt(o.cash), 'none', ''),
+      hstat(`Proj addt Expenses ${fy}`, fmt(o.projRem), 'none', ''),
+      hstat(`Remaining in ${fy}`, fmt(o.ybp), ybpTone, ''),
+      hstat(`${fy} Remaining Accretion`, fmt(o.accretion), o.accretion>=0?'good':'bad', extra||''),
+      hstat(`Proj ${fy} end Cash`, fmt(o.projEnd), endTone, ''),
+      hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, ''));
+  };
+  const sumStats=arr=>{ const t={spent:0,cash:0,projRem:0,accretion:0,projEnd:0,units:0,budget:0,ybp:0};
+    arr.forEach(s=>{t.spent+=s.spent;t.cash+=s.cashToday;t.projRem+=s.projRemainingSpendInt;t.accretion+=s.futureAccretion;t.projEnd+=s.projEndCash;t.units+=s.units;t.budget+=s.budget;t.ybp+=s.yyyyBudgetProj;});
+    return t; };
+  const propRowEl=(pr,s)=>el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
+    el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',
+      onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
+      el('div',{style:'display:flex;align-items:center;gap:6px'},
+        el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}),
+        el('strong',{style:'font-size:12px'},pr.code)),
+      el('div',{style:'font-size:10.5px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},pr.name)),
+    statCells(s,s.fy,`${(s.madePct-s.effectiveSentPct).toFixed(1)}% · ${s.futureQtrs}q${s.inclAccretion?'':' excl.'}`));
+  // Subtotal row (portfolio = lighter with an accent bar; region = strong).
+  const subtotalRowEl=(label,arr,fy,opts={})=>el('div',{class:'psum-row',style:`display:flex;align-items:stretch;border-bottom:${opts.strong?'2px':'1px'} solid var(--line${opts.strong?'':'-2'});background:var(--surface-2)`},
+    el('div',{class:'psum-prop',style:`min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)${opts.strong?'':';border-left:3px solid '+(opts.color||'var(--ink-3)')}`},
+      el('span',{style:`font-size:${opts.strong?'11px':'10.5px'};font-weight:600;color:var(--ink-${opts.strong?'2':'3'});line-height:1.15`},label)),
+    statCells(sumStats(arr),fy,''));
+
+  // Portfolio-subtotal toggle (default on).
+  const pSubToggle=el('label',{class:'chk',style:'display:flex;gap:6px;align-items:center;font-size:12px;padding:7px 14px;color:var(--ink-2)'},
+    (()=>{const c=el('input',{type:'checkbox',onchange:e=>{DASH.portfolioSub=e.target.checked;render();}});if(DASH.portfolioSub!==false)c.checked=true;return c;})(),
+    'Show portfolio subtotals');
+  tp.append(pSubToggle);
+
   const summaryWrap=el('div',{style:'overflow:auto'});
   regions.filter(r=>!DASH.region||r===DASH.region).forEach(reg=>{
-    const regProps=props.filter(q=>q.region===reg); if(!regProps.length)return;
+    let regProps=props.filter(q=>q.region===reg); if(!regProps.length)return;
+    // Sort so same-portfolio properties sit together (blank portfolios last).
+    regProps=regProps.slice().sort((a,b)=>String(a.portfolio||'~~~').localeCompare(String(b.portfolio||'~~~'))||a.code.localeCompare(b.code));
     const regData=regProps.map(pr=>({pr,s:calcProjStats(pr)}));
+    const fy=regData[0]?regData[0].s.fy:today().slice(0,4);
     summaryWrap.append(el('div',{style:'padding:5px 14px;font-size:11.5px;font-weight:600;color:var(--ink-3);background:var(--surface-2);border-bottom:1px solid var(--line)'},
       `${reg} — ${PROP(regProps[0].code).manager}`));
-    regData.forEach(({pr,s})=>{
-      const endTone=s.projEndCash<0?'bad':(s.projEndCash<s.cashToday*0.25?'warn':'good');
-      const cpdTone=s.cpd==null?'none':(s.cpd>=3000?'good':(s.cpd>=2000?'warn':'bad'));
-      const ybpTone=s.yyyyBudgetProj<0?'bad':(s.budget&&s.yyyyBudgetProj<s.budget*0.15?'warn':'good');
-      summaryWrap.append(el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:1px solid var(--line-2)'},
-        el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;flex-direction:column;justify-content:center;border-right:1px solid var(--line-2);cursor:pointer',
-          onclick:()=>{VIEW.tab='property';VIEW.prop=pr.code;render();}},
-          el('div',{style:'display:flex;align-items:center;gap:6px'},
-            el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}),
-            el('strong',{style:'font-size:12px'},pr.code)),
-          el('div',{style:'font-size:10.5px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},pr.name)),
-        el('div',{class:'headstats',style:'flex:1'},
-          hstat('Spent to date', fmt(s.spent), 'none', ''),
-          hstat('Current cash', fmt(s.cashToday), 'none', ''),
-          hstat(`Proj addt Expenses ${s.fy}`, fmt(s.projRemainingSpendInt), 'none', ''),
-          hstat(`Remaining in ${s.fy}`, fmt(s.yyyyBudgetProj), ybpTone, ''),
-          hstat(`${s.fy} Remaining Accretion`, fmt(s.futureAccretion), s.futureAccretion>=0?'good':'bad', `${(s.madePct-s.effectiveSentPct).toFixed(1)}% · ${s.futureQtrs}q${s.inclAccretion?'':' excl.'}`),
-          hstat(`Proj ${s.fy} end Cash`, fmt(s.projEndCash), endTone, ''),
-          hstat('Cash / door', s.cpd==null?'—':fmt(s.cpd), cpdTone, ''))));
+    // Group into portfolios (preserving the sorted order).
+    const groups=[]; const gi={};
+    regData.forEach(d=>{ const key=(d.pr.portfolio||'').trim()||'—'; if(gi[key]==null){gi[key]=groups.length;groups.push({key,items:[]});} groups[gi[key]].items.push(d); });
+    const multiPf=groups.filter(g=>g.key!=='—').length>1;
+    groups.forEach(g=>{
+      g.items.forEach(({pr,s})=>summaryWrap.append(propRowEl(pr,s)));
+      // Portfolio subtotal — only when it adds information: a named portfolio
+      // with 2+ properties, and the region holds more than one portfolio
+      // (otherwise it would just duplicate the region total).
+      if(DASH.portfolioSub!==false && g.key!=='—' && g.items.length>1 && multiPf){
+        summaryWrap.append(subtotalRowEl(g.key, g.items.map(x=>x.s), fy, {color:pcolor(g.items[0].pr.code)}));
+      }
     });
-    const fy=regData[0]?regData[0].s.fy:today().slice(0,4);
-    const tot={spent:0,cash:0,projRem:0,accretion:0,projEnd:0,units:0,budget:0,ybp:0};
-    regData.forEach(({s})=>{tot.spent+=s.spent;tot.cash+=s.cashToday;tot.projRem+=s.projRemainingSpendInt;tot.accretion+=s.futureAccretion;tot.projEnd+=s.projEndCash;tot.units+=s.units;tot.budget+=s.budget;tot.ybp+=s.yyyyBudgetProj;});
-    const totCpd=tot.units?tot.projEnd/tot.units:null;
-    const totEndTone=tot.projEnd<0?'bad':(tot.projEnd<tot.cash*0.25?'warn':'good');
-    const totCpdTone=totCpd==null?'none':(totCpd>=3000?'good':(totCpd>=2000?'warn':'bad'));
-    const totYbpTone=tot.ybp<0?'bad':(tot.budget&&tot.ybp<tot.budget*0.15?'warn':'good');
-    summaryWrap.append(el('div',{class:'psum-row',style:'display:flex;align-items:stretch;border-bottom:2px solid var(--line);background:var(--surface-2)'},
-      el('div',{class:'psum-prop',style:'min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)'},
-        el('span',{style:'font-size:11px;font-weight:600;color:var(--ink-3)'},'Subtotal')),
-      el('div',{class:'headstats',style:'flex:1'},
-        hstat('Spent to date', fmt(tot.spent), 'none', ''),
-        hstat('Current cash', fmt(tot.cash), 'none', ''),
-        hstat(`Proj addt Expenses ${fy}`, fmt(tot.projRem), 'none', ''),
-        hstat(`Remaining in ${fy}`, fmt(tot.ybp), totYbpTone, ''),
-        hstat(`${fy} Remaining Accretion`, fmt(tot.accretion), tot.accretion>=0?'good':'bad', ''),
-        hstat(`Proj ${fy} end Cash`, fmt(tot.projEnd), totEndTone, ''),
-        hstat('Cash / door', totCpd==null?'—':fmt(totCpd), totCpdTone, ''))));
+    summaryWrap.append(subtotalRowEl(`${reg} total`, regData.map(x=>x.s), fy, {strong:true}));
   });
   tp.append(summaryWrap);
   body.append(tp);

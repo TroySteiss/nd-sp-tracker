@@ -327,15 +327,18 @@ api.post('/projects/:id/contract', async (req, res) => {
     return res.status(403).json({ error: 'This project is not approved yet — ' + APPROVAL_MSG });
   }
 
-  // Gather bid attachments for this project (approved first), reading files from storage.
-  // Each bid may carry multiple files in upload order: first = scope/contract totals, rest = supporting docs.
-  const bidsRows = (await query('select * from bids where project_id=$1 order by approved desc, slot asc', [proj.id])).rows;
+  // Embed ONLY the winning bid's documents into Exhibit A & B — the approved
+  // bid, or (if none is marked approved) the first bid slot that has a file.
+  // Losing contractors' bids must never end up in the contract's scope.
+  // A bid's own files carry over in order: first = scope/contract totals, rest = supporting docs.
+  const filesOf = (bd: any): any[] => (Array.isArray(bd.files) && bd.files.length ? bd.files : (bd.file_key ? [{ fileKey: bd.file_key, fileName: bd.file_name }] : [])).filter((f: any) => f && f.fileKey);
+  const bidsRows = (await query('select * from bids where project_id=$1 order by slot asc', [proj.id])).rows;
+  const winner = bidsRows.find((bd) => bd.approved && filesOf(bd).length) || bidsRows.find((bd) => filesOf(bd).length);
   const attachments: BidAttachment[] = [];
-  for (const bd of bidsRows) {
-    const files = Array.isArray(bd.files) && bd.files.length ? bd.files : (bd.file_key ? [{ fileKey: bd.file_key, fileName: bd.file_name }] : []);
+  if (winner) {
+    const files = filesOf(winner);
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
-      if (!f || !f.fileKey) continue;
       const fr = await readFile(f.fileKey);
       if (fr) attachments.push({ buffer: fr.bytes, name: f.fileName || f.fileKey, label: files.length > 1 ? (i === 0 ? 'Applicable Scope & Contract Totals' : 'Supporting document') : undefined });
     }

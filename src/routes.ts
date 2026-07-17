@@ -288,11 +288,25 @@ api.post('/projects/:id/note-file', memUpload.single('file'), async (req, res) =
   res.json({ fileKey: key, fileName: f.originalname, fileSize: f.size });
 });
 
+// MIME types safe to render inline in a same-origin tab/iframe. Everything else
+// (notably text/html and image/svg+xml, which can execute script) is served as
+// an opaque download so an uploaded file can never run JS in the app's origin.
+const INLINE_SAFE_MIME = new Set(['application/pdf', 'image/png', 'image/jpeg', 'image/gif', 'image/webp', 'text/plain']);
+const safeDownloadName = (name: string) => String(name || 'file').replace(/[^a-zA-Z0-9._ -]/g, '').slice(0, 200) || 'file';
+
 api.get('/bids/file/:key', async (req, res) => {
   const r = await readFile(req.params.key);
   if (!r) return res.status(404).send('not found');
-  res.setHeader('Content-Type', r.mime || 'application/octet-stream');
-  res.setHeader('Content-Disposition', 'inline');
+  res.setHeader('X-Content-Type-Options', 'nosniff'); // never let the browser sniff a stored type into something executable
+  const mime = (r.mime || '').toLowerCase().split(';')[0].trim();
+  if (INLINE_SAFE_MIME.has(mime)) {
+    res.setHeader('Content-Type', mime);
+    res.setHeader('Content-Disposition', `inline; filename="${safeDownloadName(r.name)}"`);
+  } else {
+    // Unknown / active type: force download as an opaque blob (no inline execution).
+    res.setHeader('Content-Type', 'application/octet-stream');
+    res.setHeader('Content-Disposition', `attachment; filename="${safeDownloadName(r.name)}"`);
+  }
   res.send(r.bytes);
 });
 
@@ -300,7 +314,8 @@ api.get('/bids/file/:key', async (req, res) => {
 api.get('/files/:key', async (req, res) => {
   const r = await readFile(req.params.key);
   if (!r) return res.status(404).send('not found');
-  const name = String(req.query.name || r.name || 'file').replace(/[^a-zA-Z0-9._ -]/g, '');
+  const name = safeDownloadName(String(req.query.name || r.name || 'file'));
+  res.setHeader('X-Content-Type-Options', 'nosniff');
   res.setHeader('Content-Type', r.mime || 'application/pdf');
   res.setHeader('Content-Disposition', `attachment; filename="${name}"`);
   res.send(r.bytes);
@@ -577,15 +592,17 @@ api.post('/import/cushion/confirm', async (req, res) => {
       const v = found[code];
       // cushion import upserts snapshot + property sp_budget/units; must NOT touch cash_adjustments (spec §8.2)
       await c.query(
-        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent,units,cash_after_dist,projected_dist)
-         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
+        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent,units,cash_after_dist,projected_dist,budget_ret_q1,budget_ret_q2,budget_ret_q3,budget_ret_q4)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26)
          on conflict (property_code) do update set as_of_date=excluded.as_of_date,cash=excluded.cash,adj_cash=excluded.adj_cash,
            sp_budget=excluded.sp_budget,sp_spent=excluded.sp_spent,sp_remaining=excluded.sp_remaining,noi=excluded.noi,ds=excluded.ds,
            dcr=excluded.dcr,market_value=excluded.market_value,loan_amount=excluded.loan_amount,ltv=excluded.ltv,loan_due=excluded.loan_due,
-           loan_rate=excluded.loan_rate,io_end=excluded.io_end,capital=excluded.capital,return_earned=excluded.return_earned,return_sent=excluded.return_sent,units=excluded.units,cash_after_dist=excluded.cash_after_dist,projected_dist=excluded.projected_dist`,
+           loan_rate=excluded.loan_rate,io_end=excluded.io_end,capital=excluded.capital,return_earned=excluded.return_earned,return_sent=excluded.return_sent,units=excluded.units,cash_after_dist=excluded.cash_after_dist,projected_dist=excluded.projected_dist,
+           budget_ret_q1=excluded.budget_ret_q1,budget_ret_q2=excluded.budget_ret_q2,budget_ret_q3=excluded.budget_ret_q3,budget_ret_q4=excluded.budget_ret_q4`,
         [code, dnull(asOf), nnull(v.cash), nnull(v.adjCash), nnull(v.spBudget), nnull(v.spSpent), nnull(v.spRemaining),
          nnull(v.noi), nnull(v.ds), nnull(v.dcr), nnull(v.marketValue), nnull(v.loanAmount), nnull(v.ltv), v.loanDue || '', nnull(v.loanRate), v.ioEnd || '',
-         nnull(v.capital), nnull(v.returnEarned), nnull(v.returnSent), nnull(v.units), nnull(v.cashAfterDist), nnull(v.projectedDist)]
+         nnull(v.capital), nnull(v.returnEarned), nnull(v.returnSent), nnull(v.units), nnull(v.cashAfterDist), nnull(v.projectedDist),
+         nnull(v.budgetRetQ1), nnull(v.budgetRetQ2), nnull(v.budgetRetQ3), nnull(v.budgetRetQ4)]
       );
       if (v.spBudget != null) await c.query('update properties set sp_budget=$1 where code=$2', [Number(v.spBudget), code]);
       if (v.units != null && v.units) await c.query('update properties set units=$1 where code=$2', [Number(v.units), code]);
@@ -1016,15 +1033,15 @@ api.patch('/meta', requireAdmin, async (req, res) => {
   res.json({ ok: true, appTitle: title });
 });
 
-/* ---------- exports ---------- */
-api.get('/export/backup.json', async (_req, res) => {
+/* ---------- exports (admin-only: full-dataset extraction) ---------- */
+api.get('/export/backup.json', requireAdmin, async (_req, res) => {
   const state = await assembleState();
   res.setHeader('Content-Type', 'application/json');
   res.setHeader('Content-Disposition', `attachment; filename="sp-tracker-${new Date().toISOString().slice(0, 10)}.json"`);
   res.send(JSON.stringify(state, null, 2));
 });
 
-api.get('/export/projects.csv', async (_req, res) => {
+api.get('/export/projects.csv', requireAdmin, async (_req, res) => {
   const state = await assembleState();
   const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', ...STEP_KEYS];
   const lines = [cols.join(',')];
@@ -1040,8 +1057,9 @@ api.get('/export/projects.csv', async (_req, res) => {
   res.send(lines.join('\n'));
 });
 
-/* ---------- reset to seed / restore from backup ---------- */
-api.post('/reset', async (req, res) => {
+/* ---------- reset to seed / restore from backup (admin-only: these wipe or
+   overwrite the ENTIRE dataset, so they are gated to the admin allowlist) ---------- */
+api.post('/reset', requireAdmin, async (req, res) => {
   const { readFileSync } = await import('node:fs');
   const { SEED_PATH } = await import('./seed.js');
   const raw = JSON.parse(readFileSync(SEED_PATH, 'utf8')) as AppState;
@@ -1050,7 +1068,7 @@ api.post('/reset', async (req, res) => {
   res.json({ ok: true });
 });
 
-api.post('/restore', async (req, res) => {
+api.post('/restore', requireAdmin, async (req, res) => {
   const state = req.body as AppState;
   if (!state || !state.properties || !state.projects) return res.status(400).json({ error: 'not a valid backup' });
   await tx((c) => loadStateInto(c, state));

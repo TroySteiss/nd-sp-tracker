@@ -166,6 +166,10 @@ export interface CashSnapshot {
   returnSent?: number | null;     // latest completed quarter distribution %
   cashAfterDist?: number | null;  // "Cash After Distribution" (cushion Col V) — year-end projection base
   projectedDist?: number | null;  // "Projected Distribution Amount" (cushion Col U) — reference
+  budgetRetQ1?: number | null;    // quarterly budgeted return % (cushion Cols AE–AH) — forward accretion
+  budgetRetQ2?: number | null;
+  budgetRetQ3?: number | null;
+  budgetRetQ4?: number | null;
 }
 
 export interface CashAdjustment {

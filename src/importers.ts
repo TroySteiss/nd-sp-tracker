@@ -105,6 +105,14 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string, knownCodes: s
     cashAfterDist: find('cash after distribution'), projectedDist: find('projected distribution'),
   };
 
+  // Quarterly budgeted return % (e.g. "QT 3 2026  Budget %"). Needs an AND match (quarter + year + "budget"),
+  // which `find` (OR) can't do; header may carry a duplicate — last one in the row wins via hcols.
+  const findQtrBudget = (q: number): number => {
+    for (const k in hcols) { if (k.includes(`qt ${q} `) && k.includes('2026') && k.includes('budget')) return hcols[k]; }
+    return -1;
+  };
+  const budCols = { q1: findQtrBudget(1), q2: findQtrBudget(2), q3: findQtrBudget(3), q4: findQtrBudget(4) };
+
   // "return sent" = the most recent COMPLETED quarter's distribution % (e.g. "QT 1 2026 Distribution %").
   let returnSentCol = -1, sentRank = -1;
   for (const k in hcols) {
@@ -135,6 +143,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string, knownCodes: s
         loanDue: str(r, col.loanDue), loanRate: num(r, col.loanRate), ioEnd: str(r, col.ioEnd),
         capital: num(r, col.capital), returnEarned: num(r, col.returnEarned), returnSent: num(r, returnSentCol),
         cashAfterDist: num(r, col.cashAfterDist), projectedDist: num(r, col.projectedDist),
+        budgetRetQ1: num(r, budCols.q1), budgetRetQ2: num(r, budCols.q2), budgetRetQ3: num(r, budCols.q3), budgetRetQ4: num(r, budCols.q4),
         units: num(r, col.units),
       };
     }

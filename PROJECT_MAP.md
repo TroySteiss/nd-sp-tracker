@@ -4,7 +4,8 @@
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
 > Last updated: 2026-07-17 (multi-region; ATL; notes+attachments; split projects; admin lock;
 > Office→PDF; removable attachments; contractor-signed slot; approval lock; in-app countersigning;
-> year-end cash projection now bases on cushion Col V "Cash After Distribution").
+> year-end cash projection bases on cushion Col V "Cash After Distribution", with forward
+> per-quarter accretion from the budgeted return columns).
 
 ## What this is
 
@@ -81,7 +82,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | regions | region registry | pk `name`, `sort` — drives nav & dashboard grouping (014) |
 | projects | SP projects | jsonb `steps`; server re-applies cost rules on write |
 | bids / progress_notes | per-project children | rewritten wholesale on each project save; notes carry `username`, `ts`, `files` jsonb (015) — server stamps missing author/ts from the session |
-| cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020) |
+| cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
 | cash_adjustments | mid-month deltas | FK to properties; survives imports |
 | gl_lines | SP general ledger | **no FK** (014) — keeps lines for unknown codes; `linked_project_id` ties to projects |
 | contracts | generated-contract records | Contracts view |

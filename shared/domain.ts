@@ -164,6 +164,8 @@ export interface CashSnapshot {
   capital?: number | null;        // $000s from cushion
   returnEarned?: number | null;   // "Earnings before SP & AM Adj" %
   returnSent?: number | null;     // latest completed quarter distribution %
+  cashAfterDist?: number | null;  // "Cash After Distribution" (cushion Col V) — year-end projection base
+  projectedDist?: number | null;  // "Projected Distribution Amount" (cushion Col U) — reference
 }
 
 export interface CashAdjustment {

@@ -103,12 +103,12 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     const c = state.cash[code];
     await client.query(
       `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,
-         noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19)
+         noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent,cash_after_dist,projected_dist)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21)
        on conflict (property_code) do update set as_of_date=excluded.as_of_date, cash=excluded.cash`,
       [code, dnull(c.asOfDate), nnull(c.cash), nnull(c.adjCash), nnull(c.spBudget), nnull(c.spSpent), nnull(c.spRemaining),
        nnull(c.noi), nnull(c.ds), nnull(c.dcr), nnull(c.marketValue), nnull(c.loanAmount), nnull(c.ltv), c.loanDue || '', nnull(c.loanRate), c.ioEnd || '',
-       nnull((c as any).capital), nnull((c as any).returnEarned), nnull((c as any).returnSent)]
+       nnull((c as any).capital), nnull((c as any).returnEarned), nnull((c as any).returnSent), nnull((c as any).cashAfterDist), nnull((c as any).projectedDist)]
     );
   }
 

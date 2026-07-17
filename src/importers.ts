@@ -102,6 +102,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string, knownCodes: s
     loanAmount: find('loan amount'), ltv: hcols['ltv'], loanDue: find('loan due'), loanRate: find('loan rate'),
     ioEnd: find('interst only end', 'interest only end'),
     capital: find('capital'), returnEarned: find('earnings before sp'),
+    cashAfterDist: find('cash after distribution'), projectedDist: find('projected distribution'),
   };
 
   // "return sent" = the most recent COMPLETED quarter's distribution % (e.g. "QT 1 2026 Distribution %").
@@ -133,6 +134,7 @@ export function parseCushion(buffer: Buffer, fallbackAsOf: string, knownCodes: s
         dcr: num(r, col.dcr), marketValue: num(r, col.marketValue), loanAmount: num(r, col.loanAmount), ltv: num(r, col.ltv),
         loanDue: str(r, col.loanDue), loanRate: num(r, col.loanRate), ioEnd: str(r, col.ioEnd),
         capital: num(r, col.capital), returnEarned: num(r, col.returnEarned), returnSent: num(r, returnSentCol),
+        cashAfterDist: num(r, col.cashAfterDist), projectedDist: num(r, col.projectedDist),
         units: num(r, col.units),
       };
     }

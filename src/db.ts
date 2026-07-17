@@ -106,6 +106,7 @@ export function rowToCash(r: any): CashSnapshot {
     noi: r.noi, ds: r.ds, dcr: r.dcr, marketValue: r.market_value, loanAmount: r.loan_amount, ltv: r.ltv,
     loanDue: r.loan_due ?? '', loanRate: r.loan_rate, ioEnd: r.io_end ?? '',
     capital: r.capital, returnEarned: r.return_earned, returnSent: r.return_sent,
+    cashAfterDist: r.cash_after_dist, projectedDist: r.projected_dist,
   };
 }
 

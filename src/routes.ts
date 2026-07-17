@@ -409,14 +409,14 @@ api.patch('/cash/:code', async (req, res) => {
   const c = req.body || {};
   const old = (await query('select * from cash_snapshots where property_code=$1', [code])).rows[0] || {};
   await query(
-    `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end)
-     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16)
+    `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,cash_after_dist,projected_dist)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18)
      on conflict (property_code) do update set as_of_date=excluded.as_of_date,cash=excluded.cash,adj_cash=excluded.adj_cash,
        sp_budget=excluded.sp_budget,sp_spent=excluded.sp_spent,sp_remaining=excluded.sp_remaining,noi=excluded.noi,ds=excluded.ds,
        dcr=excluded.dcr,market_value=excluded.market_value,loan_amount=excluded.loan_amount,ltv=excluded.ltv,loan_due=excluded.loan_due,
-       loan_rate=excluded.loan_rate,io_end=excluded.io_end`,
+       loan_rate=excluded.loan_rate,io_end=excluded.io_end,cash_after_dist=excluded.cash_after_dist,projected_dist=excluded.projected_dist`,
     [code, dnull(c.asOfDate), nnull(c.cash), nnull(c.adjCash), nnull(c.spBudget), nnull(c.spSpent), nnull(c.spRemaining),
-     nnull(c.noi), nnull(c.ds), nnull(c.dcr), nnull(c.marketValue), nnull(c.loanAmount), nnull(c.ltv), c.loanDue || '', nnull(c.loanRate), c.ioEnd || '']
+     nnull(c.noi), nnull(c.ds), nnull(c.dcr), nnull(c.marketValue), nnull(c.loanAmount), nnull(c.ltv), c.loanDue || '', nnull(c.loanRate), c.ioEnd || '', nnull(c.cashAfterDist), nnull(c.projectedDist)]
   );
   const diffs: string[] = [];
   const cmpN = (label: string, a: any, b: any) => { const na = a == null ? null : Number(a), nb = b == null ? null : Number(b); if (na !== nb) diffs.push(`${label} ${fmtMoney(na)} → ${fmtMoney(nb)}`); };
@@ -577,15 +577,15 @@ api.post('/import/cushion/confirm', async (req, res) => {
       const v = found[code];
       // cushion import upserts snapshot + property sp_budget/units; must NOT touch cash_adjustments (spec §8.2)
       await c.query(
-        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent,units)
-         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20)
+        `insert into cash_snapshots(property_code,as_of_date,cash,adj_cash,sp_budget,sp_spent,sp_remaining,noi,ds,dcr,market_value,loan_amount,ltv,loan_due,loan_rate,io_end,capital,return_earned,return_sent,units,cash_after_dist,projected_dist)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22)
          on conflict (property_code) do update set as_of_date=excluded.as_of_date,cash=excluded.cash,adj_cash=excluded.adj_cash,
            sp_budget=excluded.sp_budget,sp_spent=excluded.sp_spent,sp_remaining=excluded.sp_remaining,noi=excluded.noi,ds=excluded.ds,
            dcr=excluded.dcr,market_value=excluded.market_value,loan_amount=excluded.loan_amount,ltv=excluded.ltv,loan_due=excluded.loan_due,
-           loan_rate=excluded.loan_rate,io_end=excluded.io_end,capital=excluded.capital,return_earned=excluded.return_earned,return_sent=excluded.return_sent,units=excluded.units`,
+           loan_rate=excluded.loan_rate,io_end=excluded.io_end,capital=excluded.capital,return_earned=excluded.return_earned,return_sent=excluded.return_sent,units=excluded.units,cash_after_dist=excluded.cash_after_dist,projected_dist=excluded.projected_dist`,
         [code, dnull(asOf), nnull(v.cash), nnull(v.adjCash), nnull(v.spBudget), nnull(v.spSpent), nnull(v.spRemaining),
          nnull(v.noi), nnull(v.ds), nnull(v.dcr), nnull(v.marketValue), nnull(v.loanAmount), nnull(v.ltv), v.loanDue || '', nnull(v.loanRate), v.ioEnd || '',
-         nnull(v.capital), nnull(v.returnEarned), nnull(v.returnSent), nnull(v.units)]
+         nnull(v.capital), nnull(v.returnEarned), nnull(v.returnSent), nnull(v.units), nnull(v.cashAfterDist), nnull(v.projectedDist)]
       );
       if (v.spBudget != null) await c.query('update properties set sp_budget=$1 where code=$2', [Number(v.spBudget), code]);
       if (v.units != null && v.units) await c.query('update properties set units=$1 where code=$2', [Number(v.units), code]);

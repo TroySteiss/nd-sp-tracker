@@ -2713,7 +2713,6 @@ function viewProperty(){
         ? 'Bases on “Cash After Distribution” (Col V) from the cushion report, then adds projected interest income and remaining accretion and subtracts committed SP spend.'
         : 'The latest cushion has no “Cash After Distribution” (Col V), so this falls back to current cash as the base — re-import the cushion report to tie out exactly.'));
     b.append(detRow(cashAfterDist!=null?'Cash After Distribution (Col V)':'Current cash — no Col V', projBase));
-    if(c.projectedDist!=null) b.append(detRow('· of which projected distribution', -Number(c.projectedDist)));
     b.append(
       detRow('+ Projected interest ('+monthsLeft+' mo × '+fmt(avgInt,false)+')', projInterest),
       detRow('+ Remaining accretion ('+futureQtrs+'q returns net of '+effectiveSentPct.toFixed(2)+'% dist)', futureAccretion),

@@ -807,7 +807,7 @@ function viewDashboard(){
     const budgetByQ={1:c.budgetRetQ1,2:c.budgetRetQ2,3:c.budgetRetQ3,4:c.budgetRetQ4};
     const futureQtrs=Math.max(0,4-currentQtr);
     let futureAccretion=0;
-    for(let q=currentQtr+1;q<=4;q++){ const br=budgetByQ[q]; const rate=(br!=null&&!isNaN(Number(br)))?Number(br):madePct; futureAccretion+=((rate-effectiveSentPct)/100/4)*capitalDollars; }
+    for(let q=currentQtr+1;q<=4;q++){ const ov=distQtrs['retQ'+q], br=budgetByQ[q]; const rate=(ov!=null&&!isNaN(Number(ov)))?Number(ov):(br!=null&&!isNaN(Number(br)))?Number(br):madePct; futureAccretion+=((rate-effectiveSentPct)/100/4)*capitalDollars; }
     const projRemainingSpend=cm.outstandingTotal;      // committed, unpaid
     const projInterest=avgInt*monthsLeft;              // projected interest income → added to cash
     // Base = Cash After Distribution (cushion Col V); fall back to cash today only when the report lacks it.
@@ -849,7 +849,7 @@ function viewDashboard(){
         el('span',{class:'pl-dot',style:'background:'+pcolor(pr.code)}),
         el('strong',{style:'font-size:12px'},pr.code)),
       el('div',{style:'font-size:10.5px;color:var(--ink-3);margin-top:2px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},pr.name)),
-    statCells(s,s.fy,`${s.futureQtrs}q budget`));
+    statCells(s,s.fy,`${s.futureQtrs}q returns`));
   // Subtotal row (portfolio = lighter with an accent bar; region = strong).
   const subtotalRowEl=(label,arr,fy,opts={})=>el('div',{class:'psum-row',style:`display:flex;align-items:stretch;border-bottom:${opts.strong?'2px':'1px'} solid var(--line${opts.strong?'':'-2'});background:var(--surface-2)`},
     el('div',{class:'psum-prop',style:`min-width:110px;max-width:110px;padding:8px 10px;display:flex;align-items:center;border-right:1px solid var(--line-2)${opts.strong?'':';border-left:3px solid '+(opts.color||'var(--ink-3)')}`},
@@ -2622,8 +2622,9 @@ function viewProperty(){
   const futureQtrs = Math.max(0, 4-currentQtr);
   let futureAccretion = 0;
   for(let q=currentQtr+1; q<=4; q++){
-    const br=budgetByQ[q];
-    const rate=(br!=null && !isNaN(Number(br))) ? Number(br) : madePct;
+    const ov=distQtrs['retQ'+q], br=budgetByQ[q];
+    const rate=(ov!=null && !isNaN(Number(ov))) ? Number(ov)
+             : (br!=null && !isNaN(Number(br))) ? Number(br) : madePct;   // per-quarter override → budget → earnings
     futureAccretion += ((rate-effectiveSentPct)/100/4)*capitalDollars;
   }
   const accrTileVal = futureAccretion;
@@ -2650,31 +2651,32 @@ function viewProperty(){
   const allSettings=(overrides={})=>Object.assign({accretionPct:p.accretionPct??null,avgMonthlyInterest:avgInt,distributionQuarters:p.distributionQuarters||{}},overrides);
   const detRow=(k,v)=>el('div',{style:'display:flex;justify-content:space-between;gap:12px;padding:5px 0;border-bottom:1px solid var(--line-2);font-size:13px'}, el('span',{},k), el('span',{class:'mono'+((typeof v==='number'&&v<0)?' neg':''),style:'font-weight:600'}, typeof v==='number'?fmt(v):v));
   function openAccretion(){
-    let edited=madePct;
+    const qs=[]; for(let q=currentQtr+1; q<=4; q++) qs.push(q);
+    const budOr=q=>{ const br=budgetByQ[q]; return (br!=null && !isNaN(Number(br))) ? Number(br) : madePct; };   // report budget %, else earnings %
     let editedSent=effectiveSentPct;
+    const edited={}; qs.forEach(q=>{ const ov=distQtrs['retQ'+q]; edited[q]=(ov!=null && !isNaN(Number(ov))) ? Number(ov) : budOr(q); });
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
-    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Annual accretion · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+    const sheet=el('div',{class:'sheet'}); const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Remaining accretion · '+code), el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
     const b=el('div',{class:'sb'});
-    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Accretion grows the cash position but never affects SP budget or spend. Each quarter after the current one accretes its budgeted return (from the cushion) net of the distribution rate; the earnings % below is only a fallback for quarters with no budget.'));
+    b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},'Each remaining quarter accretes its return % net of the distribution rate, ÷ 4 × capital. Returns default to the cushion’s budgeted returns — edit any of them below. Never affects SP budget or spend.'));
     const body=el('div',{});
-    const redraw=()=>{ body.innerHTML='';
-      let total=0; const rows=[];
-      for(let q=currentQtr+1; q<=4; q++){ const br=budgetByQ[q]; const rate=(br!=null&&!isNaN(Number(br)))?Number(br):edited; const a=((rate-editedSent)/100/4)*capitalDollars; total+=a; rows.push(detRow('Q'+q+' — '+rate.toFixed(2)+'% budget − '+editedSent.toFixed(2)+'% dist', a)); }
-      if(!rows.length) rows.push(detRow('No quarters remaining after the current one', 0));
+    const redraw=()=>{ body.innerHTML=''; let total=0; const rows=[];
+      if(!qs.length) rows.push(detRow('No quarters remaining after the current one', 0));
+      qs.forEach(q=>{ const a=((edited[q]-editedSent)/100/4)*capitalDollars; total+=a; rows.push(detRow('Q'+q+' — '+edited[q].toFixed(2)+'% return − '+editedSent.toFixed(2)+'% dist', a)); });
       body.append(...rows, detRow('Capital', fmt(capitalDollars)), detRow('Remaining accretion (in Proj end Cash)', total)); };
     redraw();
-    const earnInp=el('input',{type:'number',step:'0.01',value:String(madePct),style:'width:120px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited=parseFloat(e.target.value)||0;redraw();}});
     const sentInp=el('input',{type:'number',step:'0.01',value:String(effectiveSentPct.toFixed(2)),style:'width:120px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{editedSent=parseFloat(e.target.value)||0;redraw();}});
-    b.append(
-      el('div',{class:'field'}, el('label',{},'Fallback earnings % — used only when a quarter has no budget'), earnInp),
-      el('div',{class:'field',style:'margin-top:8px'}, el('label',{},'Return sent % — cushion: '+sentPct.toFixed(2)+'%'), sentInp),
-      body,
+    const retInps={}; qs.forEach(q=>{ retInps[q]=el('input',{type:'number',step:'0.01',value:String(edited[q].toFixed(2)),style:'width:120px;padding:8px 10px;border:1px solid var(--line);border-radius:8px',oninput:e=>{edited[q]=parseFloat(e.target.value)||0;redraw();}}); });
+    b.append(el('div',{class:'field'}, el('label',{},'Distribution rate % — cushion: '+sentPct.toFixed(2)+'%'), sentInp));
+    qs.forEach(q=> b.append(el('div',{class:'field',style:'margin-top:8px'}, el('label',{},'Q'+q+' return % — budget: '+(budgetByQ[q]!=null?Number(budgetByQ[q]).toFixed(2)+'%':'—')), retInps[q])));
+    b.append(body,
       el('div',{style:'display:flex;gap:8px;margin-top:12px'}, el('div',{style:'flex:1'}),
-        el('button',{class:'btn ghost',onclick:()=>{edited=cushMade;earnInp.value=String(cushMade);editedSent=sentPct;sentInp.value=sentPct.toFixed(2);redraw();}},'Reset to cushion'),
+        el('button',{class:'btn ghost',onclick:()=>{ editedSent=sentPct; sentInp.value=sentPct.toFixed(2); qs.forEach(q=>{ edited[q]=budOr(q); retInps[q].value=edited[q].toFixed(2); }); redraw(); }},'Reset to budget'),
         el('button',{class:'btn accent',onclick:async()=>{
           const newQtrs=Object.assign({},p.distributionQuarters||{});
           if(Math.abs(editedSent-sentPct)<0.005){delete newQtrs['rate'];}else{newQtrs['rate']=editedSent;}
-          scrim.remove();await saveSettings(allSettings({accretionPct:edited,distributionQuarters:newQtrs}));
+          qs.forEach(q=>{ if(Math.abs(edited[q]-budOr(q))<0.005){delete newQtrs['retQ'+q];}else{newQtrs['retQ'+q]=edited[q];} });
+          scrim.remove();await saveSettings(allSettings({distributionQuarters:newQtrs}));
         }},'Save')
       )
     );
@@ -2714,7 +2716,7 @@ function viewProperty(){
     if(c.projectedDist!=null) b.append(detRow('· of which projected distribution', -Number(c.projectedDist)));
     b.append(
       detRow('+ Projected interest ('+monthsLeft+' mo × '+fmt(avgInt,false)+')', projInterest),
-      detRow('+ Remaining accretion ('+futureQtrs+'q budget returns net of '+effectiveSentPct.toFixed(2)+'% dist)', futureAccretion),
+      detRow('+ Remaining accretion ('+futureQtrs+'q returns net of '+effectiveSentPct.toFixed(2)+'% dist)', futureAccretion),
       detRow('− Proj addt expenses (committed)', -projRemainingSpend),
       detRow('= Proj '+fy+' end Cash', projEndCash));
     sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
@@ -2735,7 +2737,7 @@ function viewProperty(){
       hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
       hstat(`Proj addt Expenses ${fy}`, fmt(projRemainingSpend), 'none', intProj?`+ ${fmt(intProj,false)} interest → cash`:'committed, not yet paid', openInterest),
       hstat(`Remaining in ${fy}`, fmt(yyyyBudgetProj), ybpTone, `${fmt(remaining,false)} budget less proj spend`),
-      hstat(`${fy} Remaining Accretion`, fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${futureQtrs}q budget vs ${effectiveSentPct.toFixed(2)}% dist`, openAccretion),
+      hstat(`${fy} Remaining Accretion`, fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${futureQtrs}q returns vs ${effectiveSentPct.toFixed(2)}% dist`, openAccretion),
       hstat(`Proj ${fy} end Cash`, fmt(projEndCash), projEndTone, projEndSub, openProjEnd),
       hstat('Cash / door', cpd==null?'—':fmt(cpd), cpdTone, p.units?`${p.units} units (proj end cash)`:'no unit count') ]);
   const body=el('div',{class:'grid',style:'grid-template-columns:330px 1fr'});

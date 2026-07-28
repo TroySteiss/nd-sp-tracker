@@ -154,7 +154,9 @@ export async function assembleState(): Promise<AppState> {
   const glLines: GLLine[] = gl.rows.map((r) => ({ id: r.id, property: r.property_code, account: r.account, category: r.category, date: r.date ? d(r.date) : '', vendor: r.vendor, control: r.control, amount: Number(r.amount), remarks: r.remarks, linkedProjectId: r.linked_project_id, partial: !!r.partial }));
 
   const m = meta.rows[0] || {};
-  const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '', appTitle: m.app_title ?? '' };
+  const metaObj = { version: m.version ?? 1, glPeriod: m.gl_period ?? '', cashAsOf: m.cash_as_of ? d(m.cash_as_of) : '', appTitle: m.app_title ?? '',
+                    // Display-only switch for the property view's cash tile — never read by any calculation.
+                    cashTileMode: m.cash_tile_mode === 'afterDist' ? 'afterDist' : 'current' };
 
   const contractors = ctrs.rows.map((r: any) => ({ id: r.id, name: r.name, address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '', category: r.category ?? '', notes: r.notes ?? '' }));
   const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0 }));

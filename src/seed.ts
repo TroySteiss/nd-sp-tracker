@@ -139,6 +139,8 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     [m.glPeriod || '', dnull(m.cashAsOf), m.version || 1]
   );
   if (m.appTitle) await client.query('update app_meta set app_title=$1 where id=1', [m.appTitle]).catch(() => { /* pre-migration DB */ });
+  if (m.cashTileMode) await client.query('update app_meta set cash_tile_mode=$1 where id=1',
+    [m.cashTileMode === 'afterDist' ? 'afterDist' : 'current']).catch(() => { /* pre-migration DB */ });
 }
 
 async function run() {

@@ -2728,12 +2728,21 @@ function viewProperty(){
   const ybpTone = yyyyBudgetProj<0?'bad':(budget&&yyyyBudgetProj<budget*0.15?'warn':'good');
   const intProj = projInterest;
   const projEndSub=[cashAfterDist!=null?'Col V base':null, intProj?`+ ${fmt(intProj,false)} interest`:null, futureAccretion?`+ ${fmt(futureAccretion,false)} accretion`:null].filter(Boolean).join(' · ')||'cash after distribution';
+  // DISPLAY ONLY — Settings ▸ Property cash tile picks which number this tile shows.
+  // Nothing below reads it: projBase/projEndCash/cpd already base on Col V on their own.
+  // 'afterDist' falls back to current cash when the latest cushion has no Col V.
+  const showAfterDist = (S.meta.cashTileMode||'current')==='afterDist' && cashAfterDist!=null;
+  const asOfSub = c.asOfDate?('as of '+c.asOfDate):'snapshot + adj';
+  const cashTile = showAfterDist
+    ? hstat('Cash after distribution', fmt(cashAfterDist), 'none', 'Col V · '+asOfSub)
+    : hstat('Current cash', fmt(cashToday), 'none',
+            ((S.meta.cashTileMode||'current')==='afterDist' ? 'no Col V · ' : '')+asOfSub);
   const bar=propHead(p,
     [ el('button',{class:'btn',onclick:()=>openUpdateEmail(code)},'📧 Update email'),
       el('button',{class:'btn',onclick:()=>{VIEW.tab='cash';render();}},'Adjust cash'),
       el('button',{class:'btn accent',onclick:()=>{VIEW.prop=code;openProject(null);}},'+ New project') ],
     [ hstat('Spent to date', fmt(spent), 'none', 'posted per GL'),
-      hstat('Current cash', fmt(cashToday), 'none', c.asOfDate?('as of '+c.asOfDate):'snapshot + adj'),
+      cashTile,
       hstat(`Proj addt Expenses ${fy}`, fmt(projRemainingSpend), 'none', intProj?`+ ${fmt(intProj,false)} interest → cash`:'committed, not yet paid', openInterest),
       hstat(`Remaining in ${fy}`, fmt(yyyyBudgetProj), ybpTone, `${fmt(remaining,false)} budget less proj spend`),
       hstat(`${fy} Remaining Accretion`, fmt(accrTileVal), futureAccretion>=0?'good':'bad', `${futureQtrs}q returns vs ${effectiveSentPct.toFixed(2)}% dist`, openAccretion),
@@ -3450,6 +3459,29 @@ function viewSettings(){
   tpad.append(el('div',{style:'display:flex;gap:8px'}, titleI,
     el('button',{class:'btn accent',onclick:async()=>{ try{ await API.send('PATCH','/meta',{appTitle:titleI.value}); await afterWrite('Title updated'); }catch(e){ toast('Failed: '+e.message); } }},'Save')));
   tp.append(tpad); body.append(tp);
+
+  /* --- property cash tile (display only) --- */
+  const cp=el('div',{class:'panel'});
+  cp.append(el('div',{class:'ph'}, el('h3',{},'Property cash tile')));
+  const cpad=el('div',{class:'pad'});
+  const tileMode=(S.meta.cashTileMode||'current');
+  cpad.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:13px'},
+    'Which number the “Current cash” tile shows on a property page. Display only — projections, '+
+    'the GL tie-out and every other figure are unchanged either way. The year-end projection already '+
+    'bases on Col V regardless of this setting.'));
+  const setMode=async m=>{ if(m===tileMode) return;
+    try{ await API.send('PATCH','/meta',{cashTileMode:m}); await afterWrite('Cash tile updated'); }
+    catch(e){ toast('Failed: '+e.message); } };
+  const modeBtn=(m,label,sub)=>el('button',{
+    class:'btn'+(m===tileMode?' accent':''),
+    style:'flex:1;text-align:left;padding:10px 12px;line-height:1.35',
+    onclick:()=>setMode(m)},
+    el('div',{style:'font-weight:600'},label),
+    el('div',{style:'font-size:12px;opacity:.75;font-weight:400'},sub));
+  cpad.append(el('div',{style:'display:flex;gap:8px'},
+    modeBtn('current','Current cash','Cushion snapshot + mid-month adjustments'),
+    modeBtn('afterDist','Cash after distribution','Cushion Col V — falls back to current cash when a property has no Col V')));
+  cp.append(cpad); body.append(cp);
 
   /* --- regions --- */
   const rp=el('div',{class:'panel'});

@@ -69,6 +69,14 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   click to place, draw/reuse signature. `GET/PUT /signature` store the reusable signature. `✉
   Email` on the executed row builds a multipart .eml (buildEml supports attachments) with the PDF,
   pre-addressed to the contractor from the directory.
+- **Property cash tile mode** (`app_meta.cash_tile_mode`, 022; Settings ▸ Property cash tile,
+  admin-only): switches the property view's cash tile between `current` (cash today = snapshot +
+  adjustments, the default) and `afterDist` (cushion Col V). **Display only** — it is read at exactly
+  one place in app.js (the `cashTile` const in viewProperty) and by nothing else. `projBase`,
+  `projEndCash`, cash/door, the GL tie-out and the update emails are untouched either way; the
+  year-end projection already bases on Col V independently of this setting. `afterDist` falls back to
+  current cash (with a "no Col V" sublabel) for properties whose latest cushion lacks Col V. The
+  dashboard Portfolio-summary rows still always show current cash — deliberately out of scope.
 - **"Above the Line"** in a project NAME (`isAboveLine` in domain.ts / `isATL` in app.js) =
   operationally funded: excluded from cash/budget projections (cashModel), GL tie-out (auditModel),
   dashboards, nav counts, quarterly-summary future list, and update emails. Visible only via the
@@ -90,7 +98,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | files | uploaded/generated files as bytea | survive Railway redeploys (no volume) |
 | imports | import history (014) | kind gl/cushion, raw workbook file_key, label, counts, username |
 | change_log | who/what/when audit (014) | username, action, summary, details jsonb |
-| app_meta | single row | gl_period, cash_as_of, `app_title` (014) |
+| app_meta | single row | gl_period, cash_as_of, `app_title` (014), `cash_tile_mode` (022 — display only) |
 | session / _migrations | infra | — |
 
 ## API surface (src/routes.ts)
@@ -107,7 +115,8 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   - GL confirm replaces **only the properties present in the file** and carries GL→project links
     forward by (property, control, date, amount). Raw workbook stored in files + imports row.
 - Settings/admin: `POST/PATCH/DELETE /properties[/:code]`, `POST/PATCH/DELETE /regions[/:name]`,
-  `PATCH /meta` (app title), `PATCH /properties/:code/recipients|settings`.
+  `PATCH /meta` (app title and/or cash tile mode — both optional, so one panel can't clobber the
+  other), `PATCH /properties/:code/recipients|settings`.
   - Creating a property picks up any pre-imported GL lines + cushion snapshot (sp_budget/units copied).
   - Deleting a property is blocked while projects/contracts/adjustments reference it; GL/snapshot rows are kept.
 - Change log: `GET /changelog?limit&before&user&property`.
@@ -135,7 +144,7 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | data | viewData | GL/cushion upload + preview modals, **import history**, backup/restore |
 | directory | viewDirectory | contractors |
 | changelog | viewChangelog | Admin group; filters by user/property, load-more pagination |
-| settings | viewSettings | Admin group; app title, regions manager, properties table + editor modal |
+| settings | viewSettings | Admin group; app title, **property cash tile mode**, regions manager, properties table + editor modal |
 
 - `pcolor(code)` reads `property.color` from state (stable hash fallback for unknown codes).
 - `regionNames()` reads `S.regions` (ordered). `appTitle()` reads `S.meta.appTitle`.

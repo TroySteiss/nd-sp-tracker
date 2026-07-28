@@ -1025,12 +1025,31 @@ api.delete('/properties/:code', requireAdmin, async (req, res) => {
 
 /* ---------- app meta (editable title) ---------- */
 api.patch('/meta', requireAdmin, async (req, res) => {
-  const title = String(req.body?.appTitle || '').trim().slice(0, 80);
-  if (!title) return res.status(400).json({ error: 'appTitle required' });
-  const old = (await query('select app_title from app_meta where id=1')).rows[0]?.app_title || '';
-  await query('update app_meta set app_title=$1 where id=1', [title]);
-  if (old !== title) logChange(req, { action: 'meta.title', entityType: 'meta', summary: `App title changed "${old}" → "${title}"` });
-  res.json({ ok: true, appTitle: title });
+  // Both fields are optional so the Settings panels can PATCH one without clobbering the other.
+  const hasTitle = req.body?.appTitle !== undefined;
+  const hasTileMode = req.body?.cashTileMode !== undefined;
+  if (!hasTitle && !hasTileMode) return res.status(400).json({ error: 'appTitle or cashTileMode required' });
+
+  const prev = (await query('select app_title, cash_tile_mode from app_meta where id=1')).rows[0] || {};
+
+  if (hasTitle) {
+    const title = String(req.body.appTitle || '').trim().slice(0, 80);
+    if (!title) return res.status(400).json({ error: 'appTitle required' });
+    const old = prev.app_title || '';
+    await query('update app_meta set app_title=$1 where id=1', [title]);
+    if (old !== title) logChange(req, { action: 'meta.title', entityType: 'meta', summary: `App title changed "${old}" → "${title}"` });
+  }
+
+  if (hasTileMode) {
+    const mode = req.body.cashTileMode === 'afterDist' ? 'afterDist' : 'current';
+    const old = prev.cash_tile_mode === 'afterDist' ? 'afterDist' : 'current';
+    await query('update app_meta set cash_tile_mode=$1 where id=1', [mode]);
+    if (old !== mode) logChange(req, { action: 'meta.cashTileMode', entityType: 'meta',
+      summary: `Property cash tile now shows ${mode === 'afterDist' ? 'Cash After Distribution (Col V)' : 'current cash'}` });
+  }
+
+  const row = (await query('select app_title, cash_tile_mode from app_meta where id=1')).rows[0] || {};
+  res.json({ ok: true, appTitle: row.app_title ?? '', cashTileMode: row.cash_tile_mode === 'afterDist' ? 'afterDist' : 'current' });
 });
 
 /* ---------- exports (admin-only: full-dataset extraction) ---------- */

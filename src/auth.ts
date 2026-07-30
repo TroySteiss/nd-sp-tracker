@@ -50,10 +50,8 @@ export const normUser = (u: any): string => String(u || '').toLowerCase().replac
    roster only ever adds 'user' / 'pm'. Names match loosely (letters only), so
    "Holly Haman", "holly.haman" and "HollyHaman" are the same person. */
 const ADMIN_USERS = new Set((process.env.ADMIN_USERS || 'Troy Steiss,Riley Combs').split(',').map(normUser).filter(Boolean));
-// Purdue/Perdue both listed — the spelling in use varies and a mismatch would
-// silently drop someone to a plain user.
 const MANAGER_USERS = new Set(
-  (process.env.MANAGER_USERS || 'Holly Haman,Brittanee Purdue,Brittanee Perdue').split(',').map(normUser).filter(Boolean)
+  (process.env.MANAGER_USERS || 'Holly Haman,Brittanee Perdue').split(',').map(normUser).filter(Boolean)
 );
 
 export const isAdminUser = (u?: string): boolean => !!u && ADMIN_USERS.has(normUser(u));

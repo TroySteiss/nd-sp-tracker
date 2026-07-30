@@ -61,7 +61,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   | Role | Set by | Can do |
   |---|---|---|
   | `admin` | `ADMIN_USERS` env (default Troy Steiss, Riley Combs) | everything: Settings, user roster, Change log, bid approval, contract generation, backup/restore/reset, countersign, clear a revision flag |
-  | `manager` | `MANAGER_USERS` env (default Holly Haman, Brittanee Purdue/Perdue) | **currently identical to `user`** — see below |
+  | `manager` | `MANAGER_USERS` env (default Holly Haman, Brittanee Perdue) | **currently identical to `user`** — see below |
   | `user` | default for anyone not listed | full tracker; no admin tabs, no Change log, cannot approve |
   | `pm` | admin assigns in Settings (`app_users.role`) | the stripped `/pm` view only, scoped to their sites |
 
@@ -74,8 +74,9 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   Both admin tiers are **env allowlists, not DB rows**, so they survive a restore and can't be
   edited from inside the app; `app_users` only ever stores `user`/`pm`. Tiers nest —
   `isManagerUser()` is true for admins. Names match on letters only (`normUser`), so
-  "Holly Haman" / "holly.haman" / "HollyHaman" are one person; both Purdue and Perdue spellings
-  are listed deliberately, because a mismatch would silently demote someone to `user`.
+  "Holly Haman" / "holly.haman" / "HollyHaman" are one person. A misspelt name is a *different*
+  account, silently demoted to `user` — the login screen now warns on an unknown name for exactly
+  this reason. (The correct spelling is **Perdue**; the MMR Dashboard repo has it as "Purdue".)
   The only middleware is `requireAdmin`. The client mirrors it as `IS_ADMIN`, but **the server
   enforces regardless** — login is a single shared password with a free-form username, so a role
   scopes the UI and the routes; it is **not** authentication and must never be treated as proof of

@@ -514,17 +514,25 @@ function viewContracts(){
   // Build project lookup
   const projById=new Map(S.projects.map(p=>[p.id,p]));
 
-  // Deduplicate S.contracts by projectId — keep the most recent per project
+  // Deduplicate S.contracts by projectId — keep the most recent per project.
+  // Multi-entity contracts have no projectId, so they key on their own id: they
+  // are separate documents, not regenerations of one project's contract, and
+  // keying them all on null would collapse them into a single row.
+  const isMulti=c=>c.kind==='multi';
   const latestByProj=new Map();
   (S.contracts||[]).forEach(c=>{
-    const ex=latestByProj.get(c.projectId);
-    if(!ex||String(c.createdAt||'')>String(ex.createdAt||'')) latestByProj.set(c.projectId,c);
+    const key=isMulti(c)?'multi:'+c.id:c.projectId;
+    const ex=latestByProj.get(key);
+    if(!ex||String(c.createdAt||'')>String(ex.createdAt||'')) latestByProj.set(key,c);
   });
   // The topbar region toggle scopes EVERYTHING below (KPIs, by-property, lists).
   const allDeduped=[...latestByProj.values()].filter(c=>!CFILT.region||regionOfCode(c.property)===CFILT.region);
 
   // Status of a contract record
   const statusOf=c=>{
+    // A multi-entity contract has no project, so there is no signature chain to
+    // read: it is generated, then handled outside the tracker.
+    if(isMulti(c)) return 'generated';
     const pr=projById.get(c.projectId);
     if(pr&&pr.executedContractFileKey) return 'executed';
     if(pr&&pr.steps&&pr.steps.signed) return 'countersigned';
@@ -625,7 +633,13 @@ function viewContracts(){
   // Main contracts table
   const panel=el('div',{class:'panel'});
   const totalShown=list.length+planned.length;
-  panel.append(el('div',{class:'ph'}, el('h3',{},'Contracts'), el('div',{class:'sp'}), el('span',{class:'chip'},`${totalShown} shown`)));
+  const ph=el('div',{class:'ph'}, el('h3',{},'Contracts'), el('div',{class:'sp'}));
+  // The multi-entity agreement is not tied to a Special Project, so it has no
+  // project modal to launch from — it starts here.
+  if(IS_ADMIN) ph.append(el('button',{class:'btn sm',title:'One contract covering several properties owned by different LLCs — landscaping/snow, pest, pool',
+    onclick:()=>openMultiContract()},'＋ Multi-entity contract'));
+  ph.append(el('span',{class:'chip'},`${totalShown} shown`));
+  panel.append(ph);
   if(!totalShown){
     panel.append(el('div',{class:'empty'}, el('div',{class:'big'},showPlanned?'No projects awaiting a contract.':'No contracts yet'), showPlanned?'All approved projects have contracts generated.':'Generate a contract from a project\'s Bids panel.'));
   } else {
@@ -640,10 +654,21 @@ function viewContracts(){
       // Prefer the executed contract's file when it exists; else the generated one.
       const fKey=(proj&&proj.executedContractFileKey)||c.fileKey||(proj&&proj.contractFileKey)||null;
       const fName=(proj&&proj.executedContractFileKey)?(proj.executedContractFileName||'executed.pdf'):(c.outputFilename||(proj&&proj.contractFileName)||'contract.pdf');
-      tb.append(el('tr',{class:'clickrow',onclick:()=>{if(proj)openProject(proj.id);}},
+      // A multi-entity row has no project to open, and spans several properties —
+      // name the scope and list the entities instead of a single project name.
+      const ents=(c.details&&Array.isArray(c.details.entities))?c.details.entities:[];
+      const mProps=(c.details&&Array.isArray(c.details.properties))?c.details.properties:[];
+      tb.append(el('tr',{class:proj?'clickrow':'',onclick:()=>{if(proj)openProject(proj.id);}},
         el('td',{class:'num'},String(i)),
-        td(el('div',{style:'font-size:12px'},el('div',{},proj?proj.name:(c.outputFilename||'—')),el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
-        td(propChip(c.property)),
+        isMulti(c)
+          ? td(el('div',{style:'font-size:12px'},
+              el('div',{},el('span',{class:'chip',style:'margin-right:6px'},'Multi-entity'),c.scope||'Multi-property contract'),
+              el('div',{style:'color:var(--ink-3);font-size:11px'},ents.map(e=>e.entity).join(' · ')||''),
+              el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||'')))
+          : td(el('div',{style:'font-size:12px'},el('div',{},proj?proj.name:(c.outputFilename||'—')),el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
+        isMulti(c)
+          ? td(el('span',{style:'display:inline-flex;gap:3px;flex-wrap:wrap'},...(mProps.length?mProps:[c.property]).map(code=>propChip(code))))
+          : td(propChip(c.property)),
         td(c.contractor||'—'),
         el('td',{class:'num r'},usd(c.total)),
         td(el('span',{class:'chip '+(ST_CHIP[st]||'')},ST_LABEL[st]||st)),
@@ -2518,7 +2543,279 @@ async function findSignSpot(pdfDoc){
 
    state = { pages:{[fileKey]:Set<pageNo>|null}, marks:{[fileKey]:[{page,x,y,w,h,style}]} }
    null pages = "all pages" (the default; never narrows a bid you didn't touch). */
-async function openScopePreviewer(projectId, state, onSave){
+/* =========================================================
+   MULTI-ENTITY CONTRACT BUILDER  (admin only)
+
+   One Independent Contractor Agreement covering work across several properties
+   owned by different LLCs — landscaping/snow, pest control, pool. It is NOT a
+   Special Project: no project, no bid slots, no lifecycle. Ticking properties
+   derives the owner entities; everything else is entered here.
+
+   The entity NAMES are never sent from here. They print verbatim on signed
+   paper, so the server reads them from properties.owner_entity — this screen only
+   sends property codes. A property with no entity on file is shown as blocking.
+========================================================= */
+async function openMultiContract(){
+  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet sheet-editor'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Multi-entity contract'),
+    el('button',{class:'btn',onclick:()=>scrim.remove()},'Cancel'));
+  const body=el('div',{class:'sb'});
+  const foot=el('div',{class:'sh',style:'border-top:1px solid var(--line);border-bottom:none'});
+  sheet.append(head,body,foot); scrim.append(sheet); document.body.append(scrim);
+
+  const d={
+    properties:[], perProperty:{},
+    contractorName:'', contractorAddr:'', contractorPhone:'', contractorEmail:'',
+    contractType:'Bid Contract',
+    ownerReps:[{name:'',email:''}],
+    effectiveDate:today(), workCompletionDate:'',
+    contractSum:'', liquidatedPerDay:'$100', insuranceDeductible:'$100,000.00',
+    workDays:'Monday, Tuesday, Wednesday, Thursday and Friday', workStart:'8:00 a.m.', workEnd:'5:00 p.m.',
+    exhibitBText:'', scope:'',
+    sharedNoticeAddr:'',
+    bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[],
+    omitSections:[], excludedTerms:[], electedTerms:[],
+  };
+  const field=(label,ctrl,hint)=>{
+    const f=el('div',{class:'field'},el('label',{},label));
+    if(hint) f.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},hint));
+    f.append(ctrl); return f;
+  };
+  const inp=(key,ph,type)=>el('input',{type:type||'text',placeholder:ph||'',value:d[key]||'',
+    oninput:e=>{ d[key]=e.target.value; if(key==='contractorName') fillContractor(e.target.value); }});
+
+  /* ---- 1. Properties → entities ---- */
+  const pPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  pPanel.append(el('div',{class:'ph'},el('h3',{},'Properties & owner entities')));
+  const pBody=el('div',{class:'pad'});
+  pPanel.append(pBody);
+  pBody.append(el('p',{class:'bs-hint',style:'margin:0 0 10px'},'Tick every property the work covers. The owner entity shown is what will be printed — exactly as stored. Fix a wrong one in Settings, not here.'));
+  const perWrap=el('div',{});
+  const noEntityWarn=el('div',{class:'bs-hint',style:'color:var(--bad);display:none'});
+
+  const renderPer=()=>{
+    perWrap.textContent='';
+    const bad=d.properties.filter(c=>!(PROP(c)&&PROP(c).ownerEntity));
+    noEntityWarn.style.display=bad.length?'':'none';
+    if(bad.length) noEntityWarn.textContent='No owner entity on file for '+bad.join(', ')+' — set it in Settings ▸ Properties before generating.';
+    if(!d.properties.length) return;
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('Property'),th("This property's share"),th('Notice phone'),th('Notice email'))));
+    const tb=el('tbody');
+    d.properties.forEach(code=>{
+      const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',noticePhone:'',noticeEmail:''};
+      const pr=PROP(code)||{};
+      tb.append(el('tr',{},
+        td(el('div',{style:'font-size:12px'},el('div',{},propChip(code),' ',pr.name||code),
+          el('div',{style:'color:var(--ink-3);font-size:11px'},pr.ownerEntity||'⚠ no owner entity'))),
+        td(el('input',{value:pp.sum||'',placeholder:'optional, e.g. $8,649.28',oninput:e=>{pp.sum=e.target.value;}})),
+        td(el('input',{value:pp.noticePhone||'',placeholder:pr.noticePhone||'701-…',oninput:e=>{pp.noticePhone=e.target.value;}})),
+        td(el('input',{value:pp.noticeEmail||'',placeholder:pr.noticeEmail||'manager@…',oninput:e=>{pp.noticeEmail=e.target.value;}}))));
+    });
+    t.append(tb);
+    perWrap.append(el('p',{class:'bs-hint',style:'margin:12px 0 6px'},'A share per property is optional — leave blank for a single lump sum. Notice phone/email default to whatever is already on the property and are remembered for next time.'),
+      el('div',{style:'overflow:auto'},t));
+  };
+
+  const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px'});
+  propsByRegion().forEach(p=>{
+    const cb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
+      if(e.target.checked){ if(!d.properties.includes(p.code)) d.properties.push(p.code); }
+      else d.properties=d.properties.filter(c=>c!==p.code);
+      renderPer();
+    }});
+    grid.append(el('label',{style:'display:flex;align-items:center;gap:7px;font-size:12.5px;padding:3px 0;cursor:pointer'},
+      cb, propChip(p.code), el('span',{style:'flex:1'},p.name),
+      p.ownerEntity?null:el('span',{class:'chip hold',title:'No owner entity on file'},'⚠')));
+  });
+  pBody.append(grid, noEntityWarn, perWrap);
+  body.append(pPanel);
+
+  const sharedInp=el('input',{placeholder:'e.g. 1909 31st Ave SW, Minot, ND 58701',oninput:e=>{d.sharedNoticeAddr=e.target.value;}});
+  pBody.append(field('Shared notice address (optional)',sharedInp,
+    'If every entity is noticed at one management office, put it here — Notices and the Exhibit C "TO:" block then list all the entities above a single address, the way the executed contracts read. Leave blank to use each property\'s own address.'));
+
+  /* ---- 2. Contractor ---- */
+  const cPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  cPanel.append(el('div',{class:'ph'},el('h3',{},'Contractor')));
+  const cb2=el('div',{class:'pad'}); cPanel.append(cb2);
+  const nameInp=inp('contractorName','Contractor name');
+  const dl=el('datalist',{id:'multi-ctr-list'});
+  (S.contractors||[]).forEach(c=>dl.append(el('option',{value:c.name})));
+  nameInp.setAttribute('list','multi-ctr-list');
+  const addrInp=inp('contractorAddr','Street, City, ST ZIP');
+  const phoneInp=inp('contractorPhone','Phone');
+  const emailInp=inp('contractorEmail','Email');
+  function fillContractor(name){
+    const hit=(S.contractors||[]).find(c=>c.name.toLowerCase()===String(name||'').toLowerCase());
+    if(!hit) return;
+    if(!d.contractorAddr&&hit.address){ d.contractorAddr=hit.address; addrInp.value=hit.address; }
+    if(!d.contractorPhone&&hit.phone){ d.contractorPhone=hit.phone; phoneInp.value=hit.phone; }
+    if(!d.contractorEmail&&hit.email){ d.contractorEmail=hit.email; emailInp.value=hit.email; }
+  }
+  cb2.append(dl,field('Name',nameInp),field('Address',addrInp),
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},field('Phone',phoneInp),field('Email',emailInp)));
+  body.append(cPanel);
+
+  /* ---- 3. Terms ---- */
+  const tPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  tPanel.append(el('div',{class:'ph'},el('h3',{},'Terms')));
+  const tb2=el('div',{class:'pad'}); tPanel.append(tb2);
+  tb2.append(
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
+      field('Type of contract',inp('contractType','Bid Contract')),
+      field('Contract Sum',inp('contractSum','$55,950.00'))),
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
+      field('Effective date',inp('effectiveDate','','date')),
+      field('Work completion date',inp('workCompletionDate','','date'))),
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
+      field('Liquidated damages per day',inp('liquidatedPerDay','$100'),'Deducted from the Contract Sum for each day past the completion date.'),
+      field("Owner's insurance deductible",inp('insuranceDeductible','$100,000.00'),'Cited in Ownership of Drawings and Materials.')),
+    field('Work days',inp('workDays','Monday, Tuesday, Wednesday, Thursday and Friday')),
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
+      field('Work starts',inp('workStart','8:00 a.m.')),
+      field('Work ends',inp('workEnd','5:00 p.m.'))),
+    field('Scope label',inp('scope','e.g. Landscaping & snow removal'),'Internal only — names the record in the Contracts list.'));
+  body.append(tPanel);
+
+  /* ---- 4. Owner's Representatives ---- */
+  const rPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  rPanel.append(el('div',{class:'ph'},el('h3',{},"Owner's Representatives")));
+  const rBody=el('div',{class:'pad'}); rPanel.append(rBody);
+  const repsWrap=el('div',{});
+  const renderReps=()=>{
+    repsWrap.textContent='';
+    d.ownerReps.forEach((r,i)=>{
+      repsWrap.append(el('div',{style:'display:grid;grid-template-columns:1fr 1.4fr auto;gap:8px;margin-bottom:8px'},
+        el('input',{value:r.name,placeholder:'Name',oninput:e=>{r.name=e.target.value;}}),
+        el('input',{value:r.email,placeholder:'name@monarchinvestment.com',oninput:e=>{r.email=e.target.value;}}),
+        el('button',{class:'btn ghost sm',title:'Remove',onclick:()=>{d.ownerReps.splice(i,1);if(!d.ownerReps.length)d.ownerReps.push({name:'',email:''});renderReps();}},'✕')));
+    });
+    repsWrap.append(el('button',{class:'btn sm',onclick:()=>{d.ownerReps.push({name:'',email:''});renderReps();}},'＋ Add representative'));
+  };
+  renderReps();
+  rBody.append(el('p',{class:'bs-hint',style:'margin:0 0 10px'},'Named in Section 1 and again in the Owner\'s Representatives section, which is where copies of every notice must go.'),repsWrap);
+  body.append(rPanel);
+
+  /* ---- 5. Bid (Exhibit A) ---- */
+  const bPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  bPanel.append(el('div',{class:'ph'},el('h3',{},'Bid — becomes Exhibit A')));
+  const bBody=el('div',{class:'pad'}); bPanel.append(bBody);
+  const bidLabel=el('span',{style:'font-size:12px;color:var(--ink-3)'},'no bid attached');
+  const scopeSummary=el('span',{style:'font-size:12px;color:var(--ink-3)'},'');
+  const scopeState={pages:{},marks:{}};
+  let bidPageCount=0;
+  const syncScope=()=>{
+    d.bidPages=''; d.bidMarks=[];
+    const sel=scopeState.pages[d.bidFileKey];
+    if(sel){ const list=[...sel].sort((a,b)=>a-b); d.bidPages=list.join(','); }
+    d.bidMarks=scopeState.marks[d.bidFileKey]||[];
+    const bits=[d.bidPages?`pages ${d.bidPages}`:'whole bid'];
+    if(d.bidMarks.length) bits.push(`${d.bidMarks.length} mark${d.bidMarks.length===1?'':'s'}`);
+    scopeSummary.textContent='  ·  '+bits.join('  ·  ');
+  };
+  const reviewBtn=el('button',{class:'btn sm',style:'display:none',onclick:()=>openScopePreviewer(
+    [{fileKey:d.bidFileKey,fileName:d.bidFileName,pages:bidPageCount}],scopeState,syncScope)},'🔍 Review bid pages');
+  const fileInp=el('input',{type:'file',accept:'.pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx',onchange:async e=>{
+    const f=e.target.files&&e.target.files[0]; if(!f) return;
+    const fd=new FormData(); fd.append('file',f);
+    toast('Uploading bid…');
+    try{
+      const r=await fetch('/api/contracts/multi/bid',{method:'POST',body:fd});
+      if(!r.ok){ let m; try{m=(await r.json()).error;}catch(err){m='upload failed';} throw new Error(m); }
+      const meta=await r.json();
+      d.bidFileKey=meta.fileKey; d.bidFileName=meta.fileName; bidPageCount=meta.pages||0;
+      scopeState.pages={}; scopeState.marks={}; syncScope();
+      bidLabel.textContent=meta.fileName+(meta.pages?`  ·  ${meta.pages} page${meta.pages===1?'':'s'}`:'  ·  image');
+      reviewBtn.style.display=meta.pages?'':'none';
+      toast(meta.converted?'Converted to PDF for the contract':'Bid attached');
+    }catch(err){ toast('Upload failed: '+err.message); }
+  }});
+  bBody.append(el('p',{class:'bs-hint',style:'margin:0 0 8px'},'Exhibit A reads "See attached bid." and the document embeds behind it. Office files are converted to PDF on upload. Only PDF, JPG and PNG can embed — the contract will not generate without one.'),
+    fileInp,
+    el('div',{style:'display:flex;align-items:center;gap:10px;margin-top:10px;flex-wrap:wrap'},bidLabel,scopeSummary,reviewBtn));
+  body.append(bPanel);
+
+  /* ---- 6. Exhibit B narrative ---- */
+  const exbTa=el('textarea',{rows:'5',placeholder:'Leave blank to generate from the Contract Sum and the per-property shares above.\n\nOr write it out, e.g.:\n$55,950.00, per bid estimate provided in Exhibit A.\n\nBilled monthly at $4,662.50 for the 12-month term. A partial first month is prorated.',
+    oninput:e=>{d.exhibitBText=e.target.value;}});
+  const ePanel=el('div',{class:'panel',style:'margin-bottom:14px'});
+  ePanel.append(el('div',{class:'ph'},el('h3',{},'Exhibit B — Contract Sum')));
+  ePanel.append(el('div',{class:'pad'},field('Narrative',exbTa,
+    'Free text, centered on its own page. This is where a monthly amount, the term and any proration go.')));
+  body.append(ePanel);
+
+  /* ---- 7. Tailoring (same machinery as the Special Project contract) ---- */
+  const tailor=el('details',{class:'panel acc',style:'margin-bottom:14px'});
+  tailor.append(el('summary',{class:'ph as-summary'},el('span',{class:'chev'},'▸'),el('h3',{},'Tailor this contract'),
+    el('div',{class:'sp'}),el('span',{class:'chip'},'optional')));
+  const tlb=el('div',{class:'pad'}); tailor.append(tlb);
+  tlb.append(field('Elected options',el('textarea',{rows:'3',placeholder:'One per line — for bids that offer a choice',
+      oninput:e=>{d.electedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}}),
+    'What you record here controls over every other option shown in the exhibit.'));
+  tlb.append(field('Bid terms to exclude',el('textarea',{rows:'3',placeholder:'One per line, e.g.\n50% deposit due on signing',
+      oninput:e=>{d.excludedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}}),
+    'Rejected on the face of the agreement and reprinted on the Exhibit A cover page — an embedded bid cannot be edited.'));
+  const secWrap=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px'});
+  tlb.append(field('Sections to omit',secWrap,'The remaining sections renumber and cross-references follow. If another section cites the one you drop, generation stops rather than shipping a dangling reference.'));
+  API.get('/contracts/multi/sections').then(secs=>{
+    secs.forEach((s,i)=>{
+      const cb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
+        if(e.target.checked) d.omitSections.push(s.slug); else d.omitSections=d.omitSections.filter(x=>x!==s.slug);
+      }});
+      secWrap.append(el('label',{style:'display:flex;align-items:center;gap:7px;font-size:12px;padding:2px 0;cursor:pointer'},
+        cb,el('span',{style:'color:var(--ink-3)'},String(i+1)+'.'),s.title));
+    });
+  }).catch(()=>{ secWrap.append(el('div',{class:'bs-hint'},'Could not load the section list.')); });
+  body.append(tailor);
+
+  /* ---- Generate ---- */
+  const status=el('span',{style:'flex:1;font-size:12.5px;color:var(--ink-3)'});
+  const genBtn=el('button',{class:'btn pri',onclick:async()=>{
+    const missing=[];
+    if(!d.properties.length) missing.push('at least one property');
+    if(!d.contractorName.trim()) missing.push('contractor name');
+    if(!d.contractSum.trim()) missing.push('Contract Sum');
+    if(!d.effectiveDate) missing.push('effective date');
+    if(!d.workCompletionDate) missing.push('work completion date');
+    if(!d.bidFileKey) missing.push('the bid document');
+    if(missing.length){ status.textContent='Still needed: '+missing.join(', ')+'.'; return; }
+    // The shared office address, when given, applies to every ticked property.
+    const per={};
+    d.properties.forEach(code=>{
+      const pp=d.perProperty[code]||{};
+      per[code]={sum:pp.sum||'',noticePhone:pp.noticePhone||'',noticeEmail:pp.noticeEmail||''};
+      if(d.sharedNoticeAddr.trim()) per[code].noticeAddr=d.sharedNoticeAddr.trim();
+    });
+    genBtn.disabled=true; status.textContent='Generating…';
+    try{
+      const r=await API.send('POST','/contracts/multi',{
+        properties:d.properties, perProperty:per,
+        contractorName:d.contractorName, contractorAddr:d.contractorAddr,
+        contractorPhone:d.contractorPhone, contractorEmail:d.contractorEmail,
+        contractType:d.contractType,
+        ownerReps:d.ownerReps.filter(x=>x.name.trim()||x.email.trim()),
+        effectiveDate:d.effectiveDate, workCompletionDate:d.workCompletionDate,
+        contractSum:d.contractSum, liquidatedPerDay:d.liquidatedPerDay,
+        insuranceDeductible:d.insuranceDeductible,
+        workDays:d.workDays, workStart:d.workStart, workEnd:d.workEnd,
+        exhibitBText:d.exhibitBText, scope:d.scope,
+        bidFileKey:d.bidFileKey, bidPages:d.bidPages, bidMarks:d.bidMarks,
+        omitSections:d.omitSections, excludedTerms:d.excludedTerms, electedTerms:d.electedTerms,
+      });
+      window.open(r.downloadUrl,'_blank');
+      scrim.remove();
+      await afterWrite('Contract generated — '+r.contractFileName);
+    }catch(err){ status.textContent=err.message; genBtn.disabled=false; }
+  }},'Generate contract');
+  foot.append(status,genBtn);
+}
+
+/* source — either a project id (its winning bid's files are resolved server-side)
+   or an already-known list of {fileKey,fileName,pages}, which is what the
+   multi-entity builder passes since it holds its uploaded bid directly. */
+async function openScopePreviewer(source, state, onSave){
   const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
   const sheet=el('div',{class:'sheet sheet-editor'});
   const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Review contract scope'),
@@ -2530,7 +2827,7 @@ async function openScopePreviewer(projectId, state, onSave){
   body.append(status);
 
   let files=[];
-  try{ files=await API.get('/projects/'+projectId+'/bid-pages'); }
+  try{ files=Array.isArray(source)?source:await API.get('/projects/'+source+'/bid-pages'); }
   catch(e){ status.textContent='Could not read the bid: '+e.message; return; }
   if(!files.length){ status.textContent='No bid document is attached yet.'; return; }
 

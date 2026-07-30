@@ -2,7 +2,9 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-28 (property-manager view at /pm; two admin tiers; contract
+> Last updated: 2026-07-30 (multi-entity contract generator — separate 27-section
+> template, Exhibits A–E, shared PDF layout engine extracted from contract.ts).
+> Previously: 2026-07-28 (property-manager view at /pm; two admin tiers; contract
 > revision rollback; contract tailoring — bid page selection, strike/cover marks,
 > excluded terms, section omission).
 > Previously: 2026-07-17 (multi-region; ATL; notes+attachments; split projects; admin lock;
@@ -25,8 +27,14 @@ Express (src/server.ts) ── static: public/
    ├── src/auth.ts        login/logout/status; express-session in Postgres ("session" table)
    ├── src/routes.ts      ALL /api endpoints + change-log helper (async errors wrapped → JSON 500)
    │     ├── src/importers.ts   xlsx parsing (GL + cushion), DB-driven known codes
-   │     ├── src/contract.ts    Independent Contractor Agreement PDF (pdf-lib) — REFUSES to
-   │     │                      generate if the bid can't embed (no placeholder scope, ever)
+   │     ├── src/contract.ts    SP Independent Contractor Agreement PDF ("Contract Price",
+   │     │                      25 sections) — REFUSES to generate if the bid can't embed
+   │     │                      (no placeholder scope, ever)
+   │     ├── src/contract-multi.ts   multi-entity Agreement ("Contract Sum", 27 sections,
+   │     │                      Exhibits A–E) — a SEPARATE template, not a variant
+   │     ├── src/contract-layout.ts  shared PDF engine both templates render through:
+   │     │                      Layout (page cursor + rich text), bid embedding, page
+   │     │                      marks, exhibit text, form boxes, stampSignature
    │     ├── src/convert.ts     Office→PDF via headless LibreOffice (bid uploads auto-convert;
    │     │                      original kept; nixpacks.toml installs LO on Railway;
    │     │                      /healthz reports docConvert; SOFFICE_PATH env override)
@@ -118,14 +126,14 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 
 | Table | Purpose | Notes |
 |---|---|---|
-| properties | property registry | pk `code`; region/manager/color/portfolio/contract_code/owner_entity/addresses/projection settings; update-email fields incl. `update_enabled` (in bulk download) + `update_include_discussed` (015) |
+| properties | property registry | pk `code`; region/manager/color/portfolio/contract_code/owner_entity/addresses/projection settings; update-email fields incl. `update_enabled` (in bulk download) + `update_include_discussed` (015); `notice_phone`/`notice_email` (027 — the multi-entity Notices block) |
 | regions | region registry | pk `name`, `sort` — drives nav & dashboard grouping (014) |
 | projects | SP projects | jsonb `steps`; server re-applies cost rules on write |
 | bids / progress_notes | per-project children | rewritten wholesale on each project save; notes carry `username`, `ts`, `files` jsonb (015) — server stamps missing author/ts from the session |
 | cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
 | cash_adjustments | mid-month deltas | FK to properties; survives imports |
 | gl_lines | SP general ledger | **no FK** (014) — keeps lines for unknown codes; `linked_project_id` ties to projects |
-| contracts | generated-contract records | Contracts view |
+| contracts | generated-contract records | Contracts view. `kind` 'sp'\|'multi' + `details` jsonb (027). `project_id` is nullable and is **always null for 'multi'** — those aren't Special Projects. A multi row's `property_code` is only the lead property; `details.entities` is the authoritative list |
 | contractors | vendor directory | unique name |
 | files | uploaded/generated files as bytea | survive Railway redeploys (no volume) |
 | imports | import history (014) | kind gl/cushion, raw workbook file_key, label, counts, username |
@@ -157,6 +165,9 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
   other), `PATCH /properties/:code/recipients|settings`.
   - Creating a property picks up any pre-imported GL lines + cushion snapshot (sp_budget/units copied).
   - Deleting a property is blocked while projects/contracts/adjustments reference it; GL/snapshot rows are kept.
+- Multi-entity contracts (all **admin-only**): `GET /contracts/multi/sections` (the 27 sections,
+  for the omit checkboxes), `POST /contracts/multi/bid` (upload the Exhibit A bid; same
+  Office→PDF conversion as project bids), `POST /contracts/multi` (generate).
 - Change log: `GET /changelog?limit&before&user&property`.
 - Contractors: `GET/POST/DELETE /contractors`, `POST /contractors/import`.
 - Backup: `GET /export/backup.json`, `GET /export/projects.csv`, `POST /restore`, `POST /reset`.
@@ -176,7 +187,7 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | Tab | Function | Notes |
 |---|---|---|
 | dashboard | viewDashboard | region toggle + property bubbles, KPIs, funnel, pipeline |
-| projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles |
+| projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles; Contracts hosts the admin-only **＋ Multi-entity contract** builder |
 | property | viewProperty | per-property: financial summary, projects by phase, GL reconciliation, update email |
 | cash | viewCash | snapshot/loan table (grouped by region), adjustments, quarterly summary panel |
 | data | viewData | GL/cushion upload + preview modals, **import history**, backup/restore |
@@ -202,7 +213,9 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 - `npm run dev` — tsx watch (preview launch config `.claude/launch.json` uses absolute node path).
 - `npm run migrate` / `seed` — CLI; but server also migrates + seeds-if-empty on every boot.
 - `npm test` (vitest, shared/domain.test.ts) · `npm run typecheck` · `npm run build` (esbuild;
-  build:server lists every src/*.ts entry explicitly — add new files there! pm.ts and revision.ts are in the list).
+  build:server lists every src/*.ts entry explicitly — add new files there! pm.ts, revision.ts,
+  contract-layout.ts and contract-multi.ts are in the list. Forgetting one fails at *runtime* with
+  ERR_MODULE_NOT_FOUND, not at build time).
 - Deploy: Railway, `railway.json` + `nixpacks.toml` (installs LibreOffice + Liberation fonts for
   Office→PDF conversion — makes the image big and the first such build slow); DB env `DATABASE_URL`,
   auth env `APP_PASSWORD`, `SESSION_SECRET`, optional `ADMIN_USERS`, `SOFFICE_PATH`.
@@ -272,6 +285,54 @@ UI: *Generate contract → Tailor this contract → 🔍 Review bid pages* opens
 strike/cover boxes, click a box to remove it. Marks persist on the bid file (`bids.files[].marks`),
 which round-trips because `writeProject` stores `files` as wholesale JSON.
 
+## Multi-entity contract generator (027, 2026-07-30)
+
+One Independent Contractor Agreement covering work across several properties owned by different
+LLCs — landscaping/snow, pest, pool. **Not** a Special Project: no `project_id`, no bid slots, no
+lifecycle, no signature chain. Admin-only, entered from *Contracts ▸ ＋ Multi-entity contract*.
+
+- **`src/contract-multi.ts` is a separate template, not a parameterisation of `contract.ts`.** The
+  wording differs throughout: 27 sections vs 25, "Contract Sum" not "Contract Price", a §1 General
+  Terms block, liquidated damages per day, stated work hours, a warranty split into materials
+  (1 yr) / workmanship (2 yr), plus Force Majeure, Owner's Representatives and Ownership of
+  Drawings sections the SP template has no equivalent of. Don't try to merge them.
+- **Exhibits A–E** (SP has A&B, C, D): A "See attached bid." + the embedded bid · B the Contract Sum
+  as centered free narrative (falls back to the sum + per-property shares if the admin leaves it
+  blank) · C conditional waiver, every entity in the `TO:` block · D final waiver, entities inline
+  in the prose twice · E a blank change-order form — a grid of `drawFormBox` boxes, the only
+  exhibit that isn't prose.
+- **Entity names print VERBATIM.** Nothing normalises them, because the `", LLC"` comma genuinely
+  differs between entities: all five Minot CCXXXI entities are comma-free in every executed
+  contract, while the Kansas City ones on the same template use the comma
+  (`MIMG CLXXVIII Arbors of Grandview, LLC`). That makes `properties.owner_entity` the thing that
+  has to be right — 027 fixed the three Minot rows that carried the seed's comma and deliberately
+  left Williston/Watford City (BCND/ECND/FHND/PHND) alone pending an executed document to check.
+  The builder never posts a name: it sends property **codes** and the server reads the entities.
+- **§12.c tracks the Property.** The 2024 source document required insurers to be "licensed to do
+  business in **Kentucky**" — a leftover from another market. It now reads "in each state in which
+  the Property is located", mirroring Governing Law, so it can't go stale per-region again.
+- **Notices collapse by destination.** Entities sharing a notice address render as one block listing
+  every LLC above a single office address (the Minot case, and how the executed contracts read);
+  entities noticed separately get their own blocks. The builder's *Shared notice address* field
+  applies one office to every ticked property. A blank per-property phone/email falls back to the
+  property's stored value — the endpoint uses `||`, not `??`, precisely because the builder posts
+  `''` for an untouched field.
+- **Refusals** (all HTTP 400, never a half-built document): no property ticked, a ticked property
+  with no `owner_entity`, a bid that can't embed (`NO_SCOPE`), a blank field that appears in the
+  operative text, and omitting a section another one cites. Note that in *this* template every
+  `{SEC:}` cross-reference is a self-reference (5.b, 11, 12.a–c), so today no single omission can
+  strand one — `scripts/multi-snapshot.mjs` asserts that, so adding a genuine cross-section
+  reference later shows up as a change rather than a silent new failure mode.
+- The Contracts view keys multi rows on `'multi:'+id`, not `projectId` — they all have a null
+  `projectId` and would otherwise collapse into one row.
+
+**Verifying a change to either contract generator:** `node scripts/contract-snapshot.mjs <out>`
+(SP) and `node scripts/multi-snapshot.mjs <out.txt> [out.pdf]` (multi) dump the generated documents
+as extracted **text** via `scripts/pdf-text.mjs`. Diff those, **never the file bytes** — pdf-lib's
+output is not byte-deterministic, so identical content differs by a couple of bytes per run and a
+checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
+glyph identical SP output before and after.
+
 ## Gotchas
 
 - Dates arriving as MM/DD/YYYY must go through `dnull()` before hitting date columns.
@@ -281,3 +342,6 @@ which round-trips because `writeProject` stores `files` as wholesale JSON.
 - Files (bids, contracts, import workbooks) live in Postgres `files` (bytea), not on disk.
 - `seed/initial-data.json` is the reset/first-boot state; `loadStateInto` truncates everything.
 - Elk Crossing contract code is ECND-specific history — contract filenames use `properties.contract_code`.
+- `properties.owner_entity` is printed verbatim onto signed contracts. Treat it as a legal name of
+  record, not a display string: don't "tidy" the `, LLC` punctuation, and check an executed document
+  before changing one. See the multi-entity section above.

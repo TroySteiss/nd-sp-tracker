@@ -11,6 +11,7 @@ import { requestContractRevision, clearRevisionFlag } from './revision.js';
 import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
+import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity } from './contract-multi.js';
 import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, type Project, type AppState } from '../shared/domain.js';
 
 export const api = Router();
@@ -596,6 +597,211 @@ api.post('/projects/:id/contract', async (req, res) => {
     summary: `Contract generated for "${proj.name}" — ${vars.contractorName}, ${vars.contractTotal} (${fileName})${tailored ? ` · ${tailored}` : ''}`,
     details: tailored ? contractOpts : undefined });
   res.json({ contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
+});
+
+/* =============================================================================
+   Multi-entity contract generator (migration 027)
+
+   Top-admin level, and deliberately NOT tied to a Special Project: no project_id,
+   no bid slots, no lifecycle. It produces the agreement used for work spanning
+   several properties owned by different LLCs (landscaping/snow, pest, pool).
+   Records land in `contracts` with kind='multi', a null project_id and the entity
+   list in `details`.
+   ============================================================================= */
+
+/** The 27 numbered sections, so the builder can offer them for omission. */
+api.get('/contracts/multi/sections', requireAdmin, (_req, res) => res.json(multiSectionList()));
+
+const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
+/** "2024-11-30" → "November 30, 2024". The executed contracts spell the Work
+ *  Completion Date out in full; the builder sends a date input's ISO value. */
+const longDate = (s: string) => {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : String(s || '').trim();
+};
+/** "2024-09-01" → "09/01/2024", matching the SP template. Free text passes through
+ *  so an admin can still write "the date of signing". */
+const slashDate = (s: string) => {
+  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
+  return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || '').trim();
+};
+
+/** Upload the bid that becomes Exhibit A. Same Office→PDF rule as project bids:
+ *  without conversion an admin could attach a .docx the generator then refuses. */
+api.post('/contracts/multi/bid', requireAdmin, memUpload.single('file'), async (req, res) => {
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  let name = f.originalname, mime = f.mimetype, buf = f.buffer, convertedFlag = false;
+  if (isOfficeDoc(f.originalname)) {
+    const pdf = await officeToPdf(f.buffer, f.originalname);
+    if (!pdf) return res.status(400).json({ error: `"${f.originalname}" could not be converted to PDF on this server — save it as a PDF in Word/Excel and attach that instead.` });
+    name = f.originalname.replace(/\.[^.]+$/, '') + '.pdf';
+    mime = 'application/pdf'; buf = Buffer.from(pdf); convertedFlag = true;
+  }
+  const key = await storeFile(name, mime, buf);
+  // Report the page count so the previewer can offer page selection straight away.
+  let pages = 0;
+  try { pages = (await PDFDocument.load(buf, { ignoreEncryption: true })).getPageCount(); } catch { pages = 0; }
+  res.json({ fileKey: key, fileName: name, fileSize: buf.length, pages, converted: convertedFlag });
+});
+
+api.post('/contracts/multi', requireAdmin, async (req, res) => {
+  const b = req.body || {};
+
+  // The entity list is assembled SERVER-SIDE from the ticked property codes. The
+  // client sends codes, never entity names: these print verbatim on signed paper,
+  // so they come from properties.owner_entity and nowhere else.
+  const codes: string[] = (Array.isArray(b.properties) ? b.properties : [])
+    .map((c: any) => String(c || '').toUpperCase().trim()).filter(Boolean);
+  if (!codes.length) return res.status(400).json({ error: 'Tick at least one property.' });
+  const rows = (await query<any>('select * from properties where code = any($1::text[])', [codes])).rows;
+  const missing = codes.filter((c) => !rows.some((r) => r.code === c));
+  if (missing.length) return res.status(400).json({ error: `Unknown property code(s): ${missing.join(', ')}` });
+
+  // Per-property extras the builder collects: this property's share of the sum,
+  // and the notice phone/email if they aren't on the property yet.
+  const per: Record<string, any> = (b.perProperty && typeof b.perProperty === 'object') ? b.perProperty : {};
+  const entities: MultiEntity[] = codes.map((code) => {
+    const r = rows.find((x) => x.code === code)!;
+    const p = per[code] || {};
+    return {
+      entity: r.owner_entity || '',
+      propertyName: r.name || code,
+      address: r.address || '',
+      // A portfolio run from one management office gives every entity the same
+      // notice address, which collapses them into one block in Notices and one
+      // TO: block on Exhibit C — exactly how the executed contracts read.
+      // `||`, not `??`: the builder posts '' for a field left blank, and a blank
+      // must fall back to what is stored on the property, not override it.
+      noticeAddr: String(p.noticeAddr || r.owner_notice_addr || '').trim(),
+      noticePhone: String(p.noticePhone || r.notice_phone || '').trim(),
+      noticeEmail: String(p.noticeEmail || r.notice_email || '').trim(),
+      sum: String(p.sum ?? '').trim(),
+    };
+  });
+
+  const reps = (Array.isArray(b.ownerReps) ? b.ownerReps : [])
+    .map((r: any) => ({ name: String(r?.name || '').trim(), email: String(r?.email || '').trim() }))
+    .filter((r: any) => r.name || r.email);
+
+  const vars: MultiContractVars = {
+    effectiveDate: slashDate(b.effectiveDate),
+    entities,
+    contractorName: String(b.contractorName || '').trim(),
+    contractorAddr: String(b.contractorAddr || '').trim(),
+    contractorPhone: String(b.contractorPhone || '').trim(),
+    contractorEmail: String(b.contractorEmail || '').trim(),
+    contractType: String(b.contractType || 'Bid Contract').trim(),
+    ownerReps: reps,
+    workCompletionDate: longDate(b.workCompletionDate),
+    contractSum: String(b.contractSum || '').trim(),
+    liquidatedPerDay: String(b.liquidatedPerDay || '').trim(),
+    workDays: String(b.workDays || 'Monday, Tuesday, Wednesday, Thursday and Friday').trim(),
+    workStart: String(b.workStart || '8:00 a.m.').trim(),
+    workEnd: String(b.workEnd || '5:00 p.m.').trim(),
+    insuranceDeductible: String(b.insuranceDeductible || '').trim(),
+    exhibitBText: String(b.exhibitBText || ''),
+  };
+
+  // Every field below appears in the operative text of the agreement — a blank
+  // leaves a hole in a document that gets signed, so refuse rather than emit it.
+  const required: [string, string][] = [
+    ['contractorName', 'Contractor name'], ['contractSum', 'Contract Sum'],
+    ['effectiveDate', 'Effective Date'], ['workCompletionDate', 'Work Completion Date'],
+    ['liquidatedPerDay', 'Liquidated damages per day'], ['insuranceDeductible', "Owner's insurance deductible"],
+  ];
+  const blank = required.filter(([k]) => !String((vars as any)[k]).trim()).map(([, label]) => label);
+  if (blank.length) return res.status(400).json({ error: `Missing: ${blank.join(', ')}.` });
+
+  const bidKey = String(b.bidFileKey || '').trim();
+  if (!bidKey) return res.status(400).json({ error: 'Attach the bid document — it becomes Exhibit A.' });
+  const bidFile = await readFile(bidKey);
+  if (!bidFile) return res.status(400).json({ error: 'The attached bid file could not be found — upload it again.' });
+
+  const attachments: BidAttachment[] = [{
+    buffer: bidFile.bytes,
+    name: bidFile.name || bidKey,
+    pages: String(b.bidPages || '').trim() || undefined,
+    marks: sanitizeMarks(b.bidMarks),
+  }];
+
+  const asList = (v: any): string[] =>
+    (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean).slice(0, 20);
+  const opts = { omitSections: asList(b.omitSections), excludedTerms: asList(b.excludedTerms), electedTerms: asList(b.electedTerms) };
+
+  let pdf: Uint8Array, sigAnchor: any = null;
+  try { const built = await buildMultiContract(vars, attachments, opts); pdf = built.bytes; sigAnchor = built.sigAnchor; }
+  catch (e: any) {
+    // A missing entity, an unembeddable bid and a dangling cross-reference are all
+    // user-fixable mistakes, not server faults.
+    if (e?.code === 'NO_SCOPE' || e?.code === 'NO_ENTITIES') return res.status(400).json({ error: e.message });
+    if (/^Cannot omit /.test(e?.message || '')) return res.status(400).json({ error: e.message });
+    return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) });
+  }
+
+  // Filename: the properties' contract codes, the contractor and the date. Capped
+  // at four codes so a nine-property snow contract doesn't produce an absurd name.
+  const codeList = codes.map((c) => rows.find((r) => r.code === c)?.contract_code || c);
+  const codePart = codeList.length > 4 ? `${codeList.slice(0, 4).join('-')}+${codeList.length - 4}` : codeList.join('-');
+  const fileName = `${codePart}_${camel(vars.contractorName)}_${mmddyyyy(vars.effectiveDate)}_Unexecuted.pdf`;
+  const fileKey = await storeFile(fileName, 'application/pdf', Buffer.from(pdf));
+  const total = nnull(String(vars.contractSum).replace(/[^0-9.\-]/g, ''));
+
+  const id = uid('C');
+  await tx(async (c) => {
+    // property_code holds the lead property so the Contracts view can group it;
+    // the full entity list lives in `details`, which is the authoritative record.
+    await c.query(
+      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key,kind,details)
+       values($1,null,$2,$3,$4,$5,$6,$7,$8,$9,$10,'multi',$11)`,
+      // The date columns take the builder's raw ISO values — the vars carry the
+      // spelled-out forms the document prints, which dnull() can't parse.
+      [id, codes[0], fileName, entities.map((e) => e.entity).join('; '), vars.contractorName, total,
+       dnull(b.effectiveDate) || dnull(vars.effectiveDate), dnull(b.workCompletionDate),
+       String(b.scope || '').trim() || 'Multi-property contract', fileKey,
+       JSON.stringify({
+         entities, properties: codes, ownerReps: reps, contractType: vars.contractType,
+         workCompletionDate: vars.workCompletionDate, liquidatedPerDay: vars.liquidatedPerDay,
+         workDays: vars.workDays, workStart: vars.workStart, workEnd: vars.workEnd,
+         insuranceDeductible: vars.insuranceDeductible, exhibitBText: vars.exhibitBText,
+         sigAnchor, tailoring: opts,
+       })]
+    );
+    // Remember the notice contacts so the next multi contract pre-fills them.
+    // `entities` was built by mapping over `codes`, so the indices line up.
+    if (b.rememberProperty !== false) {
+      for (let i = 0; i < codes.length; i++) {
+        const e = entities[i];
+        await c.query(
+          `update properties set notice_phone = case when $1 <> '' then $1 else notice_phone end,
+                                 notice_email = case when $2 <> '' then $2 else notice_email end
+           where code = $3`,
+          [e.noticePhone || '', e.noticeEmail || '', codes[i]]
+        );
+      }
+    }
+    if (vars.contractorName && vars.contractorAddr) {
+      await c.query(
+        `insert into contractors(id,name,address,phone,email) values($1,$2,$3,$4,$5)
+         on conflict(name) do update set address=case when excluded.address<>'' then excluded.address else contractors.address end,
+                                         phone=case when excluded.phone<>'' then excluded.phone else contractors.phone end,
+                                         email=case when excluded.email<>'' then excluded.email else contractors.email end`,
+        [uid('CTR'), vars.contractorName, vars.contractorAddr, vars.contractorPhone || '', vars.contractorEmail || '']
+      );
+    }
+  });
+
+  const tailored = [
+    opts.omitSections.length ? `${opts.omitSections.length} section(s) omitted` : null,
+    opts.excludedTerms.length ? `${opts.excludedTerms.length} bid term(s) excluded` : null,
+    opts.electedTerms.length ? `${opts.electedTerms.length} option(s) elected` : null,
+  ].filter(Boolean).join('; ');
+  logChange(req, {
+    action: 'contract.generate.multi', entityType: 'contract', entityId: id, property: codes[0],
+    summary: `Multi-entity contract generated — ${vars.contractorName}, ${vars.contractSum} across ${entities.length} propert${entities.length === 1 ? 'y' : 'ies'} (${codes.join(', ')}) (${fileName})${tailored ? ` · ${tailored}` : ''}`,
+    details: { properties: codes, entities: entities.map((e) => e.entity), tailoring: opts },
+  });
+  res.json({ id, contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
 });
 
 /* ---------- cash snapshot (mid-month edit) ---------- */

@@ -46,6 +46,11 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
       'update properties set update_to=$1, update_cc=$2, update_greeting=$3, update_enabled=$4, update_include_discussed=$5 where code=$6',
       [fromBlob.updateTo || '', fromBlob.updateCc || '', fromBlob.updateGreeting || '', fromBlob.updateEnabled !== false, fromBlob.updateIncludeDiscussed === true, p.code]
     ).catch(() => { /* pre-migration DB */ });
+    // multi-entity contract notice contacts (027)
+    await client.query(
+      'update properties set notice_phone=$1, notice_email=$2 where code=$3',
+      [fromBlob.noticePhone || '', fromBlob.noticeEmail || '', p.code]
+    ).catch(() => { /* pre-migration DB */ });
   }
 
   // regions — from the blob when present, otherwise derived from the properties in order
@@ -92,9 +97,10 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
   for (const ct of (state as any).contracts || []) {
     const link = ct.projectId && projectIds.has(ct.projectId) ? ct.projectId : null;
     await client.query(
-      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key,created_at)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [ct.id, link, ct.property, ct.outputFilename || '', ct.ownerEntity || '', ct.contractor || '', nnull(ct.total), dnull(ct.effectiveDate), dnull(ct.termEnd), ct.scope || '', ct.fileKey || null, dnull(ct.createdAt) || dnull(ct.effectiveDate) || new Date().toISOString().slice(0, 10)]
+      `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key,created_at,kind,details)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14)`,
+      [ct.id, link, ct.property, ct.outputFilename || '', ct.ownerEntity || '', ct.contractor || '', nnull(ct.total), dnull(ct.effectiveDate), dnull(ct.termEnd), ct.scope || '', ct.fileKey || null, dnull(ct.createdAt) || dnull(ct.effectiveDate) || new Date().toISOString().slice(0, 10),
+       ct.kind === 'multi' ? 'multi' : 'sp', JSON.stringify(ct.details || {})]
     );
   }
 

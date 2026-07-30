@@ -612,15 +612,9 @@ api.post('/projects/:id/contract', async (req, res) => {
 /** The 27 numbered sections, so the builder can offer them for omission. */
 api.get('/contracts/multi/sections', requireAdmin, (_req, res) => res.json(multiSectionList()));
 
-const MONTHS = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
-/** "2024-11-30" → "November 30, 2024". The executed contracts spell the Work
- *  Completion Date out in full; the builder sends a date input's ISO value. */
-const longDate = (s: string) => {
-  const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
-  return m ? `${MONTHS[Number(m[2]) - 1]} ${Number(m[3])}, ${m[1]}` : String(s || '').trim();
-};
-/** "2024-09-01" → "09/01/2024", matching the SP template. Free text passes through
- *  so an admin can still write "the date of signing". */
+/** "2024-09-01" → "09/01/2024". The executed multi-entity contract writes every
+ *  date this way, the Work Completion Date included. Free text passes through so an
+ *  admin can still write "the date of signing". */
 const slashDate = (s: string) => {
   const m = String(s || '').match(/^(\d{4})-(\d{2})-(\d{2})$/);
   return m ? `${m[2]}/${m[3]}/${m[1]}` : String(s || '').trim();
@@ -697,12 +691,12 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
     contractorEmail: String(b.contractorEmail || '').trim(),
     contractType: String(b.contractType || 'Bid Contract').trim(),
     ownerReps: reps,
-    workCompletionDate: longDate(b.workCompletionDate),
+    workCompletionDate: slashDate(b.workCompletionDate),
     contractSum: String(b.contractSum || '').trim(),
     liquidatedPerDay: String(b.liquidatedPerDay || '').trim(),
-    workDays: String(b.workDays || 'Monday, Tuesday, Wednesday, Thursday and Friday').trim(),
-    workStart: String(b.workStart || '8:00 a.m.').trim(),
-    workEnd: String(b.workEnd || '5:00 p.m.').trim(),
+    workDays: String(b.workDays || 'Mondays through Fridays').trim(),
+    workStart: String(b.workStart || '8:00 AM').trim(),
+    workEnd: String(b.workEnd || '5:00 PM').trim(),
     insuranceDeductible: String(b.insuranceDeductible || '').trim(),
     ongoingPeriod: String(b.ongoingPeriod || 'monthly').trim(),
     exhibitBText: String(b.exhibitBText || ''),

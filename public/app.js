@@ -2569,7 +2569,7 @@ async function openMultiContract(){
     ownerReps:[{name:'',email:''}],
     effectiveDate:today(), workCompletionDate:'',
     contractSum:'', liquidatedPerDay:'$100', insuranceDeductible:'$100,000.00',
-    workDays:'Monday, Tuesday, Wednesday, Thursday and Friday', workStart:'8:00 a.m.', workEnd:'5:00 p.m.',
+    workDays:'Mondays through Fridays', workStart:'8:00 AM', workEnd:'5:00 PM',
     exhibitBText:'', scope:'',
     sharedNoticeAddr:'',
     splitAmounts:false, ongoingPeriod:'monthly',
@@ -2684,8 +2684,8 @@ async function openMultiContract(){
   body.append(pPanel);
 
   const sharedInp=el('input',{placeholder:'e.g. 1909 31st Ave SW, Minot, ND 58701',oninput:e=>{d.sharedNoticeAddr=e.target.value;}});
-  pBody.append(field('Shared notice address (optional)',sharedInp,
-    'If every entity is noticed at one management office, put it here — Notices and the Exhibit C "TO:" block then list all the entities above a single address, the way the executed contracts read. Leave blank to use each property\'s own address.'));
+  pBody.append(field('Redirect all notices to one address (optional)',sharedInp,
+    'Leave blank and Notices lists each entity above its own property address, which is how the executed contract reads. Fill it in only if notices for every entity should go to one management office instead — each entity still gets its own block.'));
 
   /* ---- 2. Contractor ---- */
   const cPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
@@ -2723,10 +2723,10 @@ async function openMultiContract(){
     el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
       field('Liquidated damages per day',inp('liquidatedPerDay','$100'),'Deducted from the Contract Sum for each day past the completion date.'),
       field("Owner's insurance deductible",inp('insuranceDeductible','$100,000.00'),'Cited in Ownership of Drawings and Materials.')),
-    field('Work days',inp('workDays','Monday, Tuesday, Wednesday, Thursday and Friday')),
+    field('Work days',inp('workDays','Mondays through Fridays')),
     el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
-      field('Work starts',inp('workStart','8:00 a.m.')),
-      field('Work ends',inp('workEnd','5:00 p.m.'))),
+      field('Work starts',inp('workStart','8:00 AM')),
+      field('Work ends',inp('workEnd','5:00 PM'))),
     field('Scope label',inp('scope','e.g. Landscaping & snow removal'),'Internal only — names the record in the Contracts list.'));
   body.append(tPanel);
 

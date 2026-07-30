@@ -127,6 +127,55 @@ try {
   report.push('no-scope: NO THROW (regression!)');
 } catch (e) { report.push(`no-scope: ${e.code} ${e.message}`); }
 
+/* ---------------------------------------------------------------------------
+   The executed contract, reproduced.
+
+   These are the exact inputs of the executed Legend Lawn Landscaping and Snow
+   Contract 09.2025-08.2026, whose scan is where this template's language comes
+   from. Dumping it as text is the check that matters: read it against the signed
+   document and any drift shows up. If you change wording in contract-multi.ts,
+   this is the section to re-read.
+   --------------------------------------------------------------------------- */
+{
+  const E = (entity, propertyName, address, noticePhone) =>
+    ({ entity, propertyName, address, noticePhone, noticeEmail: 'hhaman@monarchinvestment.com' });
+  const legend = {
+    effectiveDate: '09/01/2025',
+    entities: [
+      E('MIMG CCXXXI Commons Sub LLC', 'The Commons and Landing at Southgate', '1909 31st Ave SW, Minot, ND, 58701', '701-892-8276'),
+      E('MIMG CCXXXI South Pointe Sub LLC', 'South Pointe', '1301 31st Ave SW #108, Minot, ND 58701', '701-394-5494'),
+      E('MIMG CCXXXI Chateau Sub LLC', 'The Chateau', '1725 2nd Ave SW, Minot, ND 58701', '701-380-8326'),
+      E('MIMG CCXXXI Plaza Sub LLC', 'The Plaza', '3015 16th Street SW, Minot, ND 58701', '701-515-9159'),
+      E('MIMG CCXLVIII The Wyatt Master LLC', 'The Wyatt at Northern Lights', '1410 30th Ave NW, Minot, ND 58703', '701-852-9500'),
+    ],
+    contractorName: 'Legend Lawn Maintenance LLC',
+    contractorAddr: '701 Surrey Ave, Surrey, ND 58785',
+    contractorPhone: '701-509-7670',
+    contractorEmail: 'kris.spaulding@yahoo.com',
+    contractType: 'Bid Contract',
+    ownerReps: [
+      { name: 'Riley Combs', email: 'rcombs@monarchinvestment.com' },
+      { name: 'Troy Steiss', email: 'tsteiss@monarchinvestment.com' },
+      { name: 'Kara Garrison', email: 'kgarrison@monarchinvestment.com' },
+    ],
+    workCompletionDate: '08/31/2026',
+    contractSum: '$330,000.00',
+    liquidatedPerDay: '$100',
+    workDays: 'Mondays through Fridays',
+    workStart: '8:00 AM',
+    workEnd: '5:00 PM',
+    insuranceDeductible: '$100,000.00',
+    ongoingPeriod: 'monthly',
+    exhibitBText: '$330,000.00, per bid in Exhibit A.\n\nThis price includes a total of $27,500 per month for 12 months, from September 2025 to August 2026.\n\nPlease note, the work at The Wyatt at Northern Lights is subject to a purchase closing date on or before September 1, 2025. If closing occurs after September 1, 2025, then work will begin starting on the closing date & the amount due for the first month will be prorated based on the number of days serviced for that month.',
+  };
+  const b = await buildMultiContract(legend, [{ buffer: bid, name: 'bid.pdf' }]);
+  const pages = await pdfText(b.bytes);
+  report.push('', '=== executed Legend Lawn contract, reproduced ===',
+    `pages: ${pages.length}`, `sigAnchor: ${JSON.stringify(b.sigAnchor)}`);
+  pages.forEach((t, i) => report.push('', `--- p${i + 1} ---`, t));
+  if (pdfOut) writeFileSync(pdfOut.replace(/\.pdf$/, '') + '-legend.pdf', Buffer.from(b.bytes));
+}
+
 writeFileSync(out, report.join('\n') + '\n');
 if (pdfOut) writeFileSync(pdfOut, Buffer.from(built.bytes));
-console.log('wrote', out, pdfOut ? `and ${pdfOut}` : '');
+console.log('wrote', out, pdfOut ? `and ${pdfOut} (+ -legend.pdf)` : '');

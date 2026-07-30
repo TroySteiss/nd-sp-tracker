@@ -22,18 +22,40 @@ import {
        Representatives and Ownership of Drawings sections the SP template lacks
      - Exhibits A–E (the SP template has A&B, C, D)
 
-   Source of the language: the executed Minot contracts on this template —
-   "Minot Crystal Clear Projects Contract 9.2024.docx" for clean section text and
-   the executed Legend Lawn 09.2025–08.2026 agreement for current structure.
+   SOURCE OF THE LANGUAGE — the executed Legend Lawn Landscaping and Snow
+   Contract 09.2025-08.2026, read page by page off the scan. That document is the
+   current form and wins wherever it differs from the 2024 Crystal Clear .docx
+   this template was first built from. The 2024 file is now only useful as a
+   cross-check on passages the two share; it is stale in at least these ways:
 
-   Two deliberate departures from the 2024 document:
-     1. Section 12.c in that file requires insurers to be "licensed to do
-        business in Kentucky" — carried over from another market and plainly
-        wrong for North Dakota. It now tracks the Property, the same way
-        Governing Law already does, so it can never be stale again.
-     2. Entity names print EXACTLY as stored. They are legal names on signed
-        paper, and the ", LLC" comma genuinely differs between entities, so
-        nothing here normalises them. Get them right in properties.owner_entity.
+     - Section 1 is a lettered a-d list, not loose lines, and states only the
+       total (no per-property breakdown)
+     - dates read MM/DD/YYYY throughout, not "November 30, 2024"
+     - work hours read "Mondays through Fridays, between the hours of 8:00 AM to
+       5:00 PM" — "to", not "and"
+     - Section 12.a adds the duty to provide certificates on Owner's request
+     - Notices gives EACH entity its own name/address/phone/email block, with no
+       "Office Address:" prefix and no merging of shared destinations
+     - Owner's Representatives pairs each name with its own email inline
+     - the signature block has no "as Agent for and on behalf of Owner" line
+     - Exhibit A sits on a page of its own, the bid starting after it
+     - Exhibit C's TO: block is one name+address per entity; its cut-off date is
+       the EFFECTIVE date, and there is no "respectively,"
+     - Exhibit D's first list pairs entity+address, its second names entities
+       only, and there is no notary block
+     - name/address pairs are bare comma lists, never "X located at Y"
+
+   Two deliberate departures from the executed document:
+     1. Section 12.c names "ND". That is derived from the ticked properties'
+        addresses rather than hard-coded, so it reproduces "ND" here and stays
+        right elsewhere — the 2024 file still said "Kentucky", which is exactly
+        what hard-coding a state does to you.
+     2. Two evident typos in the form are corrected: "any others items" and
+        Exhibit E's "ARE NTO CHANGED". A typo we emit reads as our bug.
+
+   Entity names print EXACTLY as stored. They are legal names on signed paper,
+   and the ", LLC" comma genuinely differs between entities, so nothing here
+   normalises them. Get them right in properties.owner_entity.
    ============================================================================= */
 
 /** One owning entity and the property it owns, as it appears in the agreement. */
@@ -68,13 +90,13 @@ export interface MultiContractVars {
   /** Section 1 "Type of contract", e.g. "Bid Contract". */
   contractType: string;
   ownerReps: { name: string; email: string }[];
-  workCompletionDate: string;
-  contractSum: string;            // e.g. "$55,950.00"
+  workCompletionDate: string;      // MM/DD/YYYY, as the executed contract writes it
+  contractSum: string;            // e.g. "$330,000.00"
   /** Liquidated damages per day past the completion date, e.g. "$100". */
   liquidatedPerDay: string;
-  workDays: string;               // "Monday, Tuesday, Wednesday, Thursday and Friday"
-  workStart: string;              // "8:00 a.m."
-  workEnd: string;                // "5:00 p.m."
+  workDays: string;               // "Mondays through Fridays"
+  workStart: string;              // "8:00 AM"
+  workEnd: string;                // "5:00 PM"
   /** Owner's own insurance deductible, cited in Ownership of Drawings. */
   insuranceDeductible: string;    // e.g. "$100,000.00"
   /** How often an entity's `ongoing` amount recurs — labels the line item. */
@@ -113,14 +135,17 @@ function andList(items: string[]): string {
   return `${xs.slice(0, -1).join(', ')}, and ${xs[xs.length - 1]}`;
 }
 
+/* The executed contract pairs a name with its address as a bare comma list —
+   "The Commons and Landing at Southgate, 1909 31st Ave SW, Minot, ND, 58701,
+   South Pointe, 1301 31st Ave SW #108, …" — NOT "X located at Y". That is what
+   is on signed paper, so don't "improve" it into something more readable. */
 const entityNames = (v: MultiContractVars) => andList(v.entities.map((e) => e.entity));
-/** "South Pointe located at 1201 31st Ave SW, Minot, ND 58701, and ..." */
+/** Preamble + Exhibit C: "PropertyName, Address, PropertyName, Address, and …" */
 const propertyList = (v: MultiContractVars) =>
-  andList(v.entities.map((e) => `${e.propertyName} located at ${e.address}`));
-/** "MIMG ... Sub LLC located at 1201 31st Ave SW, ..." — Exhibit D's inline form. */
-const entityLocatedList = (v: MultiContractVars) =>
-  andList(v.entities.map((e) => `${e.entity} located at ${e.address}`));
-const addressList = (v: MultiContractVars) => andList(v.entities.map((e) => e.address));
+  andList(v.entities.map((e) => `${e.propertyName}, ${e.address}`));
+/** Exhibit D's first list: "Entity, Address, Entity, Address, and …" */
+const entityAddressList = (v: MultiContractVars) =>
+  andList(v.entities.map((e) => `${e.entity}, ${e.address}`));
 
 /* ---------- the per-property money breakdown ---------- */
 
@@ -159,25 +184,31 @@ function lineItems(v: MultiContractVars): LineItem[] {
   }
   return out;
 }
+/** Notices/Exhibit C address for one entity — its own, unless redirected. */
 const noticeOf = (e: MultiEntity) => (e.noticeAddr && e.noticeAddr.trim()) ? e.noticeAddr.trim() : e.address;
 
+/** "…, Minot, ND 58701" → "ND". Empty when no state can be read off the end. */
+function stateOf(addr: string): string {
+  const m = String(addr || '').match(/\b([A-Za-z]{2})\b[\s,]*\d{5}(?:-\d{4})?\s*$/);
+  return m ? m[1].toUpperCase() : '';
+}
+
 /**
- * Group entities by the notice destination they share.
+ * The distinct states the Property sits in, for the insurer-licensing clause.
  *
- * A portfolio run from one management office (the Minot case) collapses to a
- * single block listing all three LLCs above one address — exactly how the
- * executed 2024 contract reads. Entities noticed separately get their own blocks.
+ * The executed contract names "ND" outright. Deriving it from the ticked
+ * properties reproduces that exactly for a North Dakota contract and stays
+ * correct in another region — the 2024 document still said "Kentucky", which is
+ * exactly the failure a hard-coded state produces. Empty if nothing parses, and
+ * the clause then falls back to tracking the Property in words.
  */
-function noticeGroups(v: MultiContractVars): { names: string[]; addr: string; phone?: string; email?: string }[] {
-  const out: { names: string[]; addr: string; phone?: string; email?: string }[] = [];
+function insurerStates(v: MultiContractVars): string {
+  const seen: string[] = [];
   for (const e of v.entities) {
-    const addr = noticeOf(e);
-    const key = `${addr}|${e.noticePhone || ''}|${e.noticeEmail || ''}`;
-    const hit = out.find((g) => `${g.addr}|${g.phone || ''}|${g.email || ''}` === key);
-    if (hit) hit.names.push(e.entity);
-    else out.push({ names: [e.entity], addr, phone: e.noticePhone, email: e.noticeEmail });
+    const s = stateOf(noticeOf(e)) || stateOf(e.address);
+    if (s && !seen.includes(s)) seen.push(s);
   }
-  return out;
+  return andList(seen);
 }
 
 /* =============================================================================
@@ -185,71 +216,99 @@ function noticeGroups(v: MultiContractVars): { names: string[]; addr: string; ph
    ============================================================================= */
 
 function preambleParas(v: MultiContractVars): string[] {
+  // "real properties" when the contract spans more than one — as executed.
+  const noun = v.entities.length > 1 ? 'real properties known as' : 'real property known as';
   return [
-    `This Independent Contractor Agreement ("Contract") is entered into and effective as of ${v.effectiveDate} ("Effective Date") between ${entityNames(v)} ("Owner"), and ${v.contractorName} ("Contractor"). This Contract concerns the real property known as ${propertyList(v)} ("Property"). The term "Contractor", as used in this Contract, means, collectively, Contractor, its agents, employees, successors and assigns.`,
+    `This Independent Contractor Agreement ("Contract") is entered into and effective as of ${v.effectiveDate} ("Effective Date") between ${entityNames(v)} ("Owner"), and ${v.contractorName} ("Contractor"). This Contract concerns the ${noun} ${propertyList(v)} ("Property"). The term "Contractor", as used in this Contract, means, collectively, Contractor, its agents, employees, successors and assigns.`,
     'Owner desires to engage Contractor for certain services or improvements to be completed at the Property in accordance with the plans and specifications attached hereto as Exhibit A and the terms and conditions set forth in this Contract. Owner and Contractor, for good and valuable consideration, the receipt and sufficiency of which are acknowledged, and intending to be legally bound, hereby agree as follows:',
   ];
 }
 
-/** Section 1's sub-items. A leading '' puts the title on a line of its own. */
+/**
+ * Section 1's lettered sub-items a–d, as executed:
+ *   a. Type of contract: Bid Contract
+ *   b. "Owner's Representatives": Riley Combs, Troy Steiss, Kara Garrison
+ *   c. Work Completion Date: 08/31/2026.
+ *   d. "Contract Sum": $330,000.00
+ * A leading '' puts the section title on a line of its own.
+ */
 function generalTerms(v: MultiContractVars): string[] {
   const paras = ['', `Type of contract: ${v.contractType}`];
-  const reps = andList(v.ownerReps.map((r) => r.name));
-  if (reps) paras.push(`"Owner's Representatives" means ${reps}.`);
-  paras.push(`Work Completion Date: ${v.workCompletionDate}`);
-  // The per-property breakdown is optional: a lump-sum service contract has none.
+  // A plain comma list, not an "and" list — matching the executed document.
+  const reps = v.ownerReps.map((r) => trim(r.name)).filter(Boolean).join(', ');
+  paras.push(`"Owner's Representatives": ${reps}`);
+  paras.push(`Work Completion Date: ${v.workCompletionDate}.`);
+  // The per-property breakdown is optional: the executed contract states only the
+  // total, but a bid split by property (or into up-front/ongoing) itemises here.
   const items = lineItems(v);
   if (items.length) {
-    paras.push(`"Contract Sum" ${v.contractSum} as broken out by property below:`);
-    for (const it of items) paras.push(`${it.label}: ${it.amount}`);
+    paras.push(`"Contract Sum": ${v.contractSum}, as broken out by property below:\n`
+      + items.map((it) => `${it.label}: ${it.amount}`).join('\n'));
   } else {
-    paras.push(`"Contract Sum" ${v.contractSum}`);
+    paras.push(`"Contract Sum": ${v.contractSum}`);
   }
   return paras;
 }
 
+/**
+ * Section 19's notice blocks.
+ *
+ * The executed contract labels "Owner:" once and then stacks one block per
+ * entity — its own name, its own address, its own phone and email. There is no
+ * "Office Address:" prefix and no merging of entities that happen to share a
+ * destination. A blank line separates the blocks.
+ */
 function noticesParas(v: MultiContractVars): string[] {
   const paras = ['All notices required or permitted hereunder must be in writing and shall be deemed to have been given when mailed, postage prepaid, by U.S. registered or certified mail (with return receipt requested), by email (with proof of transmission) or by recognized overnight air courier service (with proof of delivery) to the notice addresses set forth below.'];
-  for (const g of noticeGroups(v)) {
-    // One entity per line, the way the executed contracts stack them, rather than
-    // a single wrapped run of names.
-    paras.push(`Owner: ${g.names[0]}`);
-    for (const n of g.names.slice(1)) paras.push(n);
-    paras.push(`Office Address: ${g.addr}`);
-    const contact = [g.phone, g.email].filter((s) => s && String(s).trim()).join(', ');
-    if (contact) paras.push(contact);
-  }
-  paras.push(`Contractor: ${v.contractorName}`);
-  paras.push(v.contractorAddr);
-  const cc = [v.contractorPhone, v.contractorEmail].filter((s) => s && String(s).trim()).join(' / ');
-  if (cc) paras.push(cc);
+  v.entities.forEach((e, i) => {
+    const lines = [i === 0 ? `Owner:    ${e.entity}` : e.entity, noticeOf(e)];
+    const contact = [trim(e.noticePhone), trim(e.noticeEmail)].filter(Boolean).join(', ');
+    if (contact) lines.push(contact);
+    paras.push(lines.join('\n'));
+  });
+  const cLines = [`Contractor:    ${v.contractorName}`, v.contractorAddr];
+  const cc = [trim(v.contractorPhone), trim(v.contractorEmail)].filter(Boolean).join(', ');
+  if (cc) cLines.push(cc);
+  paras.push(cLines.join('\n'));
   return paras;
 }
 
+/**
+ * Section 20 pairs each representative with their own address inline —
+ * "to Riley Combs at rcombs@…, Troy Steiss at tsteiss@…, and Kara Garrison at
+ * kgarrison@…" — rather than listing all the names then all the emails.
+ */
 function ownerRepsPara(v: MultiContractVars): string {
-  const names = andList(v.ownerReps.map((r) => r.name));
-  const emails = andList(v.ownerReps.map((r) => r.email));
-  if (!names) return 'Copies of all notices and other communications under this Contract to the Owner or Owner\'s Representatives must be sent by email to the Owner\'s Representatives.';
-  return `Copies of all notices and other communications under this Contract to the Owner or Owner's Representatives must be sent by email to ${names} at ${emails}.`;
+  const pairs = v.ownerReps
+    .map((r) => ({ name: trim(r.name), email: trim(r.email) }))
+    .filter((r) => r.name || r.email)
+    .map((r) => (r.name && r.email) ? `${r.name} at ${r.email}` : (r.name || r.email));
+  const lead = "Copies of all notices and other communications under this Contract to the Owner or Owner's Representatives must be sent by email to";
+  if (!pairs.length) return `${lead} the Owner's Representatives.`;
+  return `${lead} ${andList(pairs)}.`;
 }
 
-function buildSections(v: MultiContractVars): { title: string; paras: string[] }[] {
-  return [
-    { title: 'General Terms', paras: generalTerms(v) },
+/** `lettered` renders the sub-paragraphs as an a./b./c. list — required wherever
+ *  the section text cites its own sub-items ("this Section 12.a"). */
+interface MultiSection { title: string; paras: string[]; lettered?: boolean; blockIndent?: boolean }
 
-    { title: 'Services and Scope of Work', paras: ['Contractor shall perform all work and/or services described in the Exhibits (as defined below) and change orders of such work; furnish all labor, materials, equipment, tools, supervision, machinery, site security, and supplies necessary to perform all work described in the Exhibits (including punch-list items); pay all applicable taxes and freight; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in the Exhibits (collectively, the "Work"). Exhibits A, B, C, D and E are incorporated herein and made part of this Contract (collectively, the "Exhibits").'] },
+function buildSections(v: MultiContractVars): MultiSection[] {
+  return [
+    { title: 'General Terms', paras: generalTerms(v), lettered: true },
+
+    { title: 'Services and Scope of Work', paras: ['Contractor shall perform all work and/or services described in the Exhibits (as defined below) and change orders of such work; furnish all labor, materials, equipment, tools, supervision, machinery, site security, and supplies necessary to perform all work described in the Exhibits (including punch-list items); pay all applicable taxes and freight; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in the Exhibits (collectively, the "Work"). A, B, C, D, and E are incorporated herein and made part of this Contract (collectively, the "Exhibits").'] },
 
     { title: 'Notification by Contractor; Change Orders', paras: ['All drawings and/or specifications attached to this Contract are the final drawings and specifications of the Work (some details are not provided at time of signing; such as materials selections and exact elevations), and form an integral part of this Contract. Neither Party may add or otherwise vary additions said drawings and specifications without the prior written consent of the other Party. Contractor shall promptly notify Owner if any problems, questions, or complications arise that would alter the scope of Work or the Contract Sum. All changes or deviations in the Work must be approved in advance in writing as a change order, a form of which is attached as Exhibit E hereto and made part hereof. The Contract Sum will be increased or decreased accordingly by the parties\' agreement, as set forth in the change order. Any claims that the Contract Sum should be increased based on changes or deviations in the Work must be presented to the Owner by the Contractor in writing. The Owner\'s written approval of an increased Contract Sum increase must be obtained by the Contractor before any change or deviation in the Work is approved. **Notwithstanding the foregoing to the contrary, there will be no change orders permitted for underestimated costs.**'] },
 
     { title: 'Term', paras: ['This Contract shall remain in effect until the acceptance by Owner of all Work and the expiration of all express and implied guaranties and warranties unless sooner terminated in accordance with this Contract.'] },
 
-    { title: 'Payment for Services and Contract Sum', paras: [
+    { title: 'Payment for Services and Contract Sum', lettered: true, paras: [
       '',
-      'Contract Sum. Owner will pay Contractor the amount agreed to on Exhibit B for the satisfactory performance of the Work (the "Contract Sum"). The term "Contract Sum" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Contract.',
-      'Progress Invoices and Payments. All invoices under this Contract must (i) be for Work actually completed (and for no other work) and (ii) must include executed conditional lien waivers for the amount invoiced in the form attached hereto as Exhibit C from the Contractor and all suppliers, materialmen and subcontractors that performed the work or provided materials during the period of time described in the invoice. Owner may withhold its final payment for the Work until all of the following has occurred: (a) Owner has completed its final walk through and inspection of the Work, as completed; (b) any and all punch list items have been completed to Owner\'s satisfaction; (c) a temporary Certificate of Occupancy or the equivalent has been issued by the approving governmental authority; and (d) Owner has received an executed final lien waiver from each of the Contractor and all subcontractors, materialmen and suppliers that have performed Work or supplied materials in connection therewith in the form attached hereto as Exhibit D. **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-sum}.b.** Payments due that have been properly invoiced under this Section {SEC:payment-for-services-and-contract-sum}.b but remain outstanding for a period of thirty (30) days following the date of the invoice will bear simple interest at the rate of two percent (2%) per annum from the date payment is due.',
+      '**Contract Sum.** Owner will pay Contractor the amount agreed to on Exhibit B for the satisfactory performance of the Work (the "Contract Sum"). The term "Contract Sum" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Contract.',
+      '**Progress Invoices and Payments.** All invoices under this Contract must (i) be for Work actually completed (and for no other work) and (ii) must include executed conditional lien waivers for the amount invoiced in the form attached hereto as Exhibit C from the Contractor and all suppliers, materialmen and subcontractors that performed the work or provided materials during the period of time described in the invoice. Owner may withhold its final payment for the Work until all of the following has occurred: (a) Owner has completed its final walk through and inspection of the Work, as completed; (b) any and all punch list items have been completed to Owner\'s satisfaction; (c) a temporary Certificate of Occupancy or the equivalent has been issued by the approving governmental authority; and (d) Owner has received an executed final lien waiver from each of the Contractor and all subcontractors, materialmen and suppliers that have performed Work or supplied materials in connection therewith in the form attached hereto as Exhibit D. **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-sum}.b.** Payments due that have been properly invoiced under this Section {SEC:payment-for-services-and-contract-sum}.b but remain outstanding for a period of thirty (30) days following the date of the invoice will bear simple interest at the rate of two percent (2%) per annum from the date payment is due.',
     ] },
 
-    { title: 'Time of Performance and Completion; Schedule', paras: [`Contractor shall perform the Work promptly and diligently and complete the Work (with the exception of any punch-list items) by ${v.workCompletionDate}. **TIME IS OF THE ESSENCE.** In the event the Contractor fails to complete the Work by ${v.workCompletionDate}, the Contract Sum will be reduced ${v.liquidatedPerDay} for each day after ${v.workCompletionDate} that the Work is not complete (exclusive of punch-list items). The Parties agree that ${v.liquidatedPerDay}/day for such delay is a fair and reasonable amount to be retained by Owner as agreed and liquidated damages in light of the adverse impact any delay in completion of the Work will have on Owner's business and other losses and costs incurred by Owner as a result of such delay and will not constitute a penalty or a forfeiture. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work caused by the Contractor may result in the termination of this Contract by Owner, at Owner's sole discretion. Work shall be provided only on ${v.workDays}, between the hours of ${v.workStart} and ${v.workEnd}. Contractor shall not perform any Work on weekends or holidays unless mutually agreed upon by Owner and Contractor in advance. Prior to beginning the Work, Contractor shall provide an estimated work schedule to be approved by Owner. Contractor shall follow the approved schedule as closely as possible.`] },
+    { title: 'Time of Performance and Completion; Schedule', paras: [`Contractor shall perform the Work promptly and diligently and complete the Work (with the exception of any punch-list items) by ${v.workCompletionDate}. **TIME IS OF THE ESSENCE.** In the event the Contractor fails to complete the Work by ${v.workCompletionDate}, the Contract Sum will be reduced ${v.liquidatedPerDay} for each day after ${v.workCompletionDate} that the Work is not complete (exclusive of punch-list items). The Parties agree that ${v.liquidatedPerDay}/day for such delay is a fair and reasonable amount to be retained by Owner as agreed and liquidated damages in light of the adverse impact any delay in completion of the Work will have on Owner's business and other losses and costs incurred by Owner as a result of such delay and will not constitute a penalty or a forfeiture. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work caused by the Contractor may result in the termination of this Contract by Owner, at Owner's sole discretion. Work shall be provided only on ${v.workDays}, between the hours of ${v.workStart} to ${v.workEnd}. Contractor shall not perform any Work on weekends or holidays unless mutually agreed upon by Owner and Contractor in advance. Prior to beginning the Work, Contractor shall provide an estimated work schedule to be approved by Owner. Contractor shall follow the approved schedule as closely as possible.`] },
 
     { title: 'Contractor Representations, Warranties and Compliance', paras: ['Contractor represents that it has the right, ability (including all necessary licenses) and authorization to enter into this Contract and to fully perform all of the obligations in this Contract. Contractor shall comply, and take reasonable steps to ensure all subcontractors\', materialmen\'s and suppliers\' compliance, with all applicable federal, state, and local laws and regulations, including, without limitation, all state and local licensing and registration requirements for the Work. The Work shall be performed by individuals duly licensed and authorized by law to perform said work, to the extent required by law. All materials used in performing and/or constructing the Work shall be in compliance with all applicable laws and codes, and covered by a manufacturer\'s warranty, as applicable. Contractor represents that it and its subcontractors (if any) have the required skill, experience, and qualifications to perform the Work and shall perform, and ensure all performance by subcontractors of, the Work in a professional, good and workmanlike manner in accordance with generally recognized industry standards for similar work.'] },
 
@@ -261,15 +320,15 @@ function buildSections(v: MultiContractVars): { title: string; paras: string[] }
 
     { title: 'Indemnification', paras: ['Contractor shall protect, defend, indemnify, and hold harmless Owner and its respective affiliates, managers, employees, agents, partners, officers, directors, attorneys, members, successors, and assigns against and from any and all claims, damages, liabilities, losses, causes of action, and costs and expenses of any kind and nature (including all out-of-pocket litigation costs and reasonable attorneys\' fees) directly or indirectly arising out of injury (including personal injury to or death of any person) and loss or damage to any property occurring in connection with or in any way incidental to the performance of the Work under this Contract, resulting in whole or in part from the Contractor\'s breach of this Contract or acts, errors, omissions or negligence of Contractor or its employees, agents, subcontractors, suppliers or materialmen under this Contract. Contractor shall further be responsible for and bear the cost of all losses sustained and damage to property of Owner and the other indemnified parties caused by Contractor\'s acts, or those of its employees, agents, or subcontractors, or subcontractors\' employees. Further, Contractor shall protect, defend, indemnify, and hold harmless Owner and its respective affiliates, managers, employees, agents, partners, officers, directors, attorneys, members, successors, and assigns against and from any claims with respect to, including (but not limited to) liability insurance, workers\' compensation or tax withholding respecting Contractor\'s employees, subcontractors, suppliers and materialmen. Contractor\'s liability under this Contract will not be limited. The provisions of this Section {SEC:indemnification} shall survive the expiration or termination of this Contract.'] },
 
-    { title: 'Insurance', paras: [
+    { title: 'Insurance', lettered: true, paras: [
       '',
-      'Contractor\'s Insurance. Contractor represents and warrants that it is adequately insured for injury to its employees and others incurring loss or injury as a result of the acts of the Contractor or its employees, subcontractors, suppliers or materialmen. Prior to commencing any Work, Contractor shall provide certificates of adequate and current insurance coverage for (a) commercial general liability insurance with a combined single limit of not less than $1,000,000 per occurrence and a $5,000,000 aggregate liability limit; (b) worker\'s compensation insurance with not less than $1,000,000 per accident, $1,000,000 disease, policy limit and $1,000,000 disease limit for each employee; (c) excess umbrella liability insurance in the amount of $5,000,000; and (d) automobile insurance that satisfies applicable state automobile insurance coverage requirements. Owner, Owner\'s mortgage lender(s), and Monarch Investment & Management Group, LLC shall be listed as additional insureds under all insurance policies required under this Section {SEC:insurance}.a. Contractor shall maintain the insurance policies required under this Section {SEC:insurance}.a in effect throughout the term of this Contract. Contractor acknowledges that it is solely responsible for obtaining and maintaining the insurance coverages required under this Section {SEC:insurance}.a.',
-      'Subcontractors\' Insurance. Contractor shall ensure that each subcontractor performing Work is adequately insured for injury to its employees and others incurring loss or injury as a result of the acts of the subcontractor or its employees, subcontractors, suppliers or materialmen. Prior to commencing work on the Property, each subcontractor must provide Owner with certificates of adequate and current insurance coverage for (a) commercial general liability insurance with a combined single limit of not less than $1,000,000 per occurrence and a $2,000,000 aggregate liability limit and (b) automobile insurance that satisfies applicable state automobile insurance coverage requirements. Owner, Owner\'s lender(s), and Monarch Investment & Management Group, LLC shall be listed as additional insureds under all insurance policies required under this Section {SEC:insurance}.b. All subcontractors performing Work shall maintain the insurance policies required under this Section {SEC:insurance}.b in effect throughout the term of this Contract.',
+      '**Contractor\'s Insurance.** Contractor represents and warrants that it is adequately insured for injury to its employees and others incurring loss or injury as a result of the acts of the Contractor or its employees, subcontractors, suppliers or materialmen. Prior to commencing any Work, Contractor shall provide certificates of adequate and current insurance coverage for (a) commercial general liability insurance with a combined single limit of not less than $1,000,000 per occurrence and a $5,000,000 aggregate liability limit; (b) worker\'s compensation insurance with not less than $1,000,000 per accident, $1,000,000 disease, policy limit and $1,000,000 disease limit for each employee; (c) excess umbrella liability insurance in the amount of $5,000,000; and (d) automobile insurance that satisfies applicable state automobile insurance coverage requirements. Owner, Owner\'s mortgage lender(s), and Monarch Investment & Management Group, LLC shall be listed as additional insureds under all insurance policies required under this Section {SEC:insurance}.a. Contractor shall maintain the insurance policies required under this Section {SEC:insurance}.a in effect throughout the term of this Contract and shall provide certificates of adequate and current insurance coverage upon Owner\'s request. Contractor acknowledges that it is solely responsible for obtaining and maintaining the insurance coverages required under this Section {SEC:insurance}.a.',
+      '**Subcontractors\' Insurance.** Contractor shall ensure that each subcontractor performing Work is adequately insured for injury to its employees and others incurring loss or injury as a result of the acts of the subcontractor or its employees, subcontractors, suppliers or materialmen. Prior to commencing work on the Property, each subcontractor must provide Owner with certificates of adequate and current insurance coverage for (a) commercial general liability insurance with a combined single limit of not less than $1,000,000 per occurrence and a $2,000,000 aggregate liability limit and (b) automobile insurance that satisfies applicable state automobile insurance coverage requirements. Owner, Owner\'s lender(s), and Monarch Investment & Management Group, LLC shall be listed as additional insureds under all insurance policies required under this Section {SEC:insurance}.b. All subcontractors performing Work shall maintain the insurance policies required under this Section {SEC:insurance}.b in effect throughout the term of this Contract.',
       // The 2024 document named Kentucky here — a leftover from another market.
       // Tracking the Property means this clause is right in every region and can
       // never go stale again.
-      'General Requirements. The policies required under Section {SEC:insurance} shall be with companies rated A- X or better by A.M. Best. Insurers shall be licensed to do business in each state in which the Property is located and domiciled in the USA. Any deductible amounts under any insurance policies required hereunder shall not exceed $5,000.',
-      'Waiver of Subrogation. The parties hereby mutually waive their respective rights of recovery against each other for any loss of, or damage to, either party\'s property, to the extent that such loss or damage is insured by an insurance policy in effect at the time of such loss or damage. Each party shall obtain any special endorsements, if required by its insurer whereby the insurer waives its rights of subrogation against the other party. The provisions of this clause shall not apply in those instances in which waiver of subrogation would cause either party\'s insurance coverage to be voided or otherwise made uncollectible.',
+      `**General Requirements.** The policies required under Section {SEC:insurance} shall be with companies rated A- X or better by A.M. Best. Insurers shall be licensed to do business in ${insurerStates(v) || 'each state in which the Property is located'} and domiciled in the USA. Any deductible amounts under any insurance policies required hereunder shall not exceed $5,000.`,
+      '**Waiver of Subrogation.** The parties hereby mutually waive their respective rights of recovery against each other for any loss of, or damage to, either party\'s property, to the extent that such loss or damage is insured by an insurance policy in effect at the time of such loss or damage. Each party shall obtain any special endorsements, if required by its insurer whereby the insurer waives its rights of subrogation against the other party. The provisions of this clause shall not apply in those instances in which waiver of subrogation would cause either party\'s insurance coverage to be voided or otherwise made uncollectible.',
     ] },
 
     { title: 'Termination', paras: ['Owner may terminate this Contract at any time without cause upon written notice to Contractor. In the event of such termination, Owner will pay Contractor for all work properly performed hereunder and acceptable to Owner up to the date of termination. Owner will have no further obligation or liability to Contractor. Contractor may terminate this Contract for cause only after providing Owner with written notice indicating the area of default under this Contract and allowing for fourteen (14) days for Owner to cure the alleged default and respond in writing.'] },
@@ -284,7 +343,7 @@ function buildSections(v: MultiContractVars): { title: string; paras: string[] }
 
     { title: 'Clean Up', paras: ['Contractor shall keep the Property clean of all rubbish and debris generated by the Work and remove all such rubbish and debris upon the completion of the Work.'] },
 
-    { title: 'Notices', paras: noticesParas(v) },
+    { title: 'Notices', paras: noticesParas(v), blockIndent: true },
 
     { title: 'Owner\'s Representatives', paras: [ownerRepsPara(v)] },
 
@@ -309,7 +368,7 @@ function buildSections(v: MultiContractVars): { title: string; paras: string[] }
  * {SEC:slug} cross-references against the final ordering. Mirrors the SP
  * template's resolveSections, over this template's section list.
  */
-export function resolveMultiSections(v: MultiContractVars, opts: MultiContractOptions = {}): { title: string; paras: string[] }[] {
+export function resolveMultiSections(v: MultiContractVars, opts: MultiContractOptions = {}): MultiSection[] {
   const omit = new Set(opts.omitSections || []);
   const list = buildSections(v).filter((s) => !omit.has(sectionSlug(s.title)));
 
@@ -321,7 +380,7 @@ export function resolveMultiSections(v: MultiContractVars, opts: MultiContractOp
   // Both clauses qualify the scope, so they sit immediately after it.
   const at = list.findIndex((s) => sectionSlug(s.title) === 'services-and-scope-of-work');
   const insertAt = at < 0 ? 0 : at + 1;
-  const extra: { title: string; paras: string[] }[] = [];
+  const extra: MultiSection[] = [];
 
   const elected = clean(opts.electedTerms);
   if (elected.length) {
@@ -339,7 +398,8 @@ export function resolveMultiSections(v: MultiContractVars, opts: MultiContractOp
   }
   if (extra.length) list.splice(insertAt, 0, ...extra);
 
-  return resolveCrossRefs(list);
+  // resolveCrossRefs only rewrites text, so carry `lettered` across by index.
+  return resolveCrossRefs(list).map((sec, i) => ({ ...sec, lettered: list[i].lettered, blockIndent: list[i].blockIndent }));
 }
 
 /* =============================================================================
@@ -375,7 +435,7 @@ export async function buildMultiContract(
   for (const para of preambleParas(vars)) L.paragraph(para, { firstIndent: FIRST_INDENT, gap: 8 });
 
   // ---------- Numbered sections (27 by default; some may be omitted) ----------
-  resolveMultiSections(vars, opts).forEach((s, i) => L.section(i + 1, s.title, s.paras));
+  resolveMultiSections(vars, opts).forEach((s, i) => L.section(i + 1, s.title, s.paras, { lettered: s.lettered, blockIndent: s.blockIndent }));
 
   // ---------- Signature block ----------
   // Every entity is listed under ONE "Owner:" heading with a single By/Name/Title/
@@ -438,8 +498,7 @@ function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFon
   }
   yy -= 10;
   const byLineY = yy;
-  line(colL, yy, 'By: __________________,'); line(colR, yy, 'By: __________________'); yy -= 12;
-  line(colL, yy, 'as Agent for and on behalf of Owner'); yy -= 18;
+  line(colL, yy, 'By: __________________'); line(colR, yy, 'By: __________________'); yy -= 18;
   line(colL, yy, 'Name: ________________'); line(colR, yy, 'Name: ________________'); yy -= 18;
   line(colL, yy, 'Title: _________________'); line(colR, yy, 'Title: _________________'); yy -= 18;
   line(colL, yy, 'Date: _________________'); line(colR, yy, 'Date: _________________');
@@ -482,8 +541,12 @@ async function exhibitA(
   bullets('ELECTED OPTIONS — THESE CONTROL OVER ANY OTHER OPTION SHOWN BELOW', opts.electedTerms);
   bullets('THE FOLLOWING TERMS IN THIS EXHIBIT ARE EXCLUDED AND OF NO EFFECT', opts.excludedTerms);
 
+  // The executed contract gives Exhibit A a page of its own — the cover reads only
+  // "See attached bid." — and starts the bid on the next page. So put the first bid
+  // page on a fresh sheet rather than under the heading.
   const items = await collectBidItems(doc, attachments, 'into Exhibit A');
-  placeBidItems(doc, items, header, yy - 6, bold);
+  const first = doc.addPage([PAGE_W, PAGE_H]);
+  placeBidItems(doc, items, first, PAGE_H - MARGIN, bold);
 }
 
 /* ---------- Exhibit B: the Contract Sum as free narrative ---------- */
@@ -518,29 +581,32 @@ function exhibitBPage(doc: PDFDocument, v: MultiContractVars, roman: PDFFont, bo
   }
 }
 
+/* The executed Exhibit B reads "$330,000.00, per bid in Exhibit A." followed by
+   the monthly total and any proration note — the admin supplies that narrative.
+   This fallback covers a blank field and itemises the breakdown if one was given. */
 function defaultExhibitB(v: MultiContractVars): string {
-  const lines = [`${v.contractSum}, per bid estimate provided in Exhibit A.`];
+  const lines = [`${v.contractSum}, per bid in Exhibit A.`];
   const items = lineItems(v);
   if (items.length) {
     lines.push('', isSplit(v)
       ? `Broken out below as the up-front and ${trim(v.ongoingPeriod) || 'monthly'} amounts for each property.`
-      : 'Includes the total for each property plus mobilization.');
+      : 'Includes the total for each property.');
     for (const it of items) lines.push(`${it.label}: ${it.amount}`);
   }
-  lines.push('', 'Any change in pricing must be approved by Owner in writing prior to work being performed.');
   return lines.join('\n');
 }
 
-/* ---------- Exhibit C: conditional waiver, every entity in the TO: block ---------- */
+/* ---------- Exhibit C: conditional waiver, every entity in the TO: block ----------
+   Each entity gets its own name + address block, blank line between, exactly as
+   the executed contract lays it out. */
 function exhibitC(v: MultiContractVars): string {
-  const groups = noticeGroups(v);
-  const to = groups.map((g) => `${g.names.join('\n          ')}\n          Office Address: ${g.addr}`).join('\n\n          ');
+  const to = v.entities.map((e) => `${e.entity}\n          ${noticeOf(e)}`).join('\n\n          ');
   return `TO:       ${to}
 
 FROM:     ${v.contractorName}
           ${v.contractorAddr}
 
-In return for payment of ${v.contractSum} received from ${entityNames(v)} to ${v.contractorName} in exchange for labor at and/or materials or equipment furnished to ${addressList(v)}, respectively, through this date, ${v.contractorName} waives its right to assert, record and foreclose a labor, mechanic's or materialman's lien under any and all applicable state and local laws for labor performed and materials and equipment furnished at the above job site up to and including the date of ${v.workCompletionDate}. The undersigned represents warrants that he/she is authorized to execute this Conditional Waiver of Lien. This waiver is only effective and is conditional upon the undersigned actually being promptly paid the above amount.
+In return for payment of ${v.contractSum} received from ${entityNames(v)} to ${v.contractorName} in exchange for labor at and/or materials or equipment furnished to ${propertyList(v)} through this date, ${v.contractorName} waives its right to assert, record and foreclose a labor, mechanic's or materialman's lien under any and all applicable state and local laws for labor performed and materials and equipment furnished at the above job site up to and including the date of ${v.effectiveDate}. The undersigned represents warrants that he/she is authorized to execute this Conditional Waiver of Lien. This waiver is only effective and is conditional upon the undersigned actually being promptly paid the above amount.
 
 ${v.contractorName}
 
@@ -550,16 +616,19 @@ Name:   ___________________________________
 Title:  ___________________________________`;
 }
 
-/* ---------- Exhibit D: final waiver, entities inline in the prose (twice) ---------- */
+/* ---------- Exhibit D: final waiver, entities inline in the prose (twice) ----------
+   The two lists differ in the executed contract: the first pairs each entity with
+   its address, the second names the entities only. */
 function exhibitD(v: MultiContractVars): string {
-  const list = entityLocatedList(v);
+  const withAddr = entityAddressList(v);
+  const namesOnly = entityNames(v);
   return `State of:
 
 County of:
 
-I, the undersigned, am a general contractor, subcontractor, materialman, or other person furnishing services, labor, or material in the construction, repair, and/or replacement of improvements to parcels of real property to ${list}.
+I, the undersigned, am a general contractor, subcontractor, materialman, or other person furnishing services, labor, or material in the construction, repair, and/or replacement of improvements to parcels of real property to ${withAddr}.
 
-IN CONSIDERATION of the full and final payment of any and all sums of money due and owing the undersigned, the sufficiency and receipt of which is hereby acknowledged, and/or other benefits accruing to me, I do hereby, waive, release, and quitclaim in favor of the owner or owners of said real estate and any and all lenders or their assigns with any interest in said real property, all right that I may now have, for the services, labor, and material furnished through the date hereof, to a lien upon any and all lands and improvements as to which such services, labor, or materials have been furnished; and, I do warrant that I have not and will not assign any claim for payment nor any right to perfect a lien against said property, and that I have the right to execute this waiver and release of liens. I further warrant that no chattel mortgage, conditional sale contract, retention of title agreement, or mechanic's or materialman's lien, has been given or executed by the undersigned, for or in connection with any material appliances or machinery placed upon said premises or installed by me or any other person, whether permanently affixed to the property or not, which has been released, and agree that this document may be filed of record and shall act as a Release of any such lien claim I might otherwise have concerning work performed for ${list}.
+IN CONSIDERATION of the full and final payment of any and all sums of money due and owing the undersigned, the sufficiency and receipt of which is hereby acknowledged, and/or other benefits accruing to me, I do hereby, waive, release, and quitclaim in favor of the owner or owners of said real estate and any and all lenders or their assigns with any interest in said real property, all right that I may now have, for the services, labor, and material furnished through the date hereof, to a lien upon any and all lands and improvements as to which such services, labor, or materials have been furnished; and, I do warrant that I have not and will not assign any claim for payment nor any right to perfect a lien against said property, and that I have the right to execute this waiver and release of liens. I further warrant that no chattel mortgage, conditional sale contract, retention of title agreement, or mechanic's or materialman's lien, has been given or executed by the undersigned, for or in connection with any material appliances or machinery placed upon said premises or installed by me or any other person, whether permanently affixed to the property or not, which has been released, and agree that this document may be filed of record and shall act as a Release of any such lien claim I might otherwise have concerning work performed for ${namesOnly}.
 
 Signature: _______________
 
@@ -569,12 +638,7 @@ Company:   _______________
 
 Title:     ___________________
 
-Date:      ___________________
-
-Subscribed and sworn to me this _______ day of __________, 20____.
-
-________________________
-Notary Public`;
+Date:      ___________________`;
 }
 
 /* ---------- Exhibit E: the change order form ----------

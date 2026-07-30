@@ -307,6 +307,22 @@ is top-tier admin only — see below).
   Terms block, liquidated damages per day, stated work hours, a warranty split into materials
   (1 yr) / workmanship (2 yr), plus Force Majeure, Owner's Representatives and Ownership of
   Drawings sections the SP template has no equivalent of. Don't try to merge them.
+- **The language comes from the executed Legend Lawn 09.2025–08.2026 contract**, read page by page
+  off the scan (it has no text layer — no OCR binary on this box, so it was transcribed visually).
+  That document is the current form and **wins over the 2024 Crystal Clear .docx** the template was
+  first built from; the header comment in `contract-multi.ts` lists every way the 2024 file is
+  stale. If you are ever tempted to "fix" the wording, check the scan first — for example the
+  name/address pairs really are bare comma lists (`South Pointe, 1301 31st Ave SW #108, …`), not
+  "X located at Y", and Exhibit C's cut-off date really is the **Effective** date.
+- **Sections whose text cites their own sub-items are `lettered: true`** (§1 General Terms, §5
+  Payment, §12 Insurance). `Layout.section` then renders a./b./c. with a hanging indent. This is not
+  cosmetic: the text says "this Section 5.b" and "this Section 12.a", so without visible letters
+  those references point at nothing on the page. §19 Notices uses `blockIndent: true` instead, so an
+  address block's street and phone lines sit under the entity name rather than sliding back to the
+  margin.
+- **`scripts/multi-snapshot.mjs` reproduces the executed contract** from its own inputs as its last
+  case. That is the check that matters after any wording change: dump it and read it against the
+  scan. It also writes `<out>-legend.pdf` when given a PDF path.
 - **Exhibits A–E** (SP has A&B, C, D): A "See attached bid." + the embedded bid · B the Contract Sum
   as centered free narrative (falls back to the sum + per-property shares if the admin leaves it
   blank) · C conditional waiver, every entity in the `TO:` block · D final waiver, entities inline
@@ -328,15 +344,15 @@ is top-tier admin only — see below).
   has to be right — 027 fixed the three Minot rows that carried the seed's comma and deliberately
   left Williston/Watford City (BCND/ECND/FHND/PHND) alone pending an executed document to check.
   The builder never posts a name: it sends property **codes** and the server reads the entities.
-- **§12.c tracks the Property.** The 2024 source document required insurers to be "licensed to do
-  business in **Kentucky**" — a leftover from another market. It now reads "in each state in which
-  the Property is located", mirroring Governing Law, so it can't go stale per-region again.
-- **Notices collapse by destination.** Entities sharing a notice address render as one block listing
-  every LLC above a single office address (the Minot case, and how the executed contracts read);
-  entities noticed separately get their own blocks. The builder's *Shared notice address* field
-  applies one office to every ticked property. A blank per-property phone/email falls back to the
-  property's stored value — the endpoint uses `||`, not `??`, precisely because the builder posts
-  `''` for an untouched field.
+- **§12.c names the state, derived.** The executed contract says "licensed to do business in **ND**";
+  the 2024 file still said **Kentucky**, a leftover from another market. `insurerStates()` reads the
+  state off the ticked properties' addresses, so it prints "ND" here and stays right in another
+  region. Falls back to "each state in which the Property is located" if no address parses.
+- **Notices gives every entity its own block** — name, its own address, its own phone and email —
+  with `Owner:` labelling only the first, exactly as executed. There is no grouping of entities that
+  share a destination and no "Office Address:" prefix; an earlier version did both and was wrong.
+  A blank per-property phone/email falls back to the property's stored value — the endpoint uses
+  `||`, not `??`, precisely because the builder posts `''` for an untouched field.
 - **Refusals** (all HTTP 400, never a half-built document): no property ticked, a ticked property
   with no `owner_entity`, a bid that can't embed (`NO_SCOPE`), a blank field that appears in the
   operative text, and omitting a section another one cites. Note that in *this* template every

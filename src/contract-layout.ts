@@ -130,17 +130,40 @@ export class Layout {
   /** Break to a new page if `h` more vertical space isn't available. */
   space(h: number): void { if (this.y - h < BOTTOM) this.newPage(); }
 
-  /** Draw a paragraph of rich text, wrapping to CONTENT_W. Supports centering + indent. */
-  paragraph(text: string, opts: { size?: number; leading?: number; gap?: number; align?: 'left' | 'center'; firstIndent?: number } = {}): void {
+  /**
+   * Draw a paragraph of rich text, wrapping to CONTENT_W. Supports centering,
+   * a first-line indent and a whole-block indent.
+   *
+   * `indent` shifts every line's left edge; `firstIndent` adds to the first line
+   * only and MAY BE NEGATIVE, which is how a hanging indent is built: indent the
+   * block past the label, then pull the first line back out to sit the label in
+   * the gutter. That is what the lettered sub-items in `section` do.
+   */
+  paragraph(text: string, opts: { size?: number; leading?: number; gap?: number; align?: 'left' | 'center'; firstIndent?: number; indent?: number } = {}): void {
+    // A '\n' is a HARD line break inside one logical paragraph — address blocks
+    // and the Section 1 money breakdown need it. Each segment wraps on its own at
+    // the same indent, with no gap between them, so the whole thing still counts
+    // as a single item to `section`'s lettered list.
+    if (text.includes('\n')) {
+      const segs = text.split('\n');
+      segs.forEach((seg, i) => this.paragraph(seg, {
+        ...opts,
+        gap: i === segs.length - 1 ? (opts.gap ?? 5) : 0,
+        firstIndent: i === 0 ? (opts.firstIndent ?? 0) : 0,
+      }));
+      return;
+    }
     const size = opts.size ?? BODY_SIZE;
     const lead = opts.leading ?? LEADING;
     const align = opts.align ?? 'left';
     const firstIndent = opts.firstIndent ?? 0;
+    const indent = opts.indent ?? 0;
     const words = tokenize(text);
     const wW = (w: Word) => this.fontFor(w.bold).widthOfTextAtSize(w.text, size);
     const spaceW = (b: boolean) => this.fontFor(b).widthOfTextAtSize(' ', size);
     if (!words.length) { this.y -= lead + (opts.gap ?? 5); return; }
-    const limit = (li: number) => CONTENT_W - (li === 0 ? firstIndent : 0);
+    const off = (li: number) => indent + (li === 0 ? firstIndent : 0);
+    const limit = (li: number) => CONTENT_W - off(li);
     const lines: Word[][] = [];
     let line: Word[] = [], lineW = 0;
     for (const w of words) {
@@ -153,7 +176,7 @@ export class Layout {
     lines.forEach((ln, li) => {
       this.space(lead);
       const natural = ln.reduce((a, w, i) => a + wW(w) + (i ? spaceW(w.bold) : 0), 0);
-      let x = align === 'center' ? MARGIN + (CONTENT_W - natural) / 2 : MARGIN + (li === 0 ? firstIndent : 0);
+      let x = align === 'center' ? MARGIN + (CONTENT_W - natural) / 2 : MARGIN + off(li);
       ln.forEach((w, i) => {
         if (i) x += spaceW(w.bold);
         this.page.drawText(w.text, { x, y: this.y, size, font: this.fontFor(w.bold), color: rgb(0, 0, 0) });
@@ -168,14 +191,38 @@ export class Layout {
    * A numbered section: "N. **Title.** body" with a first-line indent.
    * Extra paragraphs (sub-clauses, notice addresses) render below, also indented.
    * A leading '' in `paras` means the title stands alone on its own line.
+   *
+   * `opts.lettered` renders those extra paragraphs as an a./b./c. list with a
+   * hanging indent. Use it wherever the section text cites its own sub-items
+   * ("this Section 12.a") — without visible letters that reference points at
+   * nothing on the page.
+   *
+   * `opts.blockIndent` indents every line of the extra paragraphs equally instead
+   * of only the first, which is what an address block needs so its street and
+   * phone lines sit under the name rather than sliding back to the margin.
    */
-  section(n: number, title: string, paras: string[]): void {
+  section(n: number, title: string, paras: string[], opts: { lettered?: boolean; blockIndent?: boolean } = {}): void {
+    const LETTERS = 'abcdefghijklmnopqrstuvwxyz';
+    const GUTTER = 18;                       // room for "a. " before the text
+    const LETTER_X = FIRST_INDENT + 14;      // the letter sits under the section title
+    const sub = (text: string, i: number) => {
+      if (opts.lettered) {
+        // Hanging indent: the block sits past the letter, the first line pulls back
+        // out so "a." lands in the gutter and the text wraps flush under itself.
+        this.paragraph(`${LETTERS[i] || i + 1}. ${text}`,
+          { indent: LETTER_X + GUTTER, firstIndent: -GUTTER, gap: 6 });
+      } else if (opts.blockIndent) {
+        this.paragraph(text, { indent: FIRST_INDENT, gap: 6 });
+      } else {
+        this.paragraph(text, { firstIndent: FIRST_INDENT, gap: 5 });
+      }
+    };
     if (paras[0] === '') {
       this.paragraph(`${n}. **${title}.**`, { firstIndent: FIRST_INDENT, gap: 3 });
-      for (let i = 1; i < paras.length; i++) this.paragraph(paras[i], { firstIndent: FIRST_INDENT, gap: 5 });
+      for (let i = 1; i < paras.length; i++) sub(paras[i], i - 1);
     } else {
       this.paragraph(`${n}. **${title}.** ${paras[0]}`, { firstIndent: FIRST_INDENT, gap: paras.length > 1 ? 3 : 5 });
-      for (let i = 1; i < paras.length; i++) this.paragraph(paras[i], { firstIndent: FIRST_INDENT, gap: 5 });
+      for (let i = 1; i < paras.length; i++) sub(paras[i], i - 1);
     }
   }
 }

@@ -46,8 +46,16 @@ export interface MultiEntity {
   noticeAddr?: string;
   noticePhone?: string;
   noticeEmail?: string;
-  /** This property's share of the Contract Sum, e.g. "$8,649.28". Optional. */
+  /* This property's share of the Contract Sum. Either a single lump sum, or an
+     up-front and an ongoing amount broken out as two separate line items — a
+     mobilisation or setup charge must not read as part of the recurring fee.
+     `upfront`/`ongoing` win over `sum` when either is present. */
+  /** Single lump sum, e.g. "$8,649.28". Used when the split fields are empty. */
   sum?: string;
+  /** One-time charge for this property, e.g. mobilisation or pool opening. */
+  upfront?: string;
+  /** Recurring charge for this property, per `ongoingPeriod`. */
+  ongoing?: string;
 }
 
 export interface MultiContractVars {
@@ -69,6 +77,8 @@ export interface MultiContractVars {
   workEnd: string;                // "5:00 p.m."
   /** Owner's own insurance deductible, cited in Ownership of Drawings. */
   insuranceDeductible: string;    // e.g. "$100,000.00"
+  /** How often an entity's `ongoing` amount recurs — labels the line item. */
+  ongoingPeriod: string;          // "monthly", "quarterly", "annually"
   /** Exhibit B's free narrative (total, monthly amount, term, proration notes). */
   exhibitBText: string;
 }
@@ -84,7 +94,7 @@ const BLANK: MultiContractVars = {
   effectiveDate: '', entities: [], contractorName: '', contractorAddr: '',
   contractType: '', ownerReps: [], workCompletionDate: '', contractSum: '',
   liquidatedPerDay: '', workDays: '', workStart: '', workEnd: '',
-  insuranceDeductible: '', exhibitBText: '',
+  insuranceDeductible: '', ongoingPeriod: 'monthly', exhibitBText: '',
 };
 
 /** The section list with slugs — the builder UI renders this for its omit checkboxes. */
@@ -111,6 +121,44 @@ const propertyList = (v: MultiContractVars) =>
 const entityLocatedList = (v: MultiContractVars) =>
   andList(v.entities.map((e) => `${e.entity} located at ${e.address}`));
 const addressList = (v: MultiContractVars) => andList(v.entities.map((e) => e.address));
+
+/* ---------- the per-property money breakdown ---------- */
+
+/** One printed money line. The executed contracts list these under the Contract
+ *  Sum, one item per line. */
+interface LineItem { label: string; amount: string; }
+
+const trim = (s?: string) => String(s || '').trim();
+/** True if any property breaks its share into up-front and ongoing amounts. */
+const isSplit = (v: MultiContractVars) => v.entities.some((e) => trim(e.upfront) || trim(e.ongoing));
+
+/**
+ * The per-property breakdown, as printed line items.
+ *
+ * A property that carries an up-front and/or an ongoing amount produces TWO
+ * separate items, so a one-time mobilisation or setup charge can never read as
+ * part of the recurring fee. Otherwise it produces one item from its lump sum.
+ * Properties with no amount at all contribute nothing — the breakdown is
+ * optional, and a lump-sum contract has none.
+ *
+ * Nothing here totals anything. The Contract Sum is what the admin entered and
+ * is printed verbatim; deriving a competing figure on a signed document invites
+ * the two to disagree.
+ */
+function lineItems(v: MultiContractVars): LineItem[] {
+  const period = trim(v.ongoingPeriod) || 'monthly';
+  const out: LineItem[] = [];
+  for (const e of v.entities) {
+    const up = trim(e.upfront), on = trim(e.ongoing);
+    if (up || on) {
+      if (up) out.push({ label: `${e.propertyName} (up front)`, amount: up });
+      if (on) out.push({ label: `${e.propertyName} (${period})`, amount: on });
+    } else if (trim(e.sum)) {
+      out.push({ label: e.propertyName, amount: trim(e.sum) });
+    }
+  }
+  return out;
+}
 const noticeOf = (e: MultiEntity) => (e.noticeAddr && e.noticeAddr.trim()) ? e.noticeAddr.trim() : e.address;
 
 /**
@@ -150,10 +198,10 @@ function generalTerms(v: MultiContractVars): string[] {
   if (reps) paras.push(`"Owner's Representatives" means ${reps}.`);
   paras.push(`Work Completion Date: ${v.workCompletionDate}`);
   // The per-property breakdown is optional: a lump-sum service contract has none.
-  const broken = v.entities.filter((e) => e.sum && e.sum.trim());
-  if (broken.length) {
+  const items = lineItems(v);
+  if (items.length) {
     paras.push(`"Contract Sum" ${v.contractSum} as broken out by property below:`);
-    for (const e of broken) paras.push(`${e.propertyName}: ${e.sum!.trim()}`);
+    for (const it of items) paras.push(`${it.label}: ${it.amount}`);
   } else {
     paras.push(`"Contract Sum" ${v.contractSum}`);
   }
@@ -472,10 +520,12 @@ function exhibitBPage(doc: PDFDocument, v: MultiContractVars, roman: PDFFont, bo
 
 function defaultExhibitB(v: MultiContractVars): string {
   const lines = [`${v.contractSum}, per bid estimate provided in Exhibit A.`];
-  const broken = v.entities.filter((e) => e.sum && e.sum.trim());
-  if (broken.length) {
-    lines.push('', 'Includes the total for each property plus mobilization.');
-    for (const e of broken) lines.push(`${e.propertyName}: ${e.sum!.trim()}`);
+  const items = lineItems(v);
+  if (items.length) {
+    lines.push('', isSplit(v)
+      ? `Broken out below as the up-front and ${trim(v.ongoingPeriod) || 'monthly'} amounts for each property.`
+      : 'Includes the total for each property plus mobilization.');
+    for (const it of items) lines.push(`${it.label}: ${it.amount}`);
   }
   lines.push('', 'Any change in pricing must be approved by Owner in writing prior to work being performed.');
   return lines.join('\n');

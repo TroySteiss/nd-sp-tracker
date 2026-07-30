@@ -68,7 +68,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 
   | Role | Set by | Can do |
   |---|---|---|
-  | `admin` | `ADMIN_USERS` env (default Troy Steiss, Riley Combs) | everything: Settings, user roster, Change log, bid approval, contract generation, backup/restore/reset, countersign, clear a revision flag |
+  | `admin` | `ADMIN_USERS` env (default Troy Steiss, Riley Combs) | everything: Settings, user roster, Change log, **Upload & Data**, **Contractors** (incl. the multi-entity contract builder), bid approval, contract generation, backup/restore/reset, countersign, clear a revision flag |
   | `manager` | `MANAGER_USERS` env (default Holly Haman, Brittanee Perdue) | **currently identical to `user`** — see below |
   | `user` | default for anyone not listed | full tracker; no admin tabs, no Change log, cannot approve |
   | `pm` | admin assigns in Settings (`app_users.role`) | the stripped `/pm` view only, scoped to their sites |
@@ -96,6 +96,16 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   enforces regardless** — login is a single shared password with a free-form username, so a role
   scopes the UI and the routes; it is **not** authentication and must never be treated as proof of
   identity.
+
+  **Admin-only tabs are `settings`, `changelog`, `data` (Upload & Data) and `directory`
+  (Contractors).** The nav omits them and `mainCol()` bounces a non-admin who somehow lands on one
+  back to the dashboard; the endpoints behind them are `requireAdmin` independently — imports
+  (`/imports`, `/import/gl*`, `/import/cushion*`), backup/restore/reset, and the vendor directory
+  (`GET /contractors`, `DELETE /contractors/:id`, `POST /contractors/import`).
+  **`POST /contractors` is deliberately still open to everyone.** It is not directory management: it
+  backs the "⚠ Not in contractor directory → Add to directory" prompt in the project editor, so a
+  regular user can record a bid from a vendor nobody has entered yet. Gating it breaks bid entry —
+  the job the user/manager tiers exist for.
 - Per-property email settings + projection settings PATCHes stay open to all users.
 - **Approval lock**: only top-level admins may set/unset the `approved` step or approve a bid
   (`isAdminUser`) — enforced in `POST/PATCH /projects` (403, compares old vs new `steps.approved` +
@@ -187,11 +197,11 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | Tab | Function | Notes |
 |---|---|---|
 | dashboard | viewDashboard | region toggle + property bubbles, KPIs, funnel, pipeline |
-| projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles; Contracts hosts the admin-only **＋ Multi-entity contract** builder |
+| projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles |
 | property | viewProperty | per-property: financial summary, projects by phase, GL reconciliation, update email |
 | cash | viewCash | snapshot/loan table (grouped by region), adjustments, quarterly summary panel |
-| data | viewData | GL/cushion upload + preview modals, **import history**, backup/restore |
-| directory | viewDirectory | contractors |
+| data | viewData | Admin group; GL/cushion upload + preview modals, **import history**, backup/restore |
+| directory | viewDirectory | Admin group; vendor directory + the **＋ New multi-entity contract** builder |
 | settings | viewSettings | Admin group; app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
 | changelog | viewChangelog | Admin group (top tier only); filters by user/property, load-more pagination |
 
@@ -289,7 +299,8 @@ which round-trips because `writeProject` stores `files` as wholesale JSON.
 
 One Independent Contractor Agreement covering work across several properties owned by different
 LLCs — landscaping/snow, pest, pool. **Not** a Special Project: no `project_id`, no bid slots, no
-lifecycle, no signature chain. Admin-only, entered from *Contracts ▸ ＋ Multi-entity contract*.
+lifecycle, no signature chain. Entered from *Contractors ▸ ＋ New multi-entity contract* (that tab
+is top-tier admin only — see below).
 
 - **`src/contract-multi.ts` is a separate template, not a parameterisation of `contract.ts`.** The
   wording differs throughout: 27 sections vs 25, "Contract Sum" not "Contract Price", a §1 General
@@ -301,6 +312,15 @@ lifecycle, no signature chain. Admin-only, entered from *Contracts ▸ ＋ Multi
   blank) · C conditional waiver, every entity in the `TO:` block · D final waiver, entities inline
   in the prose twice · E a blank change-order form — a grid of `drawFormBox` boxes, the only
   exhibit that isn't prose.
+- **Per-property amounts are either one lump sum or an up-front + ongoing pair.** A property with
+  an `upfront` and/or `ongoing` amount prints as **two separate line items** — `South Pointe (up
+  front): $2,400.00` / `South Pointe (monthly): $1,200.00` — in §1 and again in Exhibit B, so a
+  mobilisation or setup charge can never read as part of the recurring fee. `upfront`/`ongoing` win
+  over `sum` when either is set; a blank side prints nothing. The recurring label comes from
+  `ongoingPeriod` ("monthly"/"quarterly"/…). `lineItems()` is the single place this is built, used
+  by both §1 and Exhibit B. **Nothing is totalled onto the document** — the Contract Sum is printed
+  exactly as the admin typed it, and a derived second figure on signed paper invites the two to
+  disagree. The builder shows column subtotals as a check for the person filling it in only.
 - **Entity names print VERBATIM.** Nothing normalises them, because the `", LLC"` comma genuinely
   differs between entities: all five Minot CCXXXI entities are comma-free in every executed
   contract, while the Kansas City ones on the same template use the comma

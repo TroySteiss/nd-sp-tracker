@@ -54,6 +54,7 @@ const vars = {
   workStart: '8:00 a.m.',
   workEnd: '6:00 p.m.',
   insuranceDeductible: '$100,000.00',
+  ongoingPeriod: 'monthly',
   exhibitBText: '',
 };
 
@@ -69,6 +70,36 @@ pages.forEach((t, i) => report.push('', `--- p${i + 1} ---`, t));
 // Single entity must also work — the template is used for two-property jobs too.
 const solo = await buildMultiContract({ ...vars, entities: [vars.entities[0]] }, [{ buffer: bid, name: 'bid.pdf' }]);
 report.push('', '=== single entity ===', `pages: ${(await pdfText(solo.bytes)).length}`);
+
+/* Up-front vs ongoing: each property must print as TWO separate line items, in
+   Section 1 and again in Exhibit B, so a one-time mobilisation charge can never
+   be read as part of the recurring fee. The third property carries only an
+   ongoing amount, to prove a blank side prints nothing rather than "$". */
+{
+  const split = {
+    ...vars,
+    contractSum: '$84,000.00',
+    entities: [
+      { ...vars.entities[0], sum: '', upfront: '$2,400.00', ongoing: '$1,200.00' },
+      { ...vars.entities[1], sum: '', upfront: '$3,600.00', ongoing: '$1,800.00' },
+      { ...vars.entities[2], sum: '', upfront: '', ongoing: '$900.00' },
+    ],
+  };
+  const built = await buildMultiContract(split, [{ buffer: bid, name: 'bid.pdf' }]);
+  const pages = await pdfText(built.bytes);
+  const all = pages.join('\n');
+  const sec1 = all.slice(all.indexOf('1. General Terms'), all.indexOf('2. Services'));
+  const exB = pages.find((p) => p.startsWith('EXHIBIT B')) || '';
+  report.push('', '=== up front vs ongoing ===',
+    '--- section 1 breakdown ---', sec1.slice(sec1.indexOf('"Contract Sum"')),
+    '--- exhibit B ---', exB);
+  // A blank side must not emit an empty item.
+  report.push(`chateau up-front item present (should be false): ${/The Chateau \(up front\)/.test(all)}`);
+  // And the quarterly label must follow ongoingPeriod.
+  const q = await buildMultiContract({ ...split, ongoingPeriod: 'quarterly' }, [{ buffer: bid, name: 'bid.pdf' }]);
+  const qAll = (await pdfText(q.bytes)).join('\n');
+  report.push(`quarterly label used: ${/South Pointe \(quarterly\)/.test(qAll)}`);
+}
 
 report.push('', '=== refusals ===');
 for (const [label, ents] of [['no entities', []], ['unnamed entity', [{ entity: '  ', propertyName: 'The Plaza', address: 'x' }]]]) {

@@ -676,7 +676,11 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
       noticeAddr: String(p.noticeAddr || r.owner_notice_addr || '').trim(),
       noticePhone: String(p.noticePhone || r.notice_phone || '').trim(),
       noticeEmail: String(p.noticeEmail || r.notice_email || '').trim(),
+      // A property's share is either one lump sum or an up-front plus an ongoing
+      // amount, printed as two separate line items.
       sum: String(p.sum ?? '').trim(),
+      upfront: String(p.upfront ?? '').trim(),
+      ongoing: String(p.ongoing ?? '').trim(),
     };
   });
 
@@ -700,6 +704,7 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
     workStart: String(b.workStart || '8:00 a.m.').trim(),
     workEnd: String(b.workEnd || '5:00 p.m.').trim(),
     insuranceDeductible: String(b.insuranceDeductible || '').trim(),
+    ongoingPeriod: String(b.ongoingPeriod || 'monthly').trim(),
     exhibitBText: String(b.exhibitBText || ''),
   };
 
@@ -763,7 +768,8 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
          entities, properties: codes, ownerReps: reps, contractType: vars.contractType,
          workCompletionDate: vars.workCompletionDate, liquidatedPerDay: vars.liquidatedPerDay,
          workDays: vars.workDays, workStart: vars.workStart, workEnd: vars.workEnd,
-         insuranceDeductible: vars.insuranceDeductible, exhibitBText: vars.exhibitBText,
+         insuranceDeductible: vars.insuranceDeductible, ongoingPeriod: vars.ongoingPeriod,
+         exhibitBText: vars.exhibitBText,
          sigAnchor, tailoring: opts,
        })]
     );
@@ -906,12 +912,12 @@ async function recordImport(req: Request, kind: 'gl' | 'cushion', file: Pending[
     [uid('I') + Date.now().toString(36), kind, fileKey, file?.name || '', label, count, JSON.stringify(byProperty), (req.session as any)?.username || 'unknown']);
 }
 
-api.get('/imports', async (_req, res) => {
+api.get('/imports', requireAdmin, async (_req, res) => {
   const r = await query('select * from imports order by created_at desc limit 50');
   res.json(r.rows.map((i) => ({ id: i.id, kind: i.kind, fileKey: i.file_key, fileName: i.file_name, label: i.label, count: i.count, byProperty: i.by_property || {}, username: i.username, createdAt: i.created_at instanceof Date ? i.created_at.toISOString() : i.created_at })));
 });
 
-api.post('/import/gl', memUpload.single('file'), async (req, res) => {
+api.post('/import/gl', requireAdmin, memUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'no file' });
     const known = await knownCodes();
@@ -922,7 +928,7 @@ api.post('/import/gl', memUpload.single('file'), async (req, res) => {
   } catch (e: any) { res.status(400).json({ error: e.message || 'parse error' }); }
 });
 
-api.post('/import/gl/confirm', async (req, res) => {
+api.post('/import/gl/confirm', requireAdmin, async (req, res) => {
   const p = pending.get(req.body?.token);
   if (!p || p.kind !== 'gl') return res.status(400).json({ error: 'preview expired — re-upload' });
   const { tx: lines, period, byProperty, unknownCodes } = p.data as { tx: any[]; period: string | null; byProperty: Record<string, number>; unknownCodes: string[] };
@@ -957,7 +963,7 @@ api.post('/import/gl/confirm', async (req, res) => {
   res.json({ ok: true, count: lines.length });
 });
 
-api.post('/import/cushion', memUpload.single('file'), async (req, res) => {
+api.post('/import/cushion', requireAdmin, memUpload.single('file'), async (req, res) => {
   try {
     if (!req.file) return res.status(400).json({ error: 'no file' });
     const metaRow = await query('select cash_as_of from app_meta where id=1');
@@ -969,7 +975,7 @@ api.post('/import/cushion', memUpload.single('file'), async (req, res) => {
   } catch (e: any) { res.status(400).json({ error: e.message || 'parse error' }); }
 });
 
-api.post('/import/cushion/confirm', async (req, res) => {
+api.post('/import/cushion/confirm', requireAdmin, async (req, res) => {
   const p = pending.get(req.body?.token);
   if (!p || p.kind !== 'cushion') return res.status(400).json({ error: 'preview expired — re-upload' });
   const { found, asOf, unknownCodes } = p.data;
@@ -1219,7 +1225,18 @@ api.post('/projects/:id/remove-attachment', async (req, res) => {
 /* ---------- Contractor directory ---------- */
 import * as XLSX from 'xlsx';
 
-api.get('/contractors', async (_req, res) => {
+/* The vendor directory is managed from the Contractors tab, which is top-tier
+   admin only — so reading the roster, deleting a row and the bulk Excel import
+   are all requireAdmin.
+
+   `POST /contractors` is the exception and stays open on purpose. It is not
+   directory management: it backs the "⚠ Not in contractor directory → Add to
+   directory" prompt in the project editor and the contract panel, which is where
+   a new vendor actually surfaces. Gating it would stop a regular user from
+   recording a bid from a vendor nobody has entered yet — the exact job the
+   user/manager tiers exist to do. Everything it can do is insert or update a
+   name/address/phone; it is change-logged like everything else. */
+api.get('/contractors', requireAdmin, async (_req, res) => {
   const r = await query('select * from contractors order by name');
   res.json(r.rows.map((c) => ({ id: c.id, name: c.name, address: c.address ?? '', phone: c.phone ?? '', email: c.email ?? '', category: c.category ?? '', notes: c.notes ?? '' })));
 });
@@ -1237,14 +1254,14 @@ api.post('/contractors', async (req, res) => {
   res.json(r.rows[0]);
 });
 
-api.delete('/contractors/:id', async (req, res) => {
+api.delete('/contractors/:id', requireAdmin, async (req, res) => {
   const old = (await query('select name from contractors where id=$1', [req.params.id])).rows[0];
   await query('delete from contractors where id=$1', [req.params.id]);
   if (old) logChange(req, { action: 'contractor.delete', entityType: 'contractor', entityId: req.params.id, summary: `Contractor "${old.name}" deleted` });
   res.json({ ok: true });
 });
 
-api.post('/contractors/import', memUpload.single('file'), async (req, res) => {
+api.post('/contractors/import', requireAdmin, memUpload.single('file'), async (req, res) => {
   if (!req.file) return res.status(400).json({ error: 'no file' });
   let wb: any;
   try { wb = XLSX.read(req.file.buffer, { type: 'buffer' }); }

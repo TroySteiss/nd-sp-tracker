@@ -424,10 +424,12 @@ function rail(){
   });
   nav.append(el('div',{class:'grp'},'Money'));
   nav.append(item('cash','$','Cash & Loans'));
-  nav.append(item('data','⇪','Upload & Data'));
-  nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
   if(IS_ADMIN){
+    // Upload & Data (imports, backup/restore/reset) and Contractors (the vendor
+    // directory + the multi-entity contract builder) are top-tier admin only.
     nav.append(el('div',{class:'grp'},'Admin'));
+    nav.append(item('data','⇪','Upload & Data'));
+    nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
     nav.append(item('changelog','≡','Change log'));
     nav.append(item('settings','⚙','Settings'));
   }
@@ -445,7 +447,9 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  if(!IS_ADMIN&&(VIEW.tab==='changelog'||VIEW.tab==='settings'))VIEW.tab='dashboard';   // admin-only tabs
+  // Admin-only tabs. The server enforces the same on every endpoint these use —
+  // this only keeps a non-admin from landing on a view they can't act in.
+  if(!IS_ADMIN&&['changelog','settings','data','directory'].includes(VIEW.tab))VIEW.tab='dashboard';
   const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
@@ -633,13 +637,7 @@ function viewContracts(){
   // Main contracts table
   const panel=el('div',{class:'panel'});
   const totalShown=list.length+planned.length;
-  const ph=el('div',{class:'ph'}, el('h3',{},'Contracts'), el('div',{class:'sp'}));
-  // The multi-entity agreement is not tied to a Special Project, so it has no
-  // project modal to launch from — it starts here.
-  if(IS_ADMIN) ph.append(el('button',{class:'btn sm',title:'One contract covering several properties owned by different LLCs — landscaping/snow, pest, pool',
-    onclick:()=>openMultiContract()},'＋ Multi-entity contract'));
-  ph.append(el('span',{class:'chip'},`${totalShown} shown`));
-  panel.append(ph);
+  panel.append(el('div',{class:'ph'}, el('h3',{},'Contracts'), el('div',{class:'sp'}), el('span',{class:'chip'},`${totalShown} shown`)));
   if(!totalShown){
     panel.append(el('div',{class:'empty'}, el('div',{class:'big'},showPlanned?'No projects awaiting a contract.':'No contracts yet'), showPlanned?'All approved projects have contracts generated.':'Generate a contract from a project\'s Bids panel.'));
   } else {
@@ -2574,6 +2572,7 @@ async function openMultiContract(){
     workDays:'Monday, Tuesday, Wednesday, Thursday and Friday', workStart:'8:00 a.m.', workEnd:'5:00 p.m.',
     exhibitBText:'', scope:'',
     sharedNoticeAddr:'',
+    splitAmounts:false, ongoingPeriod:'monthly',
     bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[],
     omitSections:[], excludedTerms:[], electedTerms:[],
   };
@@ -2594,28 +2593,62 @@ async function openMultiContract(){
   const perWrap=el('div',{});
   const noEntityWarn=el('div',{class:'bs-hint',style:'color:var(--bad);display:none'});
 
+  // Column subtotals are a builder-side aid only. They are deliberately NOT
+  // printed on the contract: the Contract Sum is what the admin typed, and a
+  // derived second figure on a signed document invites the two to disagree.
+  const money=s=>{const t=String(s||'').trim();if(!t)return null;const n=Number(t.replace(/[^0-9.\-]/g,''));return isFinite(n)&&t.match(/\d/)?n:NaN;};
+  const usd2=n=>'$'+n.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const subtotal=key=>{
+    let sum=0,any=false,bad=false;
+    d.properties.forEach(c=>{const v=money((d.perProperty[c]||{})[key]);if(v===null)return;if(isNaN(v)){bad=true;return;}sum+=v;any=true;});
+    if(!any) return bad?'—':'';
+    return usd2(sum)+(bad?' + unreadable':'');
+  };
+  const totalsRow=el('tr',{});
+  const refreshTotals=()=>{
+    totalsRow.textContent='';
+    if(!d.properties.length) return;
+    const cells=[td(el('span',{style:'font-weight:600;font-size:12px'},'Entered totals'))];
+    if(d.splitAmounts){ cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('upfront')))); cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('ongoing')))); }
+    else cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('sum'))));
+    cells.push(td(''),td(''));
+    cells.forEach(c=>totalsRow.append(c));
+  };
+
   const renderPer=()=>{
     perWrap.textContent='';
     const bad=d.properties.filter(c=>!(PROP(c)&&PROP(c).ownerEntity));
     noEntityWarn.style.display=bad.length?'':'none';
     if(bad.length) noEntityWarn.textContent='No owner entity on file for '+bad.join(', ')+' — set it in Settings ▸ Properties before generating.';
     if(!d.properties.length) return;
+    const period=(d.ongoingPeriod||'monthly').trim()||'monthly';
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('Property'),th("This property's share"),th('Notice phone'),th('Notice email'))));
+    t.append(el('thead',{},d.splitAmounts
+      ? tr(th('Property'),th('Up front (one-time)'),th(period.charAt(0).toUpperCase()+period.slice(1)),th('Notice phone'),th('Notice email'))
+      : tr(th('Property'),th("This property's share"),th('Notice phone'),th('Notice email'))));
     const tb=el('tbody');
     d.properties.forEach(code=>{
-      const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',noticePhone:'',noticeEmail:''};
+      const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',upfront:'',ongoing:'',noticePhone:'',noticeEmail:''};
       const pr=PROP(code)||{};
-      tb.append(el('tr',{},
-        td(el('div',{style:'font-size:12px'},el('div',{},propChip(code),' ',pr.name||code),
-          el('div',{style:'color:var(--ink-3);font-size:11px'},pr.ownerEntity||'⚠ no owner entity'))),
-        td(el('input',{value:pp.sum||'',placeholder:'optional, e.g. $8,649.28',oninput:e=>{pp.sum=e.target.value;}})),
-        td(el('input',{value:pp.noticePhone||'',placeholder:pr.noticePhone||'701-…',oninput:e=>{pp.noticePhone=e.target.value;}})),
-        td(el('input',{value:pp.noticeEmail||'',placeholder:pr.noticeEmail||'manager@…',oninput:e=>{pp.noticeEmail=e.target.value;}}))));
+      const cells=[td(el('div',{style:'font-size:12px'},el('div',{},propChip(code),' ',pr.name||code),
+        el('div',{style:'color:var(--ink-3);font-size:11px'},pr.ownerEntity||'⚠ no owner entity')))];
+      if(d.splitAmounts){
+        cells.push(td(el('input',{value:pp.upfront||'',placeholder:'e.g. $2,400.00',oninput:e=>{pp.upfront=e.target.value;refreshTotals();}})));
+        cells.push(td(el('input',{value:pp.ongoing||'',placeholder:'e.g. $1,200.00',oninput:e=>{pp.ongoing=e.target.value;refreshTotals();}})));
+      } else {
+        cells.push(td(el('input',{value:pp.sum||'',placeholder:'optional, e.g. $8,649.28',oninput:e=>{pp.sum=e.target.value;refreshTotals();}})));
+      }
+      cells.push(td(el('input',{value:pp.noticePhone||'',placeholder:pr.noticePhone||'701-…',oninput:e=>{pp.noticePhone=e.target.value;}})));
+      cells.push(td(el('input',{value:pp.noticeEmail||'',placeholder:pr.noticeEmail||'manager@…',oninput:e=>{pp.noticeEmail=e.target.value;}})));
+      const row=el('tr',{}); cells.forEach(c=>row.append(c)); tb.append(row);
     });
-    t.append(tb);
-    perWrap.append(el('p',{class:'bs-hint',style:'margin:12px 0 6px'},'A share per property is optional — leave blank for a single lump sum. Notice phone/email default to whatever is already on the property and are remembered for next time.'),
-      el('div',{style:'overflow:auto'},t));
+    t.append(tb,el('tfoot',{},totalsRow));
+    refreshTotals();
+    perWrap.append(el('p',{class:'bs-hint',style:'margin:12px 0 6px'},d.splitAmounts
+      ? `Each property prints as two separate line items — "(up front)" and "(${period})" — under the Contract Sum and in Exhibit B, so a mobilisation or setup charge never reads as part of the recurring fee. Leave either blank to print only the other.`
+      : 'A share per property is optional — leave blank for a single lump sum. Notice phone/email default to whatever is already on the property and are remembered for next time.'),
+      el('div',{style:'overflow:auto'},t),
+      el('p',{class:'bs-hint',style:'margin:6px 0 0'},'Entered totals are a check for you — only the Contract Sum you typed is printed on the contract.'));
   };
 
   const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(240px,1fr));gap:6px'});
@@ -2629,7 +2662,25 @@ async function openMultiContract(){
       cb, propChip(p.code), el('span',{style:'flex:1'},p.name),
       p.ownerEntity?null:el('span',{class:'chip hold',title:'No owner entity on file'},'⚠')));
   });
-  pBody.append(grid, noEntityWarn, perWrap);
+  // Service contracts on this template usually carry a one-time mobilisation or
+  // setup charge on top of a recurring fee. Splitting them keeps the two from
+  // being read as one number on a signed document.
+  const periodInp=el('input',{value:d.ongoingPeriod,placeholder:'monthly',style:'max-width:150px',
+    oninput:e=>{d.ongoingPeriod=e.target.value;renderPer();}});
+  const periodField=el('div',{class:'field',style:'display:none;margin-top:10px'},
+    el('label',{},'Ongoing amount recurs'),
+    el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Labels the recurring line item — "monthly", "quarterly", "annually".'),
+    periodInp);
+  const splitCb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
+    d.splitAmounts=e.target.checked;
+    periodField.style.display=d.splitAmounts?'':'none';
+    renderPer();
+  }});
+  pBody.append(grid, noEntityWarn,
+    el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer'},
+      splitCb, el('span',{},'Break each property out into up front vs ongoing'),
+      el('span',{style:'color:var(--ink-3)'},'— two line items per property')),
+    periodField, perWrap);
   body.append(pPanel);
 
   const sharedInp=el('input',{placeholder:'e.g. 1909 31st Ave SW, Minot, ND 58701',oninput:e=>{d.sharedNoticeAddr=e.target.value;}});
@@ -2785,7 +2836,11 @@ async function openMultiContract(){
     const per={};
     d.properties.forEach(code=>{
       const pp=d.perProperty[code]||{};
-      per[code]={sum:pp.sum||'',noticePhone:pp.noticePhone||'',noticeEmail:pp.noticeEmail||''};
+      per[code]={noticePhone:pp.noticePhone||'',noticeEmail:pp.noticeEmail||''};
+      // Send only the amount shape actually in use, so a value left behind by
+      // toggling the split doesn't turn into a stray line item.
+      if(d.splitAmounts){ per[code].upfront=pp.upfront||''; per[code].ongoing=pp.ongoing||''; }
+      else per[code].sum=pp.sum||'';
       if(d.sharedNoticeAddr.trim()) per[code].noticeAddr=d.sharedNoticeAddr.trim();
     });
     genBtn.disabled=true; status.textContent='Generating…';
@@ -2798,7 +2853,7 @@ async function openMultiContract(){
         ownerReps:d.ownerReps.filter(x=>x.name.trim()||x.email.trim()),
         effectiveDate:d.effectiveDate, workCompletionDate:d.workCompletionDate,
         contractSum:d.contractSum, liquidatedPerDay:d.liquidatedPerDay,
-        insuranceDeductible:d.insuranceDeductible,
+        insuranceDeductible:d.insuranceDeductible, ongoingPeriod:d.ongoingPeriod,
         workDays:d.workDays, workStart:d.workStart, workEnd:d.workEnd,
         exhibitBText:d.exhibitBText, scope:d.scope,
         bidFileKey:d.bidFileKey, bidPages:d.bidPages, bidMarks:d.bidMarks,
@@ -4245,7 +4300,21 @@ let _toastT;function toast(msg){let t=$('.toast');if(t)t.remove();t=el('div',{cl
 /* ---------- Contractor directory ---------- */
 function viewDirectory(){
   const bar=topbar('Directory','Contractor Directory');
-  const body=el('div',{class:'panel pad',style:'max-width:900px'});
+  const wrap=el('div',{class:'grid',style:'max-width:900px'});
+
+  /* Multi-entity contract — one agreement covering work across several properties
+     owned by different LLCs (landscaping/snow, pest, pool). It has no Special
+     Project and so no project modal to start from, and it is about engaging a
+     contractor, which is what this tab is for. */
+  const mePanel=el('div',{class:'panel'});
+  mePanel.append(el('div',{class:'ph'},el('h3',{},'Multi-entity contract')));
+  mePanel.append(el('div',{class:'pad'},
+    el('p',{class:'bs-hint',style:'margin:0 0 10px'},'One Independent Contractor Agreement covering work across several properties owned by different LLCs — landscaping and snow, pest, pool. Tick the properties, attach the bid, and it assembles the entity list, notices and Exhibits A–E. Not tied to a Special Project.'),
+    el('button',{class:'btn accent',onclick:()=>openMultiContract()},'＋ New multi-entity contract')));
+  wrap.append(mePanel);
+
+  const body=el('div',{class:'panel pad'});
+  wrap.append(body);
 
   // Import banner
   const importRow=el('div',{style:'display:flex;align-items:center;gap:10px;margin-bottom:16px;flex-wrap:wrap;border:2px dashed var(--line-2);border-radius:6px;padding:10px;transition:background .15s'});
@@ -4310,7 +4379,7 @@ function viewDirectory(){
     body.append(el('div',{style:'overflow-x:auto'},tbl));
   }
 
-  return {bar,body};
+  return {bar,body:wrap};
 }
 
 start();

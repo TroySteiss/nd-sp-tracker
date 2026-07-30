@@ -92,24 +92,70 @@ api.post('/projects/:id/clear-revision', requireAdmin, async (req, res) => {
 });
 
 /* ---------- user roster (admin-only) ----------
-   Rows appear automatically the first time someone logs in (auth.touchUser).
-   Admins set role and, for PMs, may pre-assign sites — a PM can also pick their
-   own from the /pm header. Env ADMIN_USERS still wins over any role stored here. */
+   Rows appear automatically on first login (auth.touchUser), and admins can also
+   create them up front — the point being to assign a PM's covered sites before
+   they ever sign in, so their first visit isn't an empty site picker. touchUser
+   never overwrites role/sites on conflict, so a pre-assignment survives login.
+   Env ADMIN_USERS / MANAGER_USERS still win over any role stored here. */
 api.get('/users', requireAdmin, async (_req, res) => {
-  const rows = (await query<any>('select key, display, role, sites, updated_at from app_users order by role, key')).rows;
+  const rows = (await query<any>('select key, display, role, sites, updated_at, last_seen from app_users order by role, key')).rows;
   res.json(rows.map(r => ({
     key: r.key, display: r.display || r.key,
     role: isAdminUser(r.display || r.key) ? 'admin' : isManagerUser(r.display || r.key) ? 'manager' : r.role,
     // Env-allowlisted tiers can't be edited here — they're set by ADMIN_USERS / MANAGER_USERS.
     envAdmin: isManagerUser(r.display || r.key),
     sites: Array.isArray(r.sites) ? r.sites : [], updatedAt: r.updated_at,
+    lastSeen: r.last_seen,          // null ⇒ created by an admin, never signed in
   })));
+});
+
+/** Create an account before its owner has ever logged in. */
+api.post('/users', requireAdmin, async (req, res) => {
+  const display = String(req.body?.display || '').trim().slice(0, 60);
+  if (!display) return res.status(400).json({ error: 'A name is required' });
+  const key = normUser(display);
+  if (!key) return res.status(400).json({ error: 'That name has no letters in it — use the name they will type at sign-in' });
+
+  const existing = (await query<any>('select key, display from app_users where key=$1', [key])).rows[0];
+  if (existing) {
+    return res.status(409).json({ error: `"${existing.display || key}" already exists — edit that row instead` });
+  }
+  // Env tiers own their own role; creating a row for one would be misleading.
+  const role = isManagerUser(display) ? (isAdminUser(display) ? 'admin' : 'manager')
+             : ['pm', 'user'].includes(String(req.body?.role)) ? String(req.body.role) : 'user';
+  let sites: string[] = [];
+  if (Array.isArray(req.body?.sites)) {
+    const valid = (await query<{ code: string }>('select code from properties')).rows.map(r => r.code);
+    sites = req.body.sites.map((s: any) => String(s).trim().toUpperCase()).filter((s: string) => valid.includes(s));
+  }
+  await query('insert into app_users(key, display, role, sites) values($1,$2,$3,$4::jsonb)',
+    [key, display, role, JSON.stringify(sites)]);
+  logChange(req, { action: 'user.create', entityType: 'user', entityId: key,
+    summary: `Added ${display} as ${role}${sites.length ? ` (${sites.join(', ')})` : ''} — not yet signed in` });
+  res.json({ ok: true, key, display, role, sites });
+});
+
+/** Remove an account. History stays — the change log attributes by name, not id. */
+api.delete('/users/:key', requireAdmin, async (req, res) => {
+  const key = normUser(req.params.key);
+  const cur = (await query<any>('select key, display from app_users where key=$1', [key])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'No such user' });
+  if (isManagerUser(cur.display || cur.key)) {
+    return res.status(400).json({ error: 'This user is set by ADMIN_USERS / MANAGER_USERS; remove them there' });
+  }
+  if (normUser((req.session as any)?.username) === key) {
+    return res.status(400).json({ error: 'You cannot remove your own account' });
+  }
+  await query('delete from app_users where key=$1', [key]);
+  logChange(req, { action: 'user.delete', entityType: 'user', entityId: key,
+    summary: `Removed ${cur.display || key} from the roster` });
+  res.json({ ok: true });
 });
 
 api.patch('/users/:key', requireAdmin, async (req, res) => {
   const key = normUser(req.params.key);
   const cur = (await query<any>('select key, display, role, sites from app_users where key=$1', [key])).rows[0];
-  if (!cur) return res.status(404).json({ error: 'No such user — they appear here after their first login' });
+  if (!cur) return res.status(404).json({ error: 'No such user' });
   if (isManagerUser(cur.display || cur.key)) {
     return res.status(400).json({
       error: 'This user is an admin or manager via the ADMIN_USERS / MANAGER_USERS env vars; change it there',

@@ -3757,38 +3757,73 @@ function viewSettings(){
     el('a',{class:'btn ghost sm',href:'/pm',target:'_blank'},'Open PM view ↗')));
   const upad=el('div',{class:'pad'});
   upad.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:13px'},
-    'Users appear here after their first sign-in. "PM" sends them to the simplified /pm view, '+
-    'limited to the sites they cover. Admins are set by the ADMIN_USERS env var and cannot be '+
+    'Add people here before their first sign-in so a PM lands on their own sites straight away, '+
+    'or let a row appear automatically when they log in. "PM" sends them to the simplified /pm '+
+    'view. Admins and managers come from the ADMIN_USERS / MANAGER_USERS env vars and cannot be '+
     'changed here. Note: everyone shares one password, so a role scopes the UI — it is not a '+
     'security boundary.'));
+
+  /* Add a user up front. The name must be what they will actually type at
+     sign-in: it is normalised to letters only, so a different spelling makes a
+     different account and the pre-assigned role/sites would not find them. */
+  const newName=el('input',{placeholder:'Full name as they will type it, e.g. Dana Whitfield',style:inpStyle+';flex:2;min-width:200px'});
+  const newRole=el('select',{style:inpStyle+';width:auto'},
+    el('option',{value:'user'},'Full user'), el('option',{value:'pm'},'Property manager'));
+  const newSites=el('input',{placeholder:'Sites, e.g. CLND, SPND',style:inpStyle+';flex:1;min-width:150px',disabled:''});
+  newRole.addEventListener('change',()=>{ newSites.disabled = newRole.value!=='pm'; if(newSites.disabled) newSites.value=''; });
+  const addBtn=el('button',{class:'btn accent',onclick:async()=>{
+    const display=newName.value.trim();
+    if(!display){ toast('Enter a name'); return; }
+    try{
+      await API.send('POST','/users',{display,role:newRole.value,
+        sites:newSites.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)});
+      newName.value=''; newSites.value=''; newRole.value='user'; newSites.disabled=true;
+      toast('Added '+display); await loadUsers();
+    }catch(e){ toast('Failed: '+e.message); }
+  }},'+ Add user');
+  newName.addEventListener('keydown',e=>{ if(e.key==='Enter') addBtn.click(); });
+  upad.append(el('div',{style:'display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:14px;padding-bottom:14px;border-bottom:1px solid var(--line-2)'},
+    newName,newRole,newSites,addBtn));
+
   const utb=el('div',{}); upad.append(utb);
   const loadUsers=async()=>{
     utb.innerHTML='';
     let rows=[];
     try{ rows=await API.get('/users'); }
     catch(e){ utb.append(el('div',{style:'color:var(--bad)'},'Could not load users: '+e.message)); return; }
-    if(!rows.length){ utb.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'No sign-ins recorded yet.')); return; }
+    if(!rows.length){ utb.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'Nobody on the roster yet — add someone above.')); return; }
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('User'),th('Role'),th('Sites (PM only)'),th(''))));
+    t.append(el('thead',{},tr(th('User'),th('Role'),th('Sites (PM only)'),th('Signed in'),th(''))));
     const tb=el('tbody');
     rows.forEach(u=>{
       const roleSel=el('select',{style:inpStyle+';width:auto',disabled:u.envAdmin?'':null},
         ...['user','pm'].map(r=>el('option',{value:r,...(u.role===r?{selected:'selected'}:{})},r==='pm'?'Property manager':'Full user')));
-      if(u.envAdmin) roleSel.append(el('option',{value:'admin',selected:'selected'},'Admin (env)'));
+      if(u.envAdmin) roleSel.append(el('option',{value:u.role,selected:'selected'},u.role==='admin'?'Admin (env)':'Manager (env)'));
       const sitesI=el('input',{value:(u.sites||[]).join(', '),placeholder:'e.g. CLND, SPND',style:inpStyle,
                                disabled:(u.role==='pm'&&!u.envAdmin)?null:'disabled'});
       roleSel.addEventListener('change',()=>{ sitesI.disabled = roleSel.value!=='pm'; });
+      // A pre-created account has never been used — say so, since "row exists"
+      // no longer implies the person has logged in.
+      const seen=u.lastSeen
+        ? el('span',{style:'font-size:12px;color:var(--ink-3)'},new Date(u.lastSeen).toLocaleDateString())
+        : el('span',{class:'chip'},'not yet');
       tb.append(tr(
         td(el('div',{}, el('strong',{},u.display), el('div',{style:'color:var(--ink-3);font-size:12px'},u.key))),
-        td(roleSel), td(sitesI),
-        td(el('button',{class:'btn sm',disabled:u.envAdmin?'':null,onclick:async()=>{
-          try{
-            await API.send('PATCH','/users/'+encodeURIComponent(u.key),{
-              role:roleSel.value,
-              sites:sitesI.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)});
-            toast('Saved '+u.display); await loadUsers();
-          }catch(e){ toast('Failed: '+e.message); }
-        }},'Save'))));
+        td(roleSel), td(sitesI), td(seen),
+        td(el('div',{style:'display:flex;gap:6px'},
+          el('button',{class:'btn sm',disabled:u.envAdmin?'':null,onclick:async()=>{
+            try{
+              await API.send('PATCH','/users/'+encodeURIComponent(u.key),{
+                role:roleSel.value,
+                sites:sitesI.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)});
+              toast('Saved '+u.display); await loadUsers();
+            }catch(e){ toast('Failed: '+e.message); }
+          }},'Save'),
+          el('button',{class:'btn ghost sm danger',disabled:u.envAdmin?'':null,title:'Remove from the roster',onclick:async()=>{
+            if(!confirm(`Remove ${u.display} from the roster?\n\nTheir change-log history stays. If they sign in again a fresh row appears with no role or sites.`))return;
+            try{ await API.send('DELETE','/users/'+encodeURIComponent(u.key)); toast('Removed '+u.display); await loadUsers(); }
+            catch(e){ toast('Failed: '+e.message); }
+          }},'🗑')))));
     });
     t.append(tb); utb.append(t);
   };

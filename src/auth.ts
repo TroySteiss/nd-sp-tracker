@@ -97,14 +97,16 @@ export async function roleOf(username?: string): Promise<Role> {
   return rec?.role === 'pm' || rec?.role === 'user' ? rec.role : 'user';
 }
 
-/** Record the display spelling on login so Settings can list real names. */
+/** Record the display spelling and stamp the sign-in.
+ *  Never touches `role` or `sites` on conflict — an account an admin pre-created
+ *  keeps the role and covered sites they assigned to it. */
 export async function touchUser(username: string): Promise<void> {
   const key = normUser(username);
   if (!key) return;
   try {
     await query(
-      `insert into app_users(key, display, role) values($1,$2,$3)
-       on conflict (key) do update set display=excluded.display, updated_at=now()`,
+      `insert into app_users(key, display, role, last_seen) values($1,$2,$3,now())
+       on conflict (key) do update set display=excluded.display, last_seen=now(), updated_at=now()`,
       [key, username, isAdminUser(username) ? 'admin' : isManagerUser(username) ? 'manager' : 'user']
     );
   } catch { /* pre-migration DB */ }

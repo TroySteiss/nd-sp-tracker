@@ -65,6 +65,12 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   | `user` | default for anyone not listed | full tracker; no admin tabs, no Change log, cannot approve |
   | `pm` | admin assigns in Settings (`app_users.role`) | the stripped `/pm` view only, scoped to their sites |
 
+  Accounts can be **created before their first login** (Settings ▸ Users & roles), which is how a PM
+  gets their covered sites assigned up front instead of meeting an empty site picker. `touchUser`
+  only ever updates `display`/`last_seen` on conflict — never `role` or `sites` — so a
+  pre-assignment survives the first sign-in. The name entered must match what they will type:
+  `normUser` keeps letters only, so a different spelling is a different account.
+
   **`manager` is a named tier that grants nothing extra yet.** It exists so the second-level admins
   are on record and allowlisted, ready for permissions to be attached later; today it behaves
   exactly like `user`. Every gate in routes.ts checks `isAdminUser`, so widening the tier means
@@ -124,7 +130,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | imports | import history (014) | kind gl/cushion, raw workbook file_key, label, counts, username |
 | change_log | who/what/when audit (014) | username, action, summary, details jsonb |
 | app_meta | single row | gl_period, cash_as_of, `app_title` (014), `cash_tile_mode` (022 — display only) |
-| app_users | user roster (023) | pk `key` = normalized username; `role` ('pm'/'user'), `sites` jsonb for a PM's covered properties. Rows appear on first login (`auth.touchUser`) |
+| app_users | user roster (023, `last_seen` 025) | pk `key` = normalized username; `role` ('pm'/'user'), `sites` jsonb for a PM's covered properties. Rows appear on first login (`auth.touchUser`) **or** are created up front by an admin; `last_seen` null ⇒ pre-created, never signed in |
 | session / _migrations | infra | — |
 
 Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
@@ -143,6 +149,8 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
   - Parse keeps **all** property codes (unknown ones included); preview returns `unknownCodes`.
   - GL confirm replaces **only the properties present in the file** and carries GL→project links
     forward by (property, control, date, amount). Raw workbook stored in files + imports row.
+- Users: `GET /users`, `POST /users` (create before first login), `PATCH /users/:key`,
+  `DELETE /users/:key` — all admin-only. Env-tier names can't be created, edited or removed here.
 - Settings/admin: `POST/PATCH/DELETE /properties[/:code]`, `POST/PATCH/DELETE /regions[/:name]`,
   `PATCH /meta` (app title and/or cash tile mode — both optional, so one panel can't clobber the
   other), `PATCH /properties/:code/recipients|settings`.

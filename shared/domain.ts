@@ -48,6 +48,14 @@ export interface Project {
   plannedStart?: string;
   plannedEnd?: string;
   bids?: Bid[];
+  /* Contract revision (migration 024). Set when a bad contract is sent back to
+     pre-approval: approval is withdrawn, the contract chain cleared, and the
+     superseded documents archived rather than deleted. */
+  revisionRequestedAt?: string | null;
+  revisionRequestedBy?: string | null;
+  revisionReason?: string;
+  supersededContracts?: { at: string; by: string; reason: string;
+                          files: { slot: string; fileKey: string; fileName: string }[] }[];
   steps?: Steps;
   notes?: string;
   onHold?: boolean;

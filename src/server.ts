@@ -4,6 +4,7 @@ import { join } from 'node:path';
 import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
 import { conversionAvailable } from './convert.js';
 import { api } from './routes.js';
+import { pmApi } from './pm.js';
 import { runMigrations } from './migrate.js';
 import { seedIfEmpty } from './seed-if-empty.js';
 
@@ -22,6 +23,11 @@ app.post('/api/logout', logout);
 app.get('/api/auth/status', status);
 app.get('/healthz', (_req, res) => res.json({ ok: true, docConvert: conversionAvailable() }));
 
+// The property-manager surface. Mounted before the main api router so /api/pm/*
+// never falls through to a full-view endpoint. Its own routes re-check the
+// caller's role and site list on every request.
+app.use('/api/pm', requireAuth, pmApi);
+
 // everything else under /api requires auth
 app.use('/api', requireAuth, api);
 
@@ -35,6 +41,9 @@ process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e))
 
 // static UI
 app.use(express.static(publicDir));
+// The PM view is its own page, not a route inside the main SPA, so it must be
+// matched before the catch-all below hands everything to index.html.
+app.get(['/pm', '/pm/*'], (_req, res) => res.sendFile(join(publicDir, 'pm.html')));
 app.get('*', (_req, res) => res.sendFile(join(publicDir, 'index.html')));
 
 // Run DB migrations + first-boot seed in-process, then always start listening.

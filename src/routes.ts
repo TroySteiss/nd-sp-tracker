@@ -3,12 +3,14 @@ import multer from 'multer';
 import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import type pg from 'pg';
+import { PDFDocument } from 'pdf-lib';
 import { pool, query, tx, assembleState, rowToProject, propLookup } from './db.js';
-import { requireAdmin, isAdminUser } from './auth.js';
+import { requireAdmin, requireManager, isAdminUser, isManagerUser, normUser } from './auth.js';
 import { loadStateInto } from './seed.js';
+import { requestContractRevision, clearRevisionFlag } from './revision.js';
 import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
-import { buildContract, stampSignature, type ContractVars, type BidAttachment } from './contract.js';
+import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, type Project, type AppState } from '../shared/domain.js';
 
 export const api = Router();
@@ -48,7 +50,87 @@ function logChange(req: Request, e: LogEntry): void {
   ).catch((err) => console.error('change_log insert failed:', err?.message || err));
 }
 
-api.get('/changelog', requireAdmin, async (req, res) => {
+/* ---------- contract revision ----------
+   Same rollback as the PM view (shared in revision.ts): clears approval and the
+   whole contract chain, un-approves every bid, archives the superseded documents.
+   Open to all signed-in users — spotting a bad contract shouldn't need an admin,
+   and the rollback only ever moves work backwards for the office to redo. */
+api.post('/projects/:id/request-revision', async (req, res) => {
+  const row = (await query<any>('select * from projects where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const reason = String(req.body?.reason || '').trim().slice(0, 2000);
+  if (!reason) return res.status(400).json({ error: 'Say what is wrong with the contract' });
+  if (!(row.steps || {}).approved && !row.contract_file_key) {
+    return res.status(400).json({ error: 'This project has no approved bid or contract to revise' });
+  }
+  const user = (req.session as any)?.username || 'unknown';
+  let result!: Awaited<ReturnType<typeof requestContractRevision>>;
+  await tx(async (cx) => {
+    result = await requestContractRevision(cx, row, user, reason);
+    await cx.query(
+      `insert into progress_notes(id, project_id, date, note, username, ts, files)
+       values($1,$2,$3,$4,$5,now(),'[]'::jsonb)`,
+      [uid('N') + Date.now().toString(36), row.id, new Date().toISOString().slice(0, 10),
+       `Contract flagged as needing revision — ${reason}`, user]
+    );
+  });
+  logChange(req, { action: 'contract.revision_requested', entityType: 'project', entityId: row.id,
+    property: row.property_code,
+    summary: `Contract on "${row.name}" flagged as needing revision — ${reason.slice(0, 160)}`,
+    details: { reason, archived: result.archived, clearedSteps: result.clearedSteps } });
+  res.json({ ok: true, ...result });
+});
+
+/** Admin clears the flag once the bid is re-approved / contract regenerated. */
+api.post('/projects/:id/clear-revision', requireAdmin, async (req, res) => {
+  const row = (await query<any>('select id, name, property_code from projects where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  await tx((cx) => clearRevisionFlag(cx, row.id));
+  logChange(req, { action: 'contract.revision_cleared', entityType: 'project', entityId: row.id,
+    property: row.property_code, summary: `Revision flag cleared on "${row.name}"` });
+  res.json({ ok: true });
+});
+
+/* ---------- user roster (admin-only) ----------
+   Rows appear automatically the first time someone logs in (auth.touchUser).
+   Admins set role and, for PMs, may pre-assign sites — a PM can also pick their
+   own from the /pm header. Env ADMIN_USERS still wins over any role stored here. */
+api.get('/users', requireAdmin, async (_req, res) => {
+  const rows = (await query<any>('select key, display, role, sites, updated_at from app_users order by role, key')).rows;
+  res.json(rows.map(r => ({
+    key: r.key, display: r.display || r.key,
+    role: isAdminUser(r.display || r.key) ? 'admin' : isManagerUser(r.display || r.key) ? 'manager' : r.role,
+    // Env-allowlisted tiers can't be edited here — they're set by ADMIN_USERS / MANAGER_USERS.
+    envAdmin: isManagerUser(r.display || r.key),
+    sites: Array.isArray(r.sites) ? r.sites : [], updatedAt: r.updated_at,
+  })));
+});
+
+api.patch('/users/:key', requireAdmin, async (req, res) => {
+  const key = normUser(req.params.key);
+  const cur = (await query<any>('select key, display, role, sites from app_users where key=$1', [key])).rows[0];
+  if (!cur) return res.status(404).json({ error: 'No such user — they appear here after their first login' });
+  if (isManagerUser(cur.display || cur.key)) {
+    return res.status(400).json({
+      error: 'This user is an admin or manager via the ADMIN_USERS / MANAGER_USERS env vars; change it there',
+    });
+  }
+  const role = ['pm', 'user'].includes(String(req.body?.role)) ? String(req.body.role) : cur.role;
+  let sites = Array.isArray(cur.sites) ? cur.sites : [];
+  if (Array.isArray(req.body?.sites)) {
+    const valid = (await query<{ code: string }>('select code from properties')).rows.map(r => r.code);
+    sites = req.body.sites.map((s: any) => String(s)).filter((s: string) => valid.includes(s));
+  }
+  await query('update app_users set role=$2, sites=$3::jsonb, updated_at=now() where key=$1',
+    [key, role, JSON.stringify(sites)]);
+  if (role !== cur.role) {
+    logChange(req, { action: 'user.role', entityType: 'user', entityId: key,
+      summary: `${cur.display || key} role ${cur.role} → ${role}` });
+  }
+  res.json({ ok: true, role, sites });
+});
+
+api.get('/changelog', requireManager, async (req, res) => {
   const limit = Math.min(500, Math.max(1, Number(req.query.limit) || 100));
   const conds: string[] = []; const params: any[] = [];
   if (req.query.before) { params.push(String(req.query.before)); conds.push(`ts < $${params.length}`); }
@@ -193,14 +275,14 @@ function projectDiff(old: any, p: Project): string[] {
 
 /* Approval is a decision gate: only the admin allowlist can set (or unset)
    the "approved" step or approve a bid. Compared as the set of approved bids. */
-const APPROVAL_MSG = 'Bid approval is limited to Troy Steiss and Riley Combs.';
+const APPROVAL_MSG = 'Bid approval is limited to admins and managers.';
 const approvedSig = (bids: any[]): string =>
   JSON.stringify((bids || []).filter((b) => b.approved).map((b) => [String(b.contractor || ''), b.amount == null ? null : Number(b.amount)]).sort());
 
 api.post('/projects', async (req, res) => {
   const p = req.body as Project;
   if (!p || !p.property || !p.name) return res.status(400).json({ error: 'property and name are required' });
-  if ((!!(p.steps && p.steps.approved) || (p.bids || []).some((b) => b.approved)) && !isAdminUser((req.session as any)?.username)) {
+  if ((!!(p.steps && p.steps.approved) || (p.bids || []).some((b) => b.approved)) && !isManagerUser((req.session as any)?.username)) {
     return res.status(403).json({ error: APPROVAL_MSG });
   }
   p.id = p.id || uid('P');
@@ -223,7 +305,7 @@ api.patch('/projects/:id', async (req, res) => {
   const oldBids = oldBidRows.map((b) => ({ contractor: b.contractor || '', amount: b.amount == null ? null : Number(b.amount), approved: !!b.approved }));
   const wasApproved = !!((existing.rows[0].steps || {}).approved);
   const willApprove = !!(p.steps && p.steps.approved);
-  if ((wasApproved !== willApprove || approvedSig(oldBidRows) !== approvedSig(p.bids || [])) && !isAdminUser((req.session as any)?.username)) {
+  if ((wasApproved !== willApprove || approvedSig(oldBidRows) !== approvedSig(p.bids || [])) && !isManagerUser((req.session as any)?.username)) {
     return res.status(403).json({ error: APPROVAL_MSG });
   }
   stampNotes(req, p);
@@ -325,6 +407,29 @@ api.get('/files/:key', async (req, res) => {
 const camel = (s: string) => String(s || '').replace(/[^a-zA-Z0-9 ]/g, '').split(/\s+/).filter(Boolean).map((w) => w[0].toUpperCase() + w.slice(1)).join('');
 const mmddyyyy = (d: string) => { const m = String(d || '').match(/^(\d{4})-(\d{2})-(\d{2})$/); if (m) return `${m[2]}${m[3]}${m[1]}`; const s = String(d || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); return s ? `${s[1].padStart(2, '0')}${s[2].padStart(2, '0')}${s[3]}` : 'date'; };
 
+/** The numbered sections, so the generate dialog can offer them for omission. */
+api.get('/contract/sections', (_req, res) => res.json(contractSectionList()));
+
+/** Page count per bid file on a project, so the dialog can offer page selection. */
+api.get('/projects/:id/bid-pages', async (req, res) => {
+  const rows = (await query<any>('select * from bids where project_id=$1 order by slot asc', [req.params.id])).rows;
+  const filesOf = (bd: any): any[] =>
+    (Array.isArray(bd.files) && bd.files.length ? bd.files : (bd.file_key ? [{ fileKey: bd.file_key, fileName: bd.file_name }] : []))
+      .filter((f: any) => f && f.fileKey);
+  const winner = rows.find((bd) => bd.approved && filesOf(bd).length) || rows.find((bd) => filesOf(bd).length);
+  const out: any[] = [];
+  for (const f of winner ? filesOf(winner) : []) {
+    const fr = await readFile(f.fileKey);
+    let pages = 0;
+    if (fr) {
+      try { pages = (await PDFDocument.load(fr.bytes, { ignoreEncryption: true })).getPageCount(); }
+      catch { pages = 0; }   // not a PDF (jpg/png) — single image, no page picking
+    }
+    out.push({ fileKey: f.fileKey, fileName: f.fileName || f.fileKey, pages });
+  }
+  res.json(out);
+});
+
 api.post('/projects/:id/contract', async (req, res) => {
   const projRow = await query('select * from projects where id=$1', [req.params.id]);
   if (!projRow.rowCount) return res.status(404).json({ error: 'project not found' });
@@ -338,7 +443,7 @@ api.post('/projects/:id/contract', async (req, res) => {
   if (!vars.ownerEntity || !vars.contractorName || !vars.contractTotal) return res.status(400).json({ error: 'ownerEntity, contractorName and contractTotal are required' });
   // Generating auto-cascades the approval step, so an unapproved project can
   // only be generated by someone allowed to approve.
-  if (!(proj.steps || {}).approved && b.tickStep !== false && !isAdminUser((req.session as any)?.username)) {
+  if (!(proj.steps || {}).approved && b.tickStep !== false && !isManagerUser((req.session as any)?.username)) {
     return res.status(403).json({ error: 'This project is not approved yet — ' + APPROVAL_MSG });
   }
 
@@ -350,12 +455,24 @@ api.post('/projects/:id/contract', async (req, res) => {
   const bidsRows = (await query('select * from bids where project_id=$1 order by slot asc', [proj.id])).rows;
   const winner = bidsRows.find((bd) => bd.approved && filesOf(bd).length) || bidsRows.find((bd) => filesOf(bd).length);
   const attachments: BidAttachment[] = [];
+  // Per-file page selection, keyed by fileKey: {"F123":"6"} or {"F123":"1,6-8"}.
+  // Bids often arrive as a sales deck where only one page is the real proposal.
+  const pageSel: Record<string, string> = (b.bidPages && typeof b.bidPages === 'object') ? b.bidPages : {};
+  // Boxes drawn in the review previewer, keyed by fileKey. Persisted on the bid
+  // file by the project save that precedes generation, so a regenerate keeps them.
+  const markSel: Record<string, any> = (b.bidMarks && typeof b.bidMarks === 'object') ? b.bidMarks : {};
   if (winner) {
     const files = filesOf(winner);
     for (let i = 0; i < files.length; i++) {
       const f = files[i];
       const fr = await readFile(f.fileKey);
-      if (fr) attachments.push({ buffer: fr.bytes, name: f.fileName || f.fileKey, label: files.length > 1 ? (i === 0 ? 'Applicable Scope & Contract Totals' : 'Supporting document') : undefined });
+      if (fr) attachments.push({
+        buffer: fr.bytes,
+        name: f.fileName || f.fileKey,
+        pages: String(pageSel[f.fileKey] || '').trim() || undefined,
+        marks: sanitizeMarks(markSel[f.fileKey] ?? f.marks),
+        label: files.length > 1 ? (i === 0 ? 'Applicable Scope & Contract Totals' : 'Supporting document') : undefined,
+      });
     }
   }
 
@@ -364,11 +481,21 @@ api.post('/projects/:id/contract', async (req, res) => {
     return res.status(400).json({ error: 'No bid document is attached to the saved project — attach the winning bid (PDF, JPG or PNG) in Bids, save, then generate.' });
   }
 
+  // Per-generation tailoring: drop numbered sections, and/or reject terms the
+  // bid carries that Owner won't accept (a 50% deposit, the contractor's own
+  // warranty). Both are recorded on the contract row and the change log so the
+  // executed document can always be traced back to what was altered.
+  const asList = (v: any): string[] =>
+    (Array.isArray(v) ? v : String(v || '').split('\n')).map((x) => String(x).trim()).filter(Boolean).slice(0, 20);
+  const contractOpts = { omitSections: asList(b.omitSections), excludedTerms: asList(b.excludedTerms), electedTerms: asList(b.electedTerms) };
+
   let pdf: Uint8Array;
   let sigAnchor: any = null;
-  try { const built = await buildContract(vars, attachments); pdf = built.bytes; sigAnchor = built.sigAnchor; }
+  try { const built = await buildContract(vars, attachments, contractOpts); pdf = built.bytes; sigAnchor = built.sigAnchor; }
   catch (e: any) {
     if (e?.code === 'NO_SCOPE') return res.status(400).json({ error: e.message });
+    // A dangling cross-reference is a user-fixable mistake, not a server fault.
+    if (/^Cannot omit /.test(e?.message || '')) return res.status(400).json({ error: e.message });
     return res.status(500).json({ error: 'contract build failed: ' + (e?.message || e) });
   }
 
@@ -414,7 +541,14 @@ api.post('/projects/:id/contract', async (req, res) => {
     }
   });
 
-  logChange(req, { action: 'contract.generate', entityType: 'project', entityId: proj.id, property: proj.property_code, summary: `Contract generated for "${proj.name}" — ${vars.contractorName}, ${vars.contractTotal} (${fileName})` });
+  const tailored = [
+    contractOpts.omitSections.length ? `${contractOpts.omitSections.length} section(s) omitted` : null,
+    contractOpts.excludedTerms.length ? `${contractOpts.excludedTerms.length} bid term(s) excluded` : null,
+    contractOpts.electedTerms.length ? `${contractOpts.electedTerms.length} option(s) elected` : null,
+  ].filter(Boolean).join('; ');
+  logChange(req, { action: 'contract.generate', entityType: 'project', entityId: proj.id, property: proj.property_code,
+    summary: `Contract generated for "${proj.name}" — ${vars.contractorName}, ${vars.contractTotal} (${fileName})${tailored ? ` · ${tailored}` : ''}`,
+    details: tailored ? contractOpts : undefined });
   res.json({ contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
 });
 

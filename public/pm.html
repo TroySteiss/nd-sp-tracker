@@ -1,0 +1,22 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Site Projects</title>
+<link rel="stylesheet" href="/styles.css">
+<link rel="stylesheet" href="/pm.css">
+<script>
+  /* Applied before first paint so a dark-mode load never flashes light —
+     same key and default as the main tracker. */
+  try {
+    var t = localStorage.getItem('theme') || (matchMedia('(prefers-color-scheme:dark)').matches ? 'dark' : 'light');
+    if (t === 'dark') document.documentElement.setAttribute('data-theme', 'dark');
+  } catch (e) {}
+</script>
+</head>
+<body>
+<div class="app" id="root"></div>
+<script src="/pm.js"></script>
+</body>
+</html>

@@ -94,6 +94,12 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     executedContractFileName: r.executed_contract_file_name ?? null,
     lienWaiverFileKey: r.lien_waiver_file_key ?? null,
     lienWaiverFileName: r.lien_waiver_file_name ?? null,
+    // Contract revision (024): set when someone sends a bad contract back to
+    // pre-approval. Cleared by an admin once the bid is re-approved / regenerated.
+    revisionRequestedAt: r.revision_requested_at ?? null,
+    revisionRequestedBy: r.revision_requested_by ?? null,
+    revisionReason: r.revision_reason ?? '',
+    supersededContracts: r.superseded_contracts ?? [],
     bids,
     progressNotes: notes,
   };

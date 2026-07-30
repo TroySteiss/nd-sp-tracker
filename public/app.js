@@ -164,7 +164,9 @@ async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWri
 async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
 /* ---------- login (username + shared password) ---------- */
 let USER='';       // signed-in username (First.Last), from the session
-let IS_ADMIN=false; // Admin tabs (Settings / Change log) — server enforces too
+let IS_ADMIN=false;   // top level: Settings, roster, backup/restore, countersign
+let IS_MGR=false;     // + managers: approve bids, generate contracts, read the change log
+                      // Both mirrored from /api/auth/status; the server enforces regardless.
 function showLogin(){ const o=document.getElementById('login'); if(o)o.style.display='flex'; }
 function hideLogin(){ const o=document.getElementById('login'); if(o)o.style.display='none'; }
 function setLoginTitle(t){ const h=document.getElementById('login-title'); if(h&&t)h.textContent=t; if(t)document.title=t; }
@@ -179,13 +181,30 @@ async function start(){
     const pw=document.getElementById('login-pw').value;
     const err=document.getElementById('login-err'); err.textContent='';
     if(!username){ err.textContent='Enter your name (e.g. First.Last).'; return; }
-    const r=await fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username,password:pw})});
-    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){} hideLogin(); await boot(); }
+    const send=confirmNew=>fetch('/api/login',{method:'POST',headers:{'Content-Type':'application/json'},
+      body:JSON.stringify({username,password:pw,confirmNew:!!confirmNew})});
+    let r=await send(false);
+    // 409 = no account under this name. A typo here would silently create a new
+    // user with no sites, so confirm (and offer close matches) before proceeding.
+    if(r.status===409){
+      const j=await r.json().catch(()=>({}));
+      const near=(j.suggestions||[]).length?`\n\nDid you mean: ${j.suggestions.join(', ')}?`:'';
+      if(!confirm(`No account exists for "${username}".${near}\n\nCreate a new account with this name?`)){
+        err.textContent='Check the spelling of your name and try again.'; return;
+      }
+      r=await send(true);
+    }
+    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; IS_MGR=!!j.isManager; try{localStorage.setItem('sp-username',username);}catch(e){}
+      // Property managers get the simplified view; the full tracker never loads for them.
+      if(j.role==='pm'){ location.href='/pm'; return; }
+      hideLogin(); await boot(); }
     else { let msg='Incorrect password.'; try{ msg=(await r.json()).error||msg; }catch(e){} err.textContent=msg; }
   }); }
   try{ const st=await fetch('/api/auth/status').then(r=>r.json());
     setLoginTitle(st.appTitle);
-    if(st.authed){ USER=st.username||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
+    if(st.authed){
+      if(st.role==='pm'){ location.href='/pm'; return; }   // returning PM session
+      USER=st.username||''; IS_ADMIN=!!st.isAdmin; IS_MGR=!!st.isManager; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -407,10 +426,10 @@ function rail(){
   nav.append(item('cash','$','Cash & Loans'));
   nav.append(item('data','⇪','Upload & Data'));
   nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
-  if(IS_ADMIN){
+  if(IS_MGR){
     nav.append(el('div',{class:'grp'},'Admin'));
     nav.append(item('changelog','≡','Change log'));
-    nav.append(item('settings','⚙','Settings'));
+    if(IS_ADMIN) nav.append(item('settings','⚙','Settings'));
   }
 
   const foot=el('div',{class:'foot'},
@@ -426,7 +445,7 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  if(!IS_ADMIN&&(VIEW.tab==='changelog'||VIEW.tab==='settings'))VIEW.tab='dashboard';   // admin-only tabs
+  if((!IS_MGR&&VIEW.tab==='changelog')||(!IS_ADMIN&&VIEW.tab==='settings'))VIEW.tab='dashboard';   // gated tabs
   const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
@@ -1557,9 +1576,9 @@ function openProject(id,preset){
       bd.approved?el('span',{class:'chip done',style:'margin-left:8px'},'Selected'):null,
       el('div',{style:'flex:1'}),
       el('button',{class:'bs-appr'+(bd.approved?' on':''),
-        ...(IS_ADMIN?{}:{title:'Bid approval is limited to Troy Steiss and Riley Combs',style:'opacity:.45;cursor:not-allowed'}),
+        ...(IS_MGR?{}:{title:'Bid approval is limited to admins and managers',style:'opacity:.45;cursor:not-allowed'}),
         onclick:()=>{
-        if(!IS_ADMIN){ toast('Bid approval is limited to Troy Steiss and Riley Combs.'); return; }
+        if(!IS_MGR){ toast('Bid approval is limited to admins and managers.'); return; }
         const willApprove=!bd.approved;
         p.bids.forEach((x,j)=>x.approved=(j===i)?willApprove:false);
         if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor; if(bd.amount!=null)p.anticipatedCost=bd.amount; }
@@ -1645,9 +1664,35 @@ function openProject(id,preset){
   const hasCt=!!(p.contractFileKey||p.contractorSignedFileKey||p.executedContractFileKey||p.lienWaiverFileKey);
   const contractWrap=el('details',{class:'panel acc',style:'margin-top:16px',...(hasCt?{open:''}:{})});
   const ctMeta=el('span',{class:'bs-meta'},'');
-  contractWrap.append(el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Contract'), el('div',{class:'sp'}), ctMeta));
+  contractWrap.append(el('summary',{class:'ph as-summary'}, el('span',{class:'chev'},'▸'), el('h3',{},'Contract'), el('div',{class:'sp'}),
+    p.revisionRequestedAt?el('span',{class:'chip hold'},'Needs revision'):null, ctMeta));
   const ctBody=el('div',{class:'pad'});
   contractWrap.append(ctBody);
+  /* Contract revision — same rollback as the PM view (src/revision.ts): withdraws
+     approval, clears the whole contract chain, archives the superseded documents.
+     Deliberately not admin-gated: anyone can spot a bad contract, and the action
+     only ever moves work backwards for the office to redo. */
+  if(p.revisionRequestedAt){
+    ctBody.append(el('div',{class:'note-warn',style:'margin-bottom:12px;padding:10px 13px;border:1px solid var(--rust-soft);background:var(--rust-soft);border-radius:8px;font-size:12.5px'},
+      el('strong',{},'Sent back for revision'),
+      ` by ${p.revisionRequestedBy||'someone'}. `,
+      el('div',{style:'margin-top:5px'},p.revisionReason||''),
+      el('div',{style:'margin-top:6px;color:var(--ink-3)'},'Approval was withdrawn. Re-approve a bid and generate a new contract, then clear the flag.'),
+      IS_ADMIN?el('button',{class:'btn sm',style:'margin-top:9px',onclick:async()=>{
+        try{ await API.send('POST','/projects/'+p.id+'/clear-revision'); toast('Revision flag cleared'); await afterWrite(); }
+        catch(e){ toast('Failed: '+e.message); }
+      }},'Clear revision flag'):null));
+  }
+  async function flagRevision(){
+    const reason=prompt('What is wrong with this contract?\n\nThis withdraws the bid approval, clears the contract chain and sends the project back to pre-approval. Attached documents are kept as superseded.');
+    if(reason==null)return;
+    if(!reason.trim()){toast('A reason is required');return;}
+    try{
+      await API.send('POST','/projects/'+p.id+'/request-revision',{reason});
+      toast('Contract sent back for revision');
+      scrim.remove(); await afterWrite();
+    }catch(e){ toast('Failed: '+e.message); }
+  }
   const ctRow=label=>{ const r=el('div',{class:'ct-row'}); r.append(el('span',{class:'ct-lab'},label)); return r; };
   // View (new tab) + download pair — downloads keep the original filename.
   const fileLink=(key,name)=>el('span',{style:'display:inline-flex;gap:6px;align-items:center;min-width:0'},
@@ -1962,6 +2007,13 @@ function openProject(id,preset){
       }
       ctBody.append(lRow);
     }
+    // Send-back control lives at the foot of the contract section, after the
+    // documents it invalidates. Hidden once already flagged.
+    if(!p.revisionRequestedAt && (p.steps.approved || p.contractFileKey)){
+      ctBody.append(el('div',{style:'display:flex;align-items:center;gap:10px;flex-wrap:wrap;margin-top:14px;padding-top:12px;border-top:1px solid var(--line-2)'},
+        el('button',{class:'btn danger sm',onclick:flagRevision},'⤺ Flag for revision'),
+        el('span',{style:'font-size:12px;color:var(--ink-3)'},'Withdraws approval and clears the contract chain — documents are kept as superseded.')));
+    }
   }
 
   function openContractDialog(){
@@ -2031,6 +2083,79 @@ function openProject(id,preset){
     const ctrNameField=el('div',{class:'field'},el('label',{},'Contractor name'),ctrNameInp);
     bb.append(ctrNameField);
     bb.append(el('div',{class:'field'},el('label',{},'Contractor address'),ctrAddrInp));
+    /* ---- Tailoring: which bid pages become the scope, terms to reject, sections to drop ----
+       Bids often arrive as a sales deck where only one page is the real proposal
+       and the rest is marketing plus the contractor's own terms. Those must not
+       become Exhibit A. */
+    data.bidPages={}; data.excludedTerms=[]; data.electedTerms=[]; data.omitSections=[];
+
+    const tailor=el('details',{class:'panel acc',style:'margin:14px 0'});
+    tailor.append(el('summary',{class:'ph as-summary'},el('span',{class:'chev'},'▸'),el('h3',{},'Tailor this contract'),
+      el('div',{class:'sp'}),el('span',{class:'chip'},'optional')));
+    const tb=el('div',{class:'pad'});
+    tailor.append(tb);
+
+    /* 1. Scope review — open the bid, switch pages on/off, mark up terms.
+       This is the general tool: it copes with any bid layout rather than the
+       specific cases the text fields below happen to name. */
+    const scopeState={pages:{},marks:{}};
+    const scopeSummary=el('span',{style:'font-size:12px;color:var(--ink-3)'},'whole bid');
+    const syncScope=()=>{
+      data.bidPages={}; data.bidMarks={};
+      let pagesTxt=[], nMarks=0;
+      for(const k in scopeState.pages){
+        const sel=scopeState.pages[k];
+        if(sel){ const list=[...sel].sort((a,b)=>a-b); data.bidPages[k]=list.join(','); pagesTxt.push(`${list.length} page${list.length===1?'':'s'}`); }
+      }
+      for(const k in scopeState.marks){
+        const ms=scopeState.marks[k]||[];
+        if(ms.length){ data.bidMarks[k]=ms; nMarks+=ms.length; }
+      }
+      scopeSummary.textContent=[pagesTxt.length?pagesTxt.join(', '):'whole bid',
+        nMarks?`${nMarks} mark${nMarks===1?'':'s'}`:null].filter(Boolean).join('  ·  ');
+    };
+    tb.append(el('div',{class:'field'},el('label',{},'Scope (Exhibit A & B)'),
+      el('p',{class:'bs-hint',style:'margin:0 0 8px'},'Open the bid to choose which pages become the scope and strike or cover anything you are not accepting. What you see is what embeds.'),
+      el('div',{style:'display:flex;align-items:center;gap:10px'},
+        el('button',{class:'btn sm',onclick:()=>openScopePreviewer(p.id,scopeState,syncScope)},'🔍 Review bid pages'),
+        scopeSummary)));
+
+    // 2. Options the bid makes you pick from ("Choose One Subscription: 12/36/60
+    //    month"). Embedding that page leaves the price ambiguous, so record which
+    //    option was taken; it controls over the others still visible on the page.
+    const electTa=el('textarea',{rows:'3',placeholder:'One per line, e.g.\n36-Month Term subscription at $593.76/month\nLiaison Support at $2,813.25/month',
+      oninput:e=>{ data.electedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean); }});
+    tb.append(el('div',{class:'field'},el('label',{},'Elected options'),
+      el('p',{class:'bs-hint',style:'margin:0 0 6px'},'For bids that offer a choice — "Choose one", tiered pricing, optional add-ons. What you record here controls over every other option shown in the exhibit.'),
+      electTa));
+
+    // 3. Bid terms Owner does not accept — rejected on the face of the agreement.
+    const termsTa=el('textarea',{rows:'3',placeholder:'One per line, e.g.\n50% deposit due on signing\nContractor\'s 60-day pricing validity',
+      oninput:e=>{ data.excludedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean); }});
+    tb.append(el('div',{class:'field'},el('label',{},'Bid terms to exclude'),
+      el('p',{class:'bs-hint',style:'margin:0 0 6px'},'An embedded bid cannot be edited, so these are expressly rejected in the agreement and reprinted on the Exhibit A cover page.'),
+      termsTa));
+
+    // 4. Numbered sections to leave out. Removing one that another section cites
+    //    is refused server-side rather than shipping a dangling reference.
+    const secWrap=el('div',{style:'max-height:190px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:8px'});
+    tb.append(el('div',{class:'field',style:'margin-bottom:0'},el('label',{},'Sections to omit'),
+      el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Everything left renumbers automatically. Think hard before dropping Indemnification, Insurance or Guarantee.'),
+      secWrap));
+    fetch('/api/contract/sections').then(r=>r.json()).then(list=>{
+      secWrap.innerHTML='';
+      list.forEach((s,i)=>{
+        const cb=el('input',{type:'checkbox',style:'width:auto;margin:0'});
+        cb.addEventListener('change',()=>{
+          data.omitSections=cb.checked?[...data.omitSections,s.slug]:data.omitSections.filter(x=>x!==s.slug);
+        });
+        secWrap.append(el('label',{style:'display:flex;align-items:center;gap:8px;padding:3px 0;font-size:12.5px;cursor:pointer'},
+          cb,el('span',{style:'color:var(--ink-3);min-width:20px'},String(i+1)),el('span',{},s.title)));
+      });
+    }).catch(()=>{ secWrap.innerHTML=''; secWrap.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'Could not load sections.')); });
+
+    bb.append(tailor);
+
     const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{
       if(!data.ownerEntity||!data.contractorName||!data.contractTotal){ err.textContent='Owner entity, contractor name and contract total are required.'; return; }
@@ -2059,7 +2184,7 @@ function openProject(id,preset){
       const keys=appKeys(p).filter(k=>!AUTO_STEPS.includes(k));
       let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
       const next=keys[cur+1];
-      if(next&&!IS_ADMIN&&(next==='approved'||(STEP_KEYS.indexOf(next)>APPROVED_IDX&&!p.steps.approved))){
+      if(next&&!IS_MGR&&(next==='approved'||(STEP_KEYS.indexOf(next)>APPROVED_IDX&&!p.steps.approved))){
         toast('Bid approval is limited to Troy Steiss and Riley Combs.'); return; }
       if(next){ p.steps[next]=true; const gi=STEP_KEYS.indexOf(next);
         if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k)&&!AUTO_STEPS.includes(k))p.steps[k]=true; }); }
@@ -2081,12 +2206,12 @@ function openProject(id,preset){
       } else if(auto){
         // Derived from the attachment — no manual switch.
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Ticks automatically when the file is attached in the Contract section'},on?'✓ auto':'auto')));
-      } else if(s.key==='approved'&&!IS_ADMIN){
+      } else if(s.key==='approved'&&!IS_MGR){
         // The approval decision is limited to the admin allowlist.
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Bid approval is limited to Troy Steiss and Riley Combs'},on?'✓ locked':'🔒 T/R only')));
       } else {
         const sw=el('button',{class:'switch'+(on?' on':''),title:'toggle',onclick:()=>{
-          if(!IS_ADMIN&&i>APPROVED_IDX&&!p.steps[s.key]&&!p.steps.approved){
+          if(!IS_MGR&&i>APPROVED_IDX&&!p.steps[s.key]&&!p.steps.approved){
             toast('Ticking this would auto-approve the project — bid approval is limited to Troy Steiss and Riley Combs.'); return; }
           const nv=!p.steps[s.key];
           p.steps[s.key]=nv;
@@ -2382,6 +2507,149 @@ async function findSignSpot(pdfDoc){
     }
   }
   return null;
+}
+
+/* ---------- Bid scope previewer ----------
+   Renders every page of a bid and lets you decide, visually, what becomes
+   Exhibit A: toggle pages in or out, and drag boxes over anything that should be
+   struck through or blanked. Marks are fractions of the page (top-left origin),
+   the same convention as the signature anchor, so the server can redraw them at
+   whatever size the page lands on in the contract.
+
+   state = { pages:{[fileKey]:Set<pageNo>|null}, marks:{[fileKey]:[{page,x,y,w,h,style}]} }
+   null pages = "all pages" (the default; never narrows a bid you didn't touch). */
+async function openScopePreviewer(projectId, state, onSave){
+  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet sheet-editor'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Review contract scope'),
+    el('button',{class:'btn',onclick:()=>scrim.remove()},'Cancel'));
+  const body=el('div',{class:'sb'});
+  sheet.append(head,body); scrim.append(sheet); document.body.append(scrim);
+  body.append(el('div',{class:'bs-hint'},'Everything left switched on becomes Exhibit A. Drag a box over any term you are not accepting — strike keeps it readable (the norm on a contract), cover blanks it. Covering paints over the text; it does not delete it from the file.'));
+  const status=el('div',{style:'font-size:12.5px;color:var(--ink-3);padding:10px 0'},'Loading bid…');
+  body.append(status);
+
+  let files=[];
+  try{ files=await API.get('/projects/'+projectId+'/bid-pages'); }
+  catch(e){ status.textContent='Could not read the bid: '+e.message; return; }
+  if(!files.length){ status.textContent='No bid document is attached yet.'; return; }
+
+  let pdfjs;
+  try{ pdfjs=await loadPdfJs(); }
+  catch(e){ status.textContent='Could not load the PDF viewer.'; return; }
+  status.remove();
+
+  let tool='strike';                       // active drawing tool
+  const toolbar=el('div',{style:'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px'});
+  const toolBtn=(k,label)=>{ const b=el('button',{class:'btn sm'+(tool===k?' pri':''),onclick:()=>{
+      tool=k; [...toolbar.querySelectorAll('button[data-tool]')].forEach(x=>x.className='btn sm'+(x.dataset.tool===tool?' pri':''));
+    }},label); b.dataset.tool=k; return b; };
+  toolbar.append(el('span',{style:'font-size:12px;color:var(--ink-3)'},'Draw:'),
+    toolBtn('strike','✏ Strike through'), toolBtn('cover','▭ Cover'),
+    el('span',{style:'flex:1'}),
+    el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'Click a box to remove it'));
+  body.append(toolbar);
+
+  for(const f of files){
+    state.marks[f.fileKey]=state.marks[f.fileKey]||[];
+    const wrap=el('div',{style:'margin-bottom:18px'});
+    wrap.append(el('div',{style:'font-weight:600;font-size:13px;margin-bottom:8px'},f.fileName,
+      el('span',{style:'font-weight:400;color:var(--ink-3)'},f.pages?`  ·  ${f.pages} page${f.pages===1?'':'s'}`:'  ·  image')));
+    body.append(wrap);
+    if(!f.pages){ wrap.append(el('div',{class:'bs-hint'},'Images embed whole — no page selection or marking.')); continue; }
+
+    let bytes;
+    try{
+      const r=await fetch('/api/bids/file/'+f.fileKey);
+      bytes=new Uint8Array(await r.arrayBuffer());
+    }catch(e){ wrap.append(el('div',{class:'bs-hint'},'Could not load this file.')); continue; }
+    let doc;
+    try{ doc=await pdfjs.getDocument({data:bytes}).promise; }
+    catch(e){ wrap.append(el('div',{class:'bs-hint'},'Could not open this file for preview.')); continue; }
+
+    const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px'});
+    wrap.append(grid);
+
+    for(let pno=1;pno<=doc.numPages;pno++){
+      const cell=el('div',{style:'border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)'});
+      const on=()=>!state.pages[f.fileKey]||state.pages[f.fileKey].has(pno);
+      const hdr=el('div',{style:'display:flex;align-items:center;gap:8px;padding:7px 10px;border-bottom:1px solid var(--line-2);font-size:12px'});
+      const cb=el('input',{type:'checkbox',style:'width:auto;margin:0'}); cb.checked=on();
+      const canvasWrap=el('div',{style:'position:relative;line-height:0;cursor:crosshair'});
+      const paint=()=>{ canvasWrap.style.opacity=cb.checked?'1':'.32'; canvasWrap.style.pointerEvents=cb.checked?'':'none'; };
+      cb.addEventListener('change',()=>{
+        // First deselection materialises the set (null means "all").
+        if(!state.pages[f.fileKey]) state.pages[f.fileKey]=new Set(Array.from({length:doc.numPages},(_,i)=>i+1));
+        if(cb.checked) state.pages[f.fileKey].add(pno); else state.pages[f.fileKey].delete(pno);
+        paint();
+      });
+      hdr.append(cb, el('span',{style:'font-weight:600'},'Page '+pno), el('span',{style:'flex:1'}));
+      cell.append(hdr, canvasWrap); grid.append(cell);
+
+      const page=await doc.getPage(pno);
+      const base=page.getViewport({scale:1});
+      const scale=230/base.width;
+      const vp=page.getViewport({scale});
+      const cvs=el('canvas',{width:String(Math.floor(vp.width)),height:String(Math.floor(vp.height)),style:'width:100%;display:block'});
+      canvasWrap.append(cvs);
+      // intent:'print' — rAF-scheduled rendering stalls in a background tab.
+      await page.render({canvasContext:cvs.getContext('2d'),viewport:vp,intent:'print'}).promise;
+
+      const overlay=el('div',{style:'position:absolute;inset:0'});
+      canvasWrap.append(overlay);
+      const redraw=()=>{
+        overlay.innerHTML='';
+        state.marks[f.fileKey].filter(m=>m.page===pno).forEach(m=>{
+          const isCover=m.style==='cover';
+          const bx=el('div',{title:'Click to remove',
+            style:`position:absolute;left:${m.x*100}%;top:${m.y*100}%;width:${m.w*100}%;height:${m.h*100}%;cursor:pointer;`+
+              (isCover?'background:#fff;border:1px solid #8a8a8a;'
+                     :'border:1.5px solid #b81f1a;background:repeating-linear-gradient(0deg,transparent 0 4px,rgba(184,31,26,.85) 4px 5px);')});
+          bx.addEventListener('mousedown',e=>{ e.stopPropagation(); });
+          bx.addEventListener('click',e=>{ e.stopPropagation();
+            state.marks[f.fileKey]=state.marks[f.fileKey].filter(x=>x!==m); redraw(); });
+          overlay.append(bx);
+        });
+      };
+      redraw(); paint();
+
+      // Drag to draw. Coordinates normalise against the rendered box, so they stay
+      // correct whatever size the canvas is displayed at.
+      canvasWrap.addEventListener('mousedown',e=>{
+        if(!cb.checked) return;
+        const r=canvasWrap.getBoundingClientRect();
+        const x0=(e.clientX-r.left)/r.width, y0=(e.clientY-r.top)/r.height;
+        const ghost=el('div',{style:'position:absolute;border:1.5px dashed var(--blue);background:rgba(42,77,110,.12);pointerEvents:none'});
+        overlay.append(ghost);
+        const move=ev=>{
+          const x1=(ev.clientX-r.left)/r.width, y1=(ev.clientY-r.top)/r.height;
+          ghost.style.left=Math.min(x0,x1)*100+'%'; ghost.style.top=Math.min(y0,y1)*100+'%';
+          ghost.style.width=Math.abs(x1-x0)*100+'%'; ghost.style.height=Math.abs(y1-y0)*100+'%';
+        };
+        const up=ev=>{
+          document.removeEventListener('mousemove',move); document.removeEventListener('mouseup',up);
+          ghost.remove();
+          const x1=(ev.clientX-r.left)/r.width, y1=(ev.clientY-r.top)/r.height;
+          const m={page:pno,x:Math.max(0,Math.min(x0,x1)),y:Math.max(0,Math.min(y0,y1)),
+                   w:Math.abs(x1-x0),h:Math.abs(y1-y0),style:tool};
+          if(m.w>0.01&&m.h>0.006) state.marks[f.fileKey].push(m);   // ignore stray clicks
+          redraw();
+        };
+        document.addEventListener('mousemove',move); document.addEventListener('mouseup',up);
+      });
+    }
+  }
+
+  const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
+  body.append(err, el('div',{style:'display:flex;gap:8px;margin-top:10px'}, el('div',{style:'flex:1'}),
+    el('button',{class:'btn accent',onclick:()=>{
+      // Every page switched off is a scope with nothing in it — refuse.
+      for(const f of files){
+        const sel=state.pages[f.fileKey];
+        if(sel&&sel.size===0){ err.textContent=`Select at least one page of "${f.fileName}".`; return; }
+      }
+      scrim.remove(); onSave();
+    }},'Use this scope')));
 }
 
 /* Lazy-load pdf.js (CDN) for the countersign click-to-place preview. */
@@ -3482,6 +3750,50 @@ function viewSettings(){
     modeBtn('current','Current cash','Cushion snapshot + mid-month adjustments'),
     modeBtn('afterDist','Cash after distribution','Cushion Col V — falls back to current cash when a property has no Col V')));
   cp.append(cpad); body.append(cp);
+
+  /* --- users & roles --- */
+  const up=el('div',{class:'panel',style:'grid-column:1/-1'});
+  up.append(el('div',{class:'ph'}, el('h3',{},'Users & roles'), el('div',{class:'sp'}),
+    el('a',{class:'btn ghost sm',href:'/pm',target:'_blank'},'Open PM view ↗')));
+  const upad=el('div',{class:'pad'});
+  upad.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:13px'},
+    'Users appear here after their first sign-in. "PM" sends them to the simplified /pm view, '+
+    'limited to the sites they cover. Admins are set by the ADMIN_USERS env var and cannot be '+
+    'changed here. Note: everyone shares one password, so a role scopes the UI — it is not a '+
+    'security boundary.'));
+  const utb=el('div',{}); upad.append(utb);
+  const loadUsers=async()=>{
+    utb.innerHTML='';
+    let rows=[];
+    try{ rows=await API.get('/users'); }
+    catch(e){ utb.append(el('div',{style:'color:var(--bad)'},'Could not load users: '+e.message)); return; }
+    if(!rows.length){ utb.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'No sign-ins recorded yet.')); return; }
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('User'),th('Role'),th('Sites (PM only)'),th(''))));
+    const tb=el('tbody');
+    rows.forEach(u=>{
+      const roleSel=el('select',{style:inpStyle+';width:auto',disabled:u.envAdmin?'':null},
+        ...['user','pm'].map(r=>el('option',{value:r,...(u.role===r?{selected:'selected'}:{})},r==='pm'?'Property manager':'Full user')));
+      if(u.envAdmin) roleSel.append(el('option',{value:'admin',selected:'selected'},'Admin (env)'));
+      const sitesI=el('input',{value:(u.sites||[]).join(', '),placeholder:'e.g. CLND, SPND',style:inpStyle,
+                               disabled:(u.role==='pm'&&!u.envAdmin)?null:'disabled'});
+      roleSel.addEventListener('change',()=>{ sitesI.disabled = roleSel.value!=='pm'; });
+      tb.append(tr(
+        td(el('div',{}, el('strong',{},u.display), el('div',{style:'color:var(--ink-3);font-size:12px'},u.key))),
+        td(roleSel), td(sitesI),
+        td(el('button',{class:'btn sm',disabled:u.envAdmin?'':null,onclick:async()=>{
+          try{
+            await API.send('PATCH','/users/'+encodeURIComponent(u.key),{
+              role:roleSel.value,
+              sites:sitesI.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)});
+            toast('Saved '+u.display); await loadUsers();
+          }catch(e){ toast('Failed: '+e.message); }
+        }},'Save'))));
+    });
+    t.append(tb); utb.append(t);
+  };
+  loadUsers();
+  up.append(upad); body.append(up);
 
   /* --- regions --- */
   const rp=el('div',{class:'panel'});

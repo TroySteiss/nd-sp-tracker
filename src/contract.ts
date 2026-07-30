@@ -19,7 +19,138 @@ export interface ContractVars {
   contractorAddr: string;
   contractTotal: string;    // e.g. "$30,700.00"
 }
-export interface BidAttachment { buffer: Buffer; name: string; label?: string; }
+/* `pages` limits which pages of a multi-page bid become the contract scope.
+   Bids often arrive as a sales deck where only one page is the actual proposal —
+   the rest is marketing and the contractor's own terms, which must not become
+   Exhibit A. 1-based, e.g. "6" or "1,6-8". Empty/absent = every page. */
+/* A box drawn over a bid page in the review previewer.
+   page  — 1-based page number in the SOURCE document.
+   x/y/w/h — fractions of the upright page, from the top-left (as SigAnchor does).
+   style — 'strike' rules through and stays legible; 'cover' blanks the area. */
+export interface PageMark { page: number; x: number; y: number; w: number; h: number; style?: 'strike' | 'cover'; }
+
+export interface BidAttachment { buffer: Buffer; name: string; label?: string; pages?: string; marks?: PageMark[]; }
+
+/** Drop marks that aren't finite numbers in 0..1 — a bad box would otherwise
+ *  paint somewhere arbitrary on the contract. */
+export function sanitizeMarks(raw: any): PageMark[] {
+  if (!Array.isArray(raw)) return [];
+  const ok = (n: any) => typeof n === 'number' && isFinite(n) && n >= -0.01 && n <= 1.01;
+  return raw
+    .filter((m) => m && Number.isFinite(m.page) && m.page >= 1 && ok(m.x) && ok(m.y) && ok(m.w) && ok(m.h) && m.w > 0 && m.h > 0)
+    .slice(0, 200)
+    .map((m) => ({
+      page: Math.floor(m.page),
+      x: Math.min(1, Math.max(0, m.x)), y: Math.min(1, Math.max(0, m.y)),
+      w: Math.min(1, m.w), h: Math.min(1, m.h),
+      style: m.style === 'cover' ? 'cover' as const : 'strike' as const,
+    }));
+}
+
+/** Parse "1,6-8" into a 0-based index set. Returns null for "all pages". */
+export function parsePageSpec(spec: string | undefined, pageCount: number): Set<number> | null {
+  const raw = String(spec || '').trim();
+  if (!raw) return null;
+  const keep = new Set<number>();
+  for (const part of raw.split(',')) {
+    const raw2 = part.trim();
+    if (!raw2) continue;
+    const m = raw2.match(/^(\d+)\s*-\s*(\d+)$/);
+    if (m) {
+      const lo = Math.max(1, Number(m[1])), hi = Math.min(pageCount, Number(m[2]));
+      for (let i = lo; i <= hi; i++) keep.add(i - 1);
+    } else if (/^\d+$/.test(raw2)) {
+      const n = Number(raw2);
+      if (n >= 1 && n <= pageCount) keep.add(n - 1);
+    }
+  }
+  return keep.size ? keep : null;   // nothing valid selected ⇒ fall back to all
+}
+
+/* Per-generation tailoring.
+ *
+ * omitSections   — slugs of numbered sections to leave out. The rest renumber,
+ *                  and cross-references follow (see resolveSections).
+ * excludedTerms  — terms carried in the bid that Owner does not accept (a 50%
+ *                  deposit, the contractor's own warranty period, and so on).
+ *                  A bid embeds as a PDF and cannot be edited, so these are
+ *                  rejected on the face of the Agreement instead, and echoed on
+ *                  the Exhibit A & B cover page where the bid actually sits.
+ * electedTerms   — the opposite problem: a bid page that offers a choice ("Choose
+ *                  One Subscription: 12 / 36 / 60-Month") is ambiguous once it is
+ *                  the scope. These record which option was taken, and control
+ *                  over the alternatives still visible on the page.
+ */
+export interface ContractOptions { omitSections?: string[]; excludedTerms?: string[]; electedTerms?: string[]; }
+
+/** Stable id for a section, derived from its title. */
+export const sectionSlug = (title: string): string =>
+  title.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-|-$/g, '');
+
+/** The full section list with slugs — the UI renders this to build its checkboxes. */
+export function contractSectionList(): { slug: string; title: string }[] {
+  return buildSections(BLANK_VARS).map((s) => ({ slug: sectionSlug(s.title), title: s.title }));
+}
+
+const BLANK_VARS: ContractVars = {
+  effectiveDate: '', termEndDate: '', ownerEntity: '', contractorName: '', propertyName: '',
+  propertyAddr: '', ownerNoticeAddr: '', contractorAddr: '', contractTotal: '',
+};
+
+/**
+ * Apply omissions and the excluded-terms clause, then resolve {SEC:slug} tokens
+ * to final numbers.
+ *
+ * Refuses to omit a section that a surviving section points at — dropping it
+ * would leave a dangling "Section 6" in the payment terms. Better to fail loudly
+ * at generation than to ship a contract with a broken internal reference.
+ */
+export function resolveSections(v: ContractVars, opts: ContractOptions = {}): { title: string; paras: string[] }[] {
+  const omit = new Set(opts.omitSections || []);
+  let list = buildSections(v).filter((s) => !omit.has(sectionSlug(s.title)));
+
+  const clean = (arr?: string[]) => (arr || []).map((t) => String(t).trim()).filter(Boolean);
+  const letters = 'abcdefghijklmnopqrstuvwxyz';
+  const lettered = (items: string[]) =>
+    items.map((t, i) => `(${letters[i] || i + 1}) ${t.replace(/[.;]\s*$/, '')}`).join('; ');
+
+  // Both clauses qualify the scope, so they sit immediately after it — elections
+  // first (what WAS agreed), then exclusions (what was not).
+  const at = list.findIndex((s) => sectionSlug(s.title) === 'services-and-scope-of-work');
+  const insertAt = at < 0 ? 0 : at + 1;
+  const extra: { title: string; paras: string[] }[] = [];
+
+  const elected = clean(opts.electedTerms);
+  if (elected.length) {
+    extra.push({
+      title: 'Elected Options',
+      paras: [`Where Exhibit A or Exhibit B presents alternatives, options or a required selection, the parties have elected the following, which shall control over any other alternative or option shown in the Exhibits: ${lettered(elected)}. No alternative, option or pricing shown in the Exhibits other than those elected above is agreed to or payable by Owner.`],
+    });
+  }
+
+  const terms = clean(opts.excludedTerms);
+  if (terms.length) {
+    extra.push({
+      title: 'Excluded Bid Terms',
+      paras: [`Notwithstanding anything in the Exhibits to the contrary, the following terms, conditions and provisions appearing in Exhibit A or Exhibit B are expressly rejected by Owner, are excluded from this Agreement, and shall be of no force or effect: ${lettered(terms)}. Owner's execution of this Agreement is expressly conditioned on the exclusion of the foregoing.`],
+    });
+  }
+  if (extra.length) list.splice(insertAt, 0, ...extra);
+
+  // Resolve cross-references against the FINAL ordering.
+  const num = new Map(list.map((s, i) => [sectionSlug(s.title), i + 1]));
+  const resolve = (text: string) => text.replace(/\{SEC:([a-z0-9-]+)\}/g, (_m, slug) => {
+    const n = num.get(slug);
+    if (!n) {
+      throw new Error(
+        `Cannot omit "${slug.replace(/-/g, ' ')}" — another section of the agreement refers to it. ` +
+        `Keep that section, or remove the section that references it too.`
+      );
+    }
+    return String(n);
+  });
+  return list.map((s) => ({ title: s.title, paras: s.paras.map(resolve) }));
+}
 
 const PAGE_W = 612, PAGE_H = 792;       // US Letter
 const MARGIN = 72;                       // 1"
@@ -48,7 +179,7 @@ function tokenize(s: string): Word[] {
 
 export interface SigAnchor { page: number; xPct: number; yPct: number; widthPct: number; }
 
-export async function buildContract(vars: ContractVars, attachments: BidAttachment[]): Promise<{ bytes: Uint8Array; sigAnchor: SigAnchor }> {
+export async function buildContract(vars: ContractVars, attachments: BidAttachment[], opts: ContractOptions = {}): Promise<{ bytes: Uint8Array; sigAnchor: SigAnchor }> {
   const doc = await PDFDocument.create();
   const roman = await doc.embedFont(StandardFonts.TimesRoman);
   const bold = await doc.embedFont(StandardFonts.TimesRomanBold);
@@ -112,8 +243,8 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   // ---------- Preamble ----------
   for (const para of preambleParas(vars)) paragraph(para, { firstIndent: FIRST_INDENT, gap: 8 });
 
-  // ---------- Numbered sections 1–25 ----------
-  buildSections(vars).forEach((s, i) => section(i + 1, s.title, s.paras));
+  // ---------- Numbered sections (25 by default; some may be omitted) ----------
+  resolveSections(vars, opts).forEach((s, i) => section(i + 1, s.title, s.paras));
 
   // ---------- Signature block (kept with the body; only breaks if it truly won't fit) ----------
   y -= 8;
@@ -124,7 +255,7 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   y -= 108;
 
   // ---------- Exhibit A & B (bid embedded) ----------
-  await exhibitAB(doc, vars, attachments, roman, bold);
+  await exhibitAB(doc, vars, attachments, roman, bold, opts.excludedTerms || [], opts.electedTerms || []);
 
   // ---------- Exhibit C ----------
   exhibitText(doc, roman, bold, exhibitC(vars), 'EXHIBIT C', 'FORM OF CONDITIONAL WAIVER OF LIEN AND RELEASE');
@@ -240,11 +371,15 @@ function expandAttachments(attachments: BidAttachment[]): BidAttachment[] {
 
 // Place one bid item (embedded PDF page or image) into a box, top-aligned and centered,
 // shrunk to fit and rotated upright to undo any page /Rotate.
-function placeItem(target: PDFPage, item: any, x: number, top: number, maxW: number, maxH: number) {
+/** Where an item actually landed, so marks can be drawn over it in the same space. */
+interface DrawnBox { left: number; bottom: number; dw: number; dh: number; }
+
+function placeItem(target: PDFPage, item: any, x: number, top: number, maxW: number, maxH: number): DrawnBox {
   if (item.type === 'img') {
     const f = fitBox(item.img.width, item.img.height, maxW, maxH);
-    target.drawImage(item.img, { x: x + (maxW - f.w) / 2, y: top - f.h, width: f.w, height: f.h });
-    return;
+    const l = x + (maxW - f.w) / 2;
+    target.drawImage(item.img, { x: l, y: top - f.h, width: f.w, height: f.h });
+    return { left: l, bottom: top - f.h, dw: f.w, dh: f.h };
   }
   const ep = item.ep;
   const rot = ((item.rot % 360) + 360) % 360;
@@ -260,6 +395,48 @@ function placeItem(target: PDFPage, item: any, x: number, top: number, maxW: num
   else if (a === 90) target.drawPage(ep, { x: left + uH, y: bottom, width: uW, height: uH, rotate: degrees(90) });
   else if (a === 180) target.drawPage(ep, { x: left + uW, y: bottom + uH, width: uW, height: uH, rotate: degrees(180) });
   else target.drawPage(ep, { x: left, y: bottom + uW, width: uW, height: uH, rotate: degrees(270) });
+  return { left, bottom, dw, dh };
+}
+
+/**
+ * Draw the reviewer's marks over a placed bid page.
+ *
+ * Coordinates are fractions of the UPRIGHT page as seen in the browser, measured
+ * from the top-left — the same convention as SigAnchor. `dw`/`dh` are the visual
+ * drawn dimensions, so this is correct for rotated source pages too.
+ *
+ * 'strike' rules through the content but leaves it legible: on a contract you
+ * want both sides to see what was removed. 'cover' blanks it instead. Note that
+ * covering paints over the text — it does not delete it from the file, so a
+ * determined reader can still extract it. Use it for tidiness, not secrecy.
+ */
+function drawMarks(target: PDFPage, box: DrawnBox, marks: PageMark[], font: PDFFont) {
+  const RED = rgb(0.72, 0.12, 0.10);
+  for (const m of marks) {
+    const x = box.left + m.x * box.dw;
+    const w = Math.max(2, m.w * box.dw);
+    const h = Math.max(2, m.h * box.dh);
+    const y = box.bottom + box.dh - (m.y * box.dh) - h;   // PDF origin is bottom-left
+    if (m.style === 'cover') {
+      target.drawRectangle({ x, y, width: w, height: h, color: rgb(1, 1, 1),
+                             borderColor: rgb(0.55, 0.55, 0.55), borderWidth: 0.75 });
+      if (w > 60 && h > 12) {
+        const label = 'REMOVED';
+        const lw = font.widthOfTextAtSize(label, 8);
+        target.drawText(label, { x: x + (w - lw) / 2, y: y + h / 2 - 3, size: 8, font,
+                                 color: rgb(0.55, 0.55, 0.55) });
+      }
+    } else {
+      target.drawRectangle({ x, y, width: w, height: h, borderColor: RED, borderWidth: 1 });
+      // Rule through each text line the box covers (~11pt line pitch) so a block
+      // of terms reads as struck, not merely boxed.
+      const pitch = 11;
+      for (let ly = y + h - pitch / 2; ly > y + 1; ly -= pitch) {
+        target.drawLine({ start: { x: x + 1.5, y: ly }, end: { x: x + w - 1.5, y: ly },
+                          color: RED, thickness: 1 });
+      }
+    }
+  }
 }
 
 function fitBox(w: number, h: number, maxW: number, maxH: number) {
@@ -267,7 +444,7 @@ function fitBox(w: number, h: number, maxW: number, maxH: number) {
   return { w: w * s, h: h * s };
 }
 
-async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidAttachment[], roman: PDFFont, bold: PDFFont) {
+async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidAttachment[], roman: PDFFont, bold: PDFFont, excludedTerms: string[] = [], electedTerms: string[] = []) {
   const header = doc.addPage([PAGE_W, PAGE_H]);
   const center = (txt: string, yy: number, size: number, f: PDFFont) => {
     const w = f.widthOfTextAtSize(txt, size);
@@ -277,6 +454,29 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
   center('EXHIBIT A & B', yy, 13, bold); yy -= 20;
   center('CONTRACT PRICE & SCOPE', yy, 11, bold); yy -= 18;
   center(`CONTRACT TOTAL: ${vars.contractTotal}`, yy, 12, bold); yy -= 16;
+
+  // Repeat the elections and exclusions here, on the page the bid is stapled
+  // behind. A reader looking at a "Choose One" price table or the contractor's
+  // own deposit language sees it resolved in the same place, not only back in
+  // the agreement body.
+  const bullets = (heading: string, items: string[]) => {
+    const list = items.map((t) => String(t).trim()).filter(Boolean);
+    if (!list.length) return;
+    yy -= 8;
+    center(heading, yy, 9, bold); yy -= 13;
+    for (const t of list) {
+      let line = '';
+      const flush = () => { if (line) { center(line, yy, 9, roman); yy -= 11; line = ''; } };
+      for (const word of `• ${t}`.split(/\s+/)) {
+        const next = line ? `${line} ${word}` : word;
+        if (roman.widthOfTextAtSize(next, 9) > CONTENT_W) { flush(); line = word; } else { line = next; }
+      }
+      flush();
+    }
+    yy -= 6;
+  };
+  bullets('ELECTED OPTIONS — THESE CONTROL OVER ANY OTHER OPTION SHOWN BELOW', electedTerms);
+  bullets('THE FOLLOWING TERMS IN THIS EXHIBIT ARE EXCLUDED AND OF NO EFFECT', excludedTerms);
 
   // Gather bid pages/images in order (PDF pages embedded so we can scale + rotate upright).
   // The first page produced by each attachment carries that attachment's label as a caption.
@@ -288,8 +488,16 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
       if (kind === 'pdf') {
         const src = await PDFDocument.load(att.buffer, { ignoreEncryption: true });
         const idxs = src.getPageIndices();
-        const eps = await doc.embedPages(src.getPages());
-        eps.forEach((ep, i) => items.push({ type: 'pdf', ep, rot: src.getPage(idxs[i]).getRotation().angle }));
+        // Only the selected pages become scope (see BidAttachment.pages).
+        const keep = parsePageSpec(att.pages, idxs.length);
+        const wanted = keep ? idxs.filter((_, i) => keep.has(i)) : idxs;
+        const eps = await doc.embedPages(wanted.map((i) => src.getPage(i)));
+        // Marks travel with their SOURCE page number, so they stay attached to the
+        // right page after page filtering reorders/removes pages.
+        eps.forEach((ep, i) => items.push({
+          type: 'pdf', ep, rot: src.getPage(wanted[i]).getRotation().angle,
+          marks: (att.marks || []).filter((m) => m.page === wanted[i] + 1),
+        }));
       } else if (kind === 'jpg') { items.push({ type: 'img', img: await doc.embedJpg(att.buffer) }); }
       else if (kind === 'png') { items.push({ type: 'img', img: await doc.embedPng(att.buffer) }); }
     } catch { /* skip unreadable attachment */ }
@@ -313,12 +521,14 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
 
   // First bid page sits on the header page, directly under CONTRACT TOTAL.
   let top0 = caption(header, items[0].label, yy - 6);
-  placeItem(header, items[0], MARGIN, top0, CONTENT_W, top0 - BOTTOM);
+  const box0 = placeItem(header, items[0], MARGIN, top0, CONTENT_W, top0 - BOTTOM);
+  if (items[0].marks?.length) drawMarks(header, box0, items[0].marks, bold);
   // Any further pages each get their own full page.
   for (let i = 1; i < items.length; i++) {
     const pg = doc.addPage([PAGE_W, PAGE_H]);
     const top = caption(pg, items[i].label, PAGE_H - MARGIN);
-    placeItem(pg, items[i], MARGIN, top, CONTENT_W, top - BOTTOM);
+    const box = placeItem(pg, items[i], MARGIN, top, CONTENT_W, top - BOTTOM);
+    if (items[i].marks?.length) drawMarks(pg, box, items[i].marks, bold);
   }
 }
 
@@ -381,7 +591,7 @@ function buildSections(v: ContractVars): { title: string; paras: string[] }[] {
     { title: 'Payment for Services and Contract Price', paras: [
       '',
       S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price"). The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),
-      S('Progress Invoices and Payments. **All invoices under this Agreement must be itemized and for Work actually completed.** Provided that the Work performed is acceptable to Owner and subject to Section 6 below, payment of each invoice is due within thirty (30) days of the Owner\'s receipt of a written invoice in accordance with this Section 4(b). **Owner will have no obligation to pay any invoice that is not in accordance with this Section 4(b).**'),
+      S('Progress Invoices and Payments. **All invoices under this Agreement must be itemized and for Work actually completed.** Provided that the Work performed is acceptable to Owner and subject to Section {SEC:contractor-representations-warranties-and-compliance} below, payment of each invoice is due within thirty (30) days of the Owner\'s receipt of a written invoice in accordance with this Section {SEC:payment-for-services-and-contract-price}(b). **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-price}(b).**'),
     ] },
     { title: 'Time of Performance and Completion', paras: [S('Contractor shall perform the Work promptly and diligently. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work may result in the termination of this Agreement by Owner, at Owner\'s sole discretion.')] },
     { title: 'Contractor Representations, Warranties and Compliance', paras: [S('Contractor represents that it has the right, ability (including all necessary licenses) and authorization to enter into this Agreement and to fully perform all of the obligations in this Agreement. Contractor shall comply, and take reasonable steps to ensure any and all subcontractors\' compliance, with all applicable federal, state, and local laws and regulations, including, without limitation, all state and local licensing and registration requirements for the Work. The Work shall be performed by individuals duly licensed and authorized by law to perform said work, to the extent required by law. All materials used in performing and/or constructing the Work shall be in compliance with all applicable laws and codes. Contractor represents that it and its subcontractors (if any) have the required skill, experience, and qualifications to perform the Work and shall perform, and ensure all performance by subcontractors of, the Work in a professional, good and workmanlike manner in accordance with generally recognized industry standards for similar work.')] },

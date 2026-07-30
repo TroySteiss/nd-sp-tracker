@@ -82,7 +82,8 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   `isManagerUser()` is true for admins. Names match on letters only (`normUser`), so
   "Holly Haman" / "holly.haman" / "HollyHaman" are one person. A misspelt name is a *different*
   account, silently demoted to `user` — the login screen now warns on an unknown name for exactly
-  this reason. (The correct spelling is **Perdue**; the MMR Dashboard repo has it as "Purdue".)
+  this reason. The correct spelling is **Perdue** (the MMR Dashboard carried "Purdue" until
+  its migration 005 corrected it).
   The only middleware is `requireAdmin`. The client mirrors it as `IS_ADMIN`, but **the server
   enforces regardless** — login is a single shared password with a free-form username, so a role
   scopes the UI and the routes; it is **not** authentication and must never be treated as proof of

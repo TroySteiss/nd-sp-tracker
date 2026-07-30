@@ -60,25 +60,31 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 
   | Role | Set by | Can do |
   |---|---|---|
-  | `admin` | `ADMIN_USERS` env (default Troy Steiss, Riley Combs) | everything: Settings, user roster, backup/restore/reset, countersign, clear a revision flag |
-  | `manager` | `MANAGER_USERS` env (default Holly Haman, Brittanee Purdue/Perdue) | full tracker + approve bids + generate contracts + read the Change log. **Not** Settings, roster, backup/restore/reset or countersigning |
-  | `user` | default for anyone not listed | full tracker, no admin tabs, cannot approve |
+  | `admin` | `ADMIN_USERS` env (default Troy Steiss, Riley Combs) | everything: Settings, user roster, Change log, bid approval, contract generation, backup/restore/reset, countersign, clear a revision flag |
+  | `manager` | `MANAGER_USERS` env (default Holly Haman, Brittanee Purdue/Perdue) | **currently identical to `user`** — see below |
+  | `user` | default for anyone not listed | full tracker; no admin tabs, no Change log, cannot approve |
   | `pm` | admin assigns in Settings (`app_users.role`) | the stripped `/pm` view only, scoped to their sites |
 
-  The two admin tiers are **env allowlists, not DB rows**, so they survive a restore and can't be
+  **`manager` is a named tier that grants nothing extra yet.** It exists so the second-level admins
+  are on record and allowlisted, ready for permissions to be attached later; today it behaves
+  exactly like `user`. Every gate in routes.ts checks `isAdminUser`, so widening the tier means
+  changing those gates — not auth.ts. Don't assume from the name that a manager can approve or read
+  the change log; they can't.
+
+  Both admin tiers are **env allowlists, not DB rows**, so they survive a restore and can't be
   edited from inside the app; `app_users` only ever stores `user`/`pm`. Tiers nest —
   `isManagerUser()` is true for admins. Names match on letters only (`normUser`), so
   "Holly Haman" / "holly.haman" / "HollyHaman" are one person; both Purdue and Perdue spellings
   are listed deliberately, because a mismatch would silently demote someone to `user`.
-  Middleware: `requireAdmin` (top tier) and `requireManager` (either tier). The client mirrors
-  these as `IS_ADMIN` / `IS_MGR`, but **the server enforces regardless** — login is a single shared
-  password with a free-form username, so a role scopes the UI and the routes; it is **not**
-  authentication and must never be treated as proof of identity.
+  The only middleware is `requireAdmin`. The client mirrors it as `IS_ADMIN`, but **the server
+  enforces regardless** — login is a single shared password with a free-form username, so a role
+  scopes the UI and the routes; it is **not** authentication and must never be treated as proof of
+  identity.
 - Per-property email settings + projection settings PATCHes stay open to all users.
-- **Approval lock**: only **admins and managers** may set/unset the `approved` step or approve a bid
-  (`isManagerUser`) — enforced in `POST/PATCH /projects` (403, compares old vs new `steps.approved` +
+- **Approval lock**: only top-level admins may set/unset the `approved` step or approve a bid
+  (`isAdminUser`) — enforced in `POST/PATCH /projects` (403, compares old vs new `steps.approved` +
   set of approved bids) and on contract generation (auto-cascades approval). Mirrored in the editor
-  UI (bid Approve, lifecycle switch, Advance, cascade all gated on `IS_MGR`).
+  UI (bid Approve, lifecycle switch, Advance, cascade all gated on `IS_ADMIN`).
 - **In-app countersigning**: `signatures` table (018, one PNG per user in files). `stampSignature`
   in contract.ts draws a signature PNG onto a stored PDF at click-placed coords. `POST
   /projects/:id/countersign` (admin-only; `preview:true` returns a data-URL without saving) stamps
@@ -165,8 +171,8 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | cash | viewCash | snapshot/loan table (grouped by region), adjustments, quarterly summary panel |
 | data | viewData | GL/cushion upload + preview modals, **import history**, backup/restore |
 | directory | viewDirectory | contractors |
-| settings | viewSettings | Admin group (top tier only); app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
-| changelog | viewChangelog | Admin group; **managers may read it too** |
+| settings | viewSettings | Admin group; app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
+| changelog | viewChangelog | Admin group (top tier only); filters by user/property, load-more pagination |
 
 - `pcolor(code)` reads `property.color` from state (stable hash fallback for unknown codes).
 - `regionNames()` reads `S.regions` (ordered). `appTitle()` reads `S.meta.appTitle`.

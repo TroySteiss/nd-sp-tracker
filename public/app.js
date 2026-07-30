@@ -164,9 +164,9 @@ async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWri
 async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
 /* ---------- login (username + shared password) ---------- */
 let USER='';       // signed-in username (First.Last), from the session
-let IS_ADMIN=false;   // top level: Settings, roster, backup/restore, countersign
-let IS_MGR=false;     // + managers: approve bids, generate contracts, read the change log
-                      // Both mirrored from /api/auth/status; the server enforces regardless.
+let IS_ADMIN=false;   // top-level admins only: Settings, Change log, approvals, countersign.
+                      // Mirrored from /api/auth/status; the server enforces regardless.
+                      // The 'manager' tier exists server-side but grants nothing extra yet.
 function showLogin(){ const o=document.getElementById('login'); if(o)o.style.display='flex'; }
 function hideLogin(){ const o=document.getElementById('login'); if(o)o.style.display='none'; }
 function setLoginTitle(t){ const h=document.getElementById('login-title'); if(h&&t)h.textContent=t; if(t)document.title=t; }
@@ -194,7 +194,7 @@ async function start(){
       }
       r=await send(true);
     }
-    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; IS_MGR=!!j.isManager; try{localStorage.setItem('sp-username',username);}catch(e){}
+    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){}
       // Property managers get the simplified view; the full tracker never loads for them.
       if(j.role==='pm'){ location.href='/pm'; return; }
       hideLogin(); await boot(); }
@@ -204,7 +204,7 @@ async function start(){
     setLoginTitle(st.appTitle);
     if(st.authed){
       if(st.role==='pm'){ location.href='/pm'; return; }   // returning PM session
-      USER=st.username||''; IS_ADMIN=!!st.isAdmin; IS_MGR=!!st.isManager; hideLogin(); await boot(); } else { showLogin(); } }
+      USER=st.username||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -426,10 +426,10 @@ function rail(){
   nav.append(item('cash','$','Cash & Loans'));
   nav.append(item('data','⇪','Upload & Data'));
   nav.append(item('directory','👷','Contractors',(S.contractors||[]).length||null));
-  if(IS_MGR){
+  if(IS_ADMIN){
     nav.append(el('div',{class:'grp'},'Admin'));
     nav.append(item('changelog','≡','Change log'));
-    if(IS_ADMIN) nav.append(item('settings','⚙','Settings'));
+    nav.append(item('settings','⚙','Settings'));
   }
 
   const foot=el('div',{class:'foot'},
@@ -445,7 +445,7 @@ function rail(){
 
 function mainCol(){
   const m=el('div',{class:'main'});
-  if((!IS_MGR&&VIEW.tab==='changelog')||(!IS_ADMIN&&VIEW.tab==='settings'))VIEW.tab='dashboard';   // gated tabs
+  if(!IS_ADMIN&&(VIEW.tab==='changelog'||VIEW.tab==='settings'))VIEW.tab='dashboard';   // admin-only tabs
   const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
@@ -1576,9 +1576,9 @@ function openProject(id,preset){
       bd.approved?el('span',{class:'chip done',style:'margin-left:8px'},'Selected'):null,
       el('div',{style:'flex:1'}),
       el('button',{class:'bs-appr'+(bd.approved?' on':''),
-        ...(IS_MGR?{}:{title:'Bid approval is limited to admins and managers',style:'opacity:.45;cursor:not-allowed'}),
+        ...(IS_ADMIN?{}:{title:'Bid approval is limited to top-level admins',style:'opacity:.45;cursor:not-allowed'}),
         onclick:()=>{
-        if(!IS_MGR){ toast('Bid approval is limited to admins and managers.'); return; }
+        if(!IS_ADMIN){ toast('Bid approval is limited to top-level admins.'); return; }
         const willApprove=!bd.approved;
         p.bids.forEach((x,j)=>x.approved=(j===i)?willApprove:false);
         if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor; if(bd.amount!=null)p.anticipatedCost=bd.amount; }
@@ -2184,7 +2184,7 @@ function openProject(id,preset){
       const keys=appKeys(p).filter(k=>!AUTO_STEPS.includes(k));
       let cur=-1; keys.forEach((k,idx)=>{if(p.steps[k])cur=idx;});
       const next=keys[cur+1];
-      if(next&&!IS_MGR&&(next==='approved'||(STEP_KEYS.indexOf(next)>APPROVED_IDX&&!p.steps.approved))){
+      if(next&&!IS_ADMIN&&(next==='approved'||(STEP_KEYS.indexOf(next)>APPROVED_IDX&&!p.steps.approved))){
         toast('Bid approval is limited to Troy Steiss and Riley Combs.'); return; }
       if(next){ p.steps[next]=true; const gi=STEP_KEYS.indexOf(next);
         if(gi>APPROVED_IDX){ STEP_KEYS.slice(0,gi).forEach(k=>{ if(!isNA(p,k)&&!AUTO_STEPS.includes(k))p.steps[k]=true; }); }
@@ -2206,12 +2206,12 @@ function openProject(id,preset){
       } else if(auto){
         // Derived from the attachment — no manual switch.
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Ticks automatically when the file is attached in the Contract section'},on?'✓ auto':'auto')));
-      } else if(s.key==='approved'&&!IS_MGR){
+      } else if(s.key==='approved'&&!IS_ADMIN){
         // The approval decision is limited to the admin allowlist.
         row.append(el('div',{class:'toggle'}, el('span',{class:'na-badge',title:'Bid approval is limited to Troy Steiss and Riley Combs'},on?'✓ locked':'🔒 T/R only')));
       } else {
         const sw=el('button',{class:'switch'+(on?' on':''),title:'toggle',onclick:()=>{
-          if(!IS_MGR&&i>APPROVED_IDX&&!p.steps[s.key]&&!p.steps.approved){
+          if(!IS_ADMIN&&i>APPROVED_IDX&&!p.steps[s.key]&&!p.steps.approved){
             toast('Ticking this would auto-approve the project — bid approval is limited to Troy Steiss and Riley Combs.'); return; }
           const nv=!p.steps[s.key];
           p.steps[s.key]=nv;

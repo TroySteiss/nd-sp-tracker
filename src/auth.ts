@@ -40,9 +40,12 @@ export const normUser = (u: any): string => String(u || '').toLowerCase().replac
 
 /* Two admin tiers.
    ADMIN   — full control: Settings, the user roster, backup/restore/reset,
-             countersigning, clearing a revision flag, plus everything a manager can do.
-   MANAGER — second level: may approve bids and generate contracts, and can read
-             the change log. Cannot reconfigure the app or move data about.
+             countersigning, clearing a revision flag, bid approval, the change log.
+   MANAGER — second level. Named and allowlisted so the tier exists and the people
+             in it are on record, but it currently carries EXACTLY the same rights
+             as a plain user: no change log, no bid approval. It is a place to hang
+             future permissions, not a grant. Widening it means changing the gates
+             in routes.ts (they all check isAdminUser today), not this file.
    Both are env allowlists so they survive a database restore; the app_users
    roster only ever adds 'user' / 'pm'. Names match loosely (letters only), so
    "Holly Haman", "holly.haman" and "HollyHaman" are the same person. */
@@ -63,11 +66,6 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
   res.status(403).json({ error: 'This action is limited to top-level admins' });
 }
 
-/** Admin or manager — approvals and the change log. */
-export function requireManager(req: Request, res: Response, next: NextFunction) {
-  if (req.session && req.session.authed && isManagerUser(req.session.username)) return next();
-  res.status(403).json({ error: 'This action is limited to admins and managers' });
-}
 
 /* ---------- Roles (app_users, migration 023) ----------
    'admin' — the env allowlist, always wins; full view + Settings/Change log.

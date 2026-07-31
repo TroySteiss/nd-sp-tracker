@@ -85,7 +85,7 @@ export interface MultiEntity {
   sum?: string;
   /** One-time charge for this property, e.g. mobilisation or pool opening. */
   upfront?: string;
-  /** Recurring charge for this property, per `ongoingPeriod`. */
+  /** Recurring charge for this property, per the contract's billing frequency. */
   ongoing?: string;
 }
 
@@ -100,16 +100,28 @@ export interface MultiContractVars {
   contractType: string;
   ownerReps: { name: string; email: string }[];
   workCompletionDate: string;      // MM/DD/YYYY, as the executed contract writes it
-  contractSum: string;            // e.g. "$330,000.00"
-  /** Liquidated damages per day past the completion date, e.g. "$100". */
-  liquidatedPerDay: string;
-  workDays: string;               // "Mondays through Fridays"
-  workStart: string;              // "8:00 AM"
-  workEnd: string;                // "5:00 PM"
-  /** Owner's own insurance deductible, cited in Ownership of Drawings. */
-  insuranceDeductible: string;    // e.g. "$100,000.00"
-  /** How often an entity's `ongoing` amount recurs — labels the line item. */
-  ongoingPeriod: string;          // "monthly", "quarterly", "annually"
+  contractSum: string;            // e.g. "$353,400.00"
+  /** How the Contract Sum is invoiced. Defaults to monthly. */
+  billing: Billing;
+  /**
+   * Turn the construction apparatus back on: punch lists, the drawings and
+   * specifications clause, the Certificate of Occupancy payment condition, and
+   * the Ownership of Drawings and Materials and Storage section. Off by default —
+   * this form is used for recurring service work (landscaping and snow, pest,
+   * pool), where none of that applies.
+   */
+  construction?: boolean;
+  /** Liquidated damages per day past the completion date, e.g. "$100". Optional:
+   *  blank leaves the whole liquidated-damages passage out. */
+  liquidatedPerDay?: string;
+  /* Stated work hours. All three must be filled for the clause to appear at all;
+     a recurring service contract normally leaves them blank. */
+  workDays?: string;              // "Mondays through Fridays"
+  workStart?: string;             // "8:00 AM"
+  workEnd?: string;               // "5:00 PM"
+  /** Owner's own insurance deductible, cited in Ownership of Drawings — which
+   *  only appears when `construction` is set. */
+  insuranceDeductible?: string;   // e.g. "$100,000.00"
   /** Exhibit B's free narrative (total, monthly amount, term, proration notes). */
   exhibitBText: string;
 }
@@ -124,8 +136,7 @@ export interface MultiContractOptions {
 const BLANK: MultiContractVars = {
   effectiveDate: '', entities: [], contractorName: '', contractorAddr: '',
   contractType: '', ownerReps: [], workCompletionDate: '', contractSum: '',
-  liquidatedPerDay: '', workDays: '', workStart: '', workEnd: '',
-  insuranceDeductible: '', ongoingPeriod: 'monthly', exhibitBText: '',
+  billing: 'monthly', exhibitBText: '',
 };
 
 /** The section list with slugs — the builder UI renders this for its omit checkboxes. */
@@ -180,7 +191,7 @@ const isSplit = (v: MultiContractVars) => v.entities.some((e) => trim(e.upfront)
  * the two to disagree.
  */
 function lineItems(v: MultiContractVars): LineItem[] {
-  const period = trim(v.ongoingPeriod) || 'monthly';
+  const period = recurringLabel(v.billing);
   const out: LineItem[] = [];
   for (const e of v.entities) {
     const up = trim(e.upfront), on = trim(e.ongoing);
@@ -218,6 +229,50 @@ function insurerStates(v: MultiContractVars): string {
     if (s && !seen.includes(s)) seen.push(s);
   }
   return andList(seen);
+}
+
+/* ---------- billing ---------- */
+
+/** How the Contract Sum is invoiced. Drives §5.a, the recurring line-item label
+ *  and the Exhibit A & B narrative. */
+export type Billing = 'monthly' | 'annual' | 'one-time';
+const BILLING_ADVERB: Record<Billing, string> = { monthly: 'monthly', annual: 'annually', 'one-time': 'one-time' };
+/** The label a recurring per-property amount carries: "(monthly)" / "(annual)". */
+const recurringLabel = (b: Billing) => (b === 'annual' ? 'annual' : 'monthly');
+
+function billingSentence(v: MultiContractVars): string {
+  if (v.billing === 'one-time') return ' The Contract Sum is payable on completion of the Work.';
+  if (v.billing === 'annual') return ' The Contract Sum is billed annually in advance for each year of the term.';
+  return ' The Contract Sum is billed monthly in equal installments over the term.';
+}
+
+/**
+ * Section 6, composed rather than fixed.
+ *
+ * This is a recurring service agreement by default, so the construction
+ * apparatus is left out: no punch lists, no TIME IS OF THE ESSENCE, no
+ * liquidated damages, no stated work hours. Each of those returns only if the
+ * caller asks for it — set `construction`, or fill in `liquidatedPerDay` /
+ * the work-hours fields — so the same template still produces the
+ * build-style contract this form was originally written for.
+ */
+function timeOfPerformance(v: MultiContractVars): string {
+  const bits: string[] = [];
+  const punch = v.construction ? ' (with the exception of any punch-list items)' : '';
+  bits.push(`Contractor shall perform the Work promptly and diligently and complete the Work${punch} by ${v.workCompletionDate}.`);
+
+  const ld = trim(v.liquidatedPerDay);
+  if (ld) {
+    bits.push(`**TIME IS OF THE ESSENCE.** In the event the Contractor fails to complete the Work by ${v.workCompletionDate}, the Contract Sum will be reduced ${ld} for each day after ${v.workCompletionDate} that the Work is not complete${v.construction ? ' (exclusive of punch-list items)' : ''}. The Parties agree that ${ld}/day for such delay is a fair and reasonable amount to be retained by Owner as agreed and liquidated damages in light of the adverse impact any delay in completion of the Work will have on Owner's business and other losses and costs incurred by Owner as a result of such delay and will not constitute a penalty or a forfeiture.`);
+  }
+  bits.push("Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work caused by the Contractor may result in the termination of this Contract by Owner, at Owner's sole discretion.");
+
+  const days = trim(v.workDays), from = trim(v.workStart), to = trim(v.workEnd);
+  if (days && from && to) {
+    bits.push(`Work shall be provided only on ${days}, between the hours of ${from} to ${to}. Contractor shall not perform any Work on weekends or holidays unless mutually agreed upon by Owner and Contractor in advance.`);
+  }
+  bits.push('Prior to beginning the Work, Contractor shall provide an estimated work schedule to be approved by Owner. Contractor shall follow the approved schedule as closely as possible.');
+  return bits.join(' ');
 }
 
 /* =============================================================================
@@ -305,19 +360,21 @@ function buildSections(v: MultiContractVars): MultiSection[] {
   return [
     { title: 'General Terms', paras: generalTerms(v), lettered: true },
 
-    { title: 'Services and Scope of Work', paras: ['Contractor shall perform all work and/or services described in the Exhibits (as defined below) and change orders of such work; furnish all labor, materials, equipment, tools, supervision, machinery, site security, and supplies necessary to perform all work described in the Exhibits (including punch-list items); pay all applicable taxes and freight; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in the Exhibits (collectively, the "Work"). A, B, C, D, and E are incorporated herein and made part of this Contract (collectively, the "Exhibits").'] },
+    { title: 'Services and Scope of Work', paras: [`Contractor shall perform all work and/or services described in the Exhibits (as defined below) and change orders of such work; furnish all labor, materials, equipment, tools, supervision, machinery, site security, and supplies necessary to perform all work described in the Exhibits${v.construction ? ' (including punch-list items)' : ''}; pay all applicable taxes and freight; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in the Exhibits (collectively, the "Work"). A, B, C, D, and E are incorporated herein and made part of this Contract (collectively, the "Exhibits").`] },
 
-    { title: 'Notification by Contractor; Change Orders', paras: ['All drawings and/or specifications attached to this Contract are the final drawings and specifications of the Work (some details are not provided at time of signing; such as materials selections and exact elevations), and form an integral part of this Contract. Neither Party may add or otherwise vary additions said drawings and specifications without the prior written consent of the other Party. Contractor shall promptly notify Owner if any problems, questions, or complications arise that would alter the scope of Work or the Contract Sum. All changes or deviations in the Work must be approved in advance in writing as a change order, a form of which is attached as Exhibit E hereto and made part hereof. The Contract Sum will be increased or decreased accordingly by the parties\' agreement, as set forth in the change order. Any claims that the Contract Sum should be increased based on changes or deviations in the Work must be presented to the Owner by the Contractor in writing. The Owner\'s written approval of an increased Contract Sum increase must be obtained by the Contractor before any change or deviation in the Work is approved. **Notwithstanding the foregoing to the contrary, there will be no change orders permitted for underestimated costs.**'] },
+    { title: 'Notification by Contractor; Change Orders', paras: [`${v.construction ? 'All drawings and/or specifications attached to this Contract are the final drawings and specifications of the Work (some details are not provided at time of signing; such as materials selections and exact elevations), and form an integral part of this Contract. Neither Party may add or otherwise vary additions said drawings and specifications without the prior written consent of the other Party. ' : ''}Contractor shall promptly notify Owner if any problems, questions, or complications arise that would alter the scope of Work or the Contract Sum. All changes or deviations in the Work must be approved in advance in writing as a change order, a form of which is attached as Exhibit E hereto and made part hereof. The Contract Sum will be increased or decreased accordingly by the parties\' agreement, as set forth in the change order. Any claims that the Contract Sum should be increased based on changes or deviations in the Work must be presented to the Owner by the Contractor in writing. The Owner\'s written approval of an increased Contract Sum increase must be obtained by the Contractor before any change or deviation in the Work is approved. **Notwithstanding the foregoing to the contrary, there will be no change orders permitted for underestimated costs.**`] },
 
     { title: 'Term', paras: ['This Contract shall remain in effect until the acceptance by Owner of all Work and the expiration of all express and implied guaranties and warranties unless sooner terminated in accordance with this Contract.'] },
 
     { title: 'Payment for Services and Contract Sum', lettered: true, paras: [
       '',
-      '**Contract Sum.** Owner will pay Contractor the amount agreed to on Exhibit B for the satisfactory performance of the Work (the "Contract Sum"). The term "Contract Sum" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Contract.',
-      '**Progress Invoices and Payments.** All invoices under this Contract must (i) be for Work actually completed (and for no other work) and (ii) must include executed conditional lien waivers for the amount invoiced in the form attached hereto as Exhibit C from the Contractor and all suppliers, materialmen and subcontractors that performed the work or provided materials during the period of time described in the invoice. Owner may withhold its final payment for the Work until all of the following has occurred: (a) Owner has completed its final walk through and inspection of the Work, as completed; (b) any and all punch list items have been completed to Owner\'s satisfaction; (c) a temporary Certificate of Occupancy or the equivalent has been issued by the approving governmental authority; and (d) Owner has received an executed final lien waiver from each of the Contractor and all subcontractors, materialmen and suppliers that have performed Work or supplied materials in connection therewith in the form attached hereto as Exhibit D. **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-sum}.b.** Payments due that have been properly invoiced under this Section {SEC:payment-for-services-and-contract-sum}.b but remain outstanding for a period of thirty (30) days following the date of the invoice will bear simple interest at the rate of two percent (2%) per annum from the date payment is due.',
+      `**Contract Sum.** Owner will pay Contractor the amount agreed to on Exhibit A & B for the satisfactory performance of the Work (the "Contract Sum").${billingSentence(v)} The term "Contract Sum" includes all of Contractor's overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Contract.`,
+      `**Progress Invoices and Payments.** All invoices under this Contract must (i) be for Work actually completed (and for no other work) and (ii) must include executed conditional lien waivers for the amount invoiced in the form attached hereto as Exhibit C from the Contractor and all suppliers, materialmen and subcontractors that performed the work or provided materials during the period of time described in the invoice. Owner may withhold its final payment for the Work until ${v.construction
+          ? 'all of the following has occurred: (a) Owner has completed its final walk through and inspection of the Work, as completed; (b) any and all punch list items have been completed to Owner\'s satisfaction; (c) a temporary Certificate of Occupancy or the equivalent has been issued by the approving governmental authority; and (d) Owner has received'
+          : 'both of the following has occurred: (a) Owner has completed its final walk through and inspection of the Work, as completed; and (b) Owner has received'} an executed final lien waiver from each of the Contractor and all subcontractors, materialmen and suppliers that have performed Work or supplied materials in connection therewith in the form attached hereto as Exhibit D. **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-sum}.b.** Payments due that have been properly invoiced under this Section {SEC:payment-for-services-and-contract-sum}.b but remain outstanding for a period of thirty (30) days following the date of the invoice will bear simple interest at the rate of two percent (2%) per annum from the date payment is due.`,
     ] },
 
-    { title: 'Time of Performance and Completion; Schedule', paras: [`Contractor shall perform the Work promptly and diligently and complete the Work (with the exception of any punch-list items) by ${v.workCompletionDate}. **TIME IS OF THE ESSENCE.** In the event the Contractor fails to complete the Work by ${v.workCompletionDate}, the Contract Sum will be reduced ${v.liquidatedPerDay} for each day after ${v.workCompletionDate} that the Work is not complete (exclusive of punch-list items). The Parties agree that ${v.liquidatedPerDay}/day for such delay is a fair and reasonable amount to be retained by Owner as agreed and liquidated damages in light of the adverse impact any delay in completion of the Work will have on Owner's business and other losses and costs incurred by Owner as a result of such delay and will not constitute a penalty or a forfeiture. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work caused by the Contractor may result in the termination of this Contract by Owner, at Owner's sole discretion. Work shall be provided only on ${v.workDays}, between the hours of ${v.workStart} to ${v.workEnd}. Contractor shall not perform any Work on weekends or holidays unless mutually agreed upon by Owner and Contractor in advance. Prior to beginning the Work, Contractor shall provide an estimated work schedule to be approved by Owner. Contractor shall follow the approved schedule as closely as possible.`] },
+    { title: 'Time of Performance and Completion; Schedule', paras: [timeOfPerformance(v)] },
 
     { title: 'Contractor Representations, Warranties and Compliance', paras: ['Contractor represents that it has the right, ability (including all necessary licenses) and authorization to enter into this Contract and to fully perform all of the obligations in this Contract. Contractor shall comply, and take reasonable steps to ensure all subcontractors\', materialmen\'s and suppliers\' compliance, with all applicable federal, state, and local laws and regulations, including, without limitation, all state and local licensing and registration requirements for the Work. The Work shall be performed by individuals duly licensed and authorized by law to perform said work, to the extent required by law. All materials used in performing and/or constructing the Work shall be in compliance with all applicable laws and codes, and covered by a manufacturer\'s warranty, as applicable. Contractor represents that it and its subcontractors (if any) have the required skill, experience, and qualifications to perform the Work and shall perform, and ensure all performance by subcontractors of, the Work in a professional, good and workmanlike manner in accordance with generally recognized industry standards for similar work.'] },
 
@@ -348,7 +405,9 @@ function buildSections(v: MultiContractVars): MultiSection[] {
 
     { title: 'No Implied Waiver', paras: ['The failure of either party to insist on strict performance of any covenant or obligation under this Contract, regardless of the length of time for which such failure continues, shall not be deemed a waiver of such party\'s right to demand strict compliance in the future. No consent or waiver, express or implied, to or of any breach or default in the performance of any obligation under this Contract shall constitute a consent or waiver to or of any other breach or default in the performance of the same or any other obligation.'] },
 
-    { title: 'Ownership of Drawings and Materials and Storage', paras: [`All drawings, reports, designs, sketches, working drawings, shop drawings, documents, certificates, plans, specifications, estimates, memoranda, analyses, calculations, models and other tangible evidence of the Contractor's work product prepared in connection with the Work shall become and remain the sole property of Owner. Contractor may retain copies of its work product for its records. Any materials that are unfixed and required to perform the Work and that are delivered to the Property shall remain the property of the Contractor until they have been both attached to the Property and paid for by Owner. The Contractor shall be solely responsible for repairing, at Contractor's sole cost and expense, any damage to materials that occur prior to installation. The Contractor shall either store materials at the Property or in a bonded, insured site that is available to Owner and its lender for inspection upon reasonable notice. In the event Contractor's insurance coverage fails to cover damage or casualty to or theft of any materials required for the Work that have not yet been installed and Owner's insurance coverage does provide such coverage, Contractor shall (a) at Contractor's sole expense, replace such materials; (b) reimburse Owner its insurance deductible, which is ${v.insuranceDeductible} or (c) deduct ${v.insuranceDeductible} (the amount of Owner's insurance deductible) from the Contract Sum. In the event Contractor's insurance coverage fails to cover damage or casualty to or theft of any materials required for the Work that have not yet been installed and Owner's insurance coverage does not provide such coverage, Contractor shall, at Contractor's own expense, pay the entire replacement cost of such materials.`] },
+    // Drawings, shop drawings and unfixed materials stored on site are a
+    // construction concern; a recurring service contract has none of it.
+    ...(v.construction ? [{ title: 'Ownership of Drawings and Materials and Storage', paras: [`All drawings, reports, designs, sketches, working drawings, shop drawings, documents, certificates, plans, specifications, estimates, memoranda, analyses, calculations, models and other tangible evidence of the Contractor's work product prepared in connection with the Work shall become and remain the sole property of Owner. Contractor may retain copies of its work product for its records. Any materials that are unfixed and required to perform the Work and that are delivered to the Property shall remain the property of the Contractor until they have been both attached to the Property and paid for by Owner. The Contractor shall be solely responsible for repairing, at Contractor's sole cost and expense, any damage to materials that occur prior to installation. The Contractor shall either store materials at the Property or in a bonded, insured site that is available to Owner and its lender for inspection upon reasonable notice. In the event Contractor's insurance coverage fails to cover damage or casualty to or theft of any materials required for the Work that have not yet been installed and Owner's insurance coverage does provide such coverage, Contractor shall (a) at Contractor's sole expense, replace such materials; (b) reimburse Owner its insurance deductible, which is ${v.insuranceDeductible} or (c) deduct ${v.insuranceDeductible} (the amount of Owner's insurance deductible) from the Contract Sum. In the event Contractor's insurance coverage fails to cover damage or casualty to or theft of any materials required for the Work that have not yet been installed and Owner's insurance coverage does not provide such coverage, Contractor shall, at Contractor's own expense, pay the entire replacement cost of such materials.`] }] : []),
 
     { title: 'Clean Up', paras: ['Contractor shall keep the Property clean of all rubbish and debris generated by the Work and remove all such rubbish and debris upon the completion of the Work.'] },
 
@@ -459,11 +518,8 @@ export async function buildMultiContract(
   const byLineY = signatureBlock(L.page, L.y, roman, bold, vars);
   L.y -= sigBlockHeight(vars);
 
-  // ---------- Exhibit A (bid embedded) ----------
-  await exhibitA(doc, attachments, roman, bold, opts);
-
-  // ---------- Exhibit B ----------
-  exhibitBPage(doc, vars, roman, bold);
+  // ---------- Exhibit A & B: pricing on top, bid below on the same page ----------
+  await exhibitAB(doc, vars, attachments, roman, bold, opts);
 
   // ---------- Exhibits C & D ----------
   exhibitText(doc, roman, bold, exhibitC(vars), 'EXHIBIT C', 'FORM OF CONDITIONAL WAIVER OF LIEN AND RELEASE');
@@ -516,80 +572,56 @@ function signatureBlock(page: PDFPage, top: number, roman: PDFFont, bold: PDFFon
   return byLineY;
 }
 
-/* ---------- Exhibit A: "See attached bid." then the bid itself ---------- */
-async function exhibitA(
-  doc: PDFDocument, attachments: BidAttachment[],
+/* ---------- Exhibit A & B: pricing on top, the bid embedded below ----------
+   Combined onto one page the way the SP contract does it: the Contract Sum and
+   any per-property breakdown read at the top, and the bid itself sits directly
+   under them, so a reader sees the price and what it buys without turning a page.
+   A long Exhibit B narrative eats into the space the bid gets — keep it short. */
+async function exhibitAB(
+  doc: PDFDocument, v: MultiContractVars, attachments: BidAttachment[],
   roman: PDFFont, bold: PDFFont, opts: MultiContractOptions,
 ) {
-  const header = doc.addPage([PAGE_W, PAGE_H]);
-  const center = (txt: string, yy: number, size: number, f: PDFFont) => {
-    const w = f.widthOfTextAtSize(txt, size);
-    header.drawText(txt, { x: (PAGE_W - w) / 2, y: yy, size, font: f, color: rgb(0, 0, 0) });
-  };
+  const page = doc.addPage([PAGE_W, PAGE_H]);
   let yy = TOP;
-  center('EXHIBIT A', yy, 13, bold); yy -= 20;
-  center('PLANS AND SPECIFICATIONS', yy, 11, bold); yy -= 20;
-  center('See attached bid.', yy, 11, roman); yy -= 18;
+  const center = (txt: string, size: number, f: PDFFont, lead: number) => {
+    const w = f.widthOfTextAtSize(txt, size);
+    page.drawText(txt, { x: (PAGE_W - w) / 2, y: yy, size, font: f, color: rgb(0, 0, 0) });
+    yy -= lead;
+  };
+  /** Centre a block of text, wrapping to the content width. */
+  const wrapped = (text: string, size: number, f: PDFFont, lead: number) => {
+    for (const para of text.split('\n')) {
+      if (!para.trim()) { yy -= lead * 0.6; continue; }
+      let line = '';
+      const flush = () => { if (line) { center(line, size, f, lead); line = ''; } };
+      for (const word of para.trim().split(/\s+/)) {
+        const next = line ? `${line} ${word}` : word;
+        if (f.widthOfTextAtSize(next, size) > CONTENT_W) { flush(); line = word; } else { line = next; }
+      }
+      flush();
+    }
+  };
 
-  // Echo the elections and exclusions on the page the bid is stapled behind, so a
+  center('EXHIBIT A & B', 13, bold, 20);
+  center('CONTRACT SUM & SCOPE', 11, bold, 20);
+  wrapped((v.exhibitBText || '').trim() || defaultExhibitB(v), 11, roman, 13.5);
+  yy -= 4;
+
+  // Echo the elections and exclusions on the page the bid is stapled to, so a
   // reader looking at a "Choose One" price table sees it resolved in place.
   const bullets = (heading: string, items?: string[]) => {
     const list = (items || []).map((t) => String(t).trim()).filter(Boolean);
     if (!list.length) return;
-    yy -= 8;
-    center(heading, yy, 9, bold); yy -= 13;
-    for (const t of list) {
-      let line = '';
-      const flush = () => { if (line) { center(line, yy, 9, roman); yy -= 11; line = ''; } };
-      for (const word of `• ${t}`.split(/\s+/)) {
-        const next = line ? `${line} ${word}` : word;
-        if (roman.widthOfTextAtSize(next, 9) > CONTENT_W) { flush(); line = word; } else { line = next; }
-      }
-      flush();
-    }
     yy -= 6;
+    center(heading, 9, bold, 13);
+    for (const t of list) wrapped(`• ${t}`, 9, roman, 11);
+    yy -= 4;
   };
   bullets('ELECTED OPTIONS — THESE CONTROL OVER ANY OTHER OPTION SHOWN BELOW', opts.electedTerms);
   bullets('THE FOLLOWING TERMS IN THIS EXHIBIT ARE EXCLUDED AND OF NO EFFECT', opts.excludedTerms);
 
-  // The executed contract gives Exhibit A a page of its own — the cover reads only
-  // "See attached bid." — and starts the bid on the next page. So put the first bid
-  // page on a fresh sheet rather than under the heading.
-  const items = await collectBidItems(doc, attachments, 'into Exhibit A');
-  const first = doc.addPage([PAGE_W, PAGE_H]);
-  placeBidItems(doc, items, first, PAGE_H - MARGIN, bold);
-}
-
-/* ---------- Exhibit B: the Contract Sum as free narrative ---------- */
-function exhibitBPage(doc: PDFDocument, v: MultiContractVars, roman: PDFFont, bold: PDFFont) {
-  let page = doc.addPage([PAGE_W, PAGE_H]);
-  let y = TOP;
-  /** Draw one centered line and advance the baseline by `lead`. */
-  const center = (txt: string, size: number, f: PDFFont, lead: number) => {
-    if (y < BOTTOM) { page = doc.addPage([PAGE_W, PAGE_H]); y = TOP; }
-    const w = f.widthOfTextAtSize(txt, size);
-    page.drawText(txt, { x: (PAGE_W - w) / 2, y, size, font: f, color: rgb(0, 0, 0) });
-    y -= lead;
-  };
-  center('EXHIBIT B', 13, bold, 21);
-  center('CONTRACT SUM', 11, bold, 19);
-  y -= 12;
-
-  // Exhibit B is centered narrative in the executed contracts, not a table. The
-  // admin supplies the wording (term, monthly amount, proration); fall back to
-  // the sum and any per-property breakdown if they left it blank.
-  const body = (v.exhibitBText || '').trim() || defaultExhibitB(v);
-  for (const para of body.split('\n')) {
-    if (!para.trim()) { y -= 10; continue; }
-    let line = '';
-    const flush = () => { if (line) { center(line, 11, roman, 12.5); line = ''; } };
-    for (const word of para.trim().split(/\s+/)) {
-      const next = line ? `${line} ${word}` : word;
-      if (roman.widthOfTextAtSize(next, 11) > CONTENT_W) { flush(); line = word; } else { line = next; }
-    }
-    flush();
-    y -= 6;
-  }
+  const items = await collectBidItems(doc, attachments, 'into Exhibit A & B');
+  placeBidItems(doc, items, page, yy - 6, bold);
 }
 
 /* The executed Exhibit B reads "$330,000.00, per bid in Exhibit A." followed by
@@ -600,7 +632,7 @@ function defaultExhibitB(v: MultiContractVars): string {
   const items = lineItems(v);
   if (items.length) {
     lines.push('', isSplit(v)
-      ? `Broken out below as the up-front and ${trim(v.ongoingPeriod) || 'monthly'} amounts for each property.`
+      ? `Broken out below as the up-front and ${recurringLabel(v.billing)} amounts for each property.`
       : 'Includes the total for each property.');
     for (const it of items) lines.push(`${it.label}: ${it.amount}`);
   }

@@ -11,7 +11,7 @@ import { requestContractRevision, clearRevisionFlag } from './revision.js';
 import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
-import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity } from './contract-multi.js';
+import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
 import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, type Project, type AppState } from '../shared/domain.js';
 
 export const api = Router();
@@ -693,12 +693,18 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
     ownerReps: reps,
     workCompletionDate: slashDate(b.workCompletionDate),
     contractSum: String(b.contractSum || '').trim(),
+    billing: (['monthly', 'annual', 'one-time'].includes(String(b.billing)) ? String(b.billing) : 'monthly') as Billing,
+    // Off unless asked for: this form is used for recurring service work, so the
+    // construction apparatus (punch lists, Certificate of Occupancy, drawings and
+    // stored materials) stays out of the document by default.
+    construction: b.construction === true,
+    // All optional. Blank leaves the corresponding passage out of Section 6
+    // entirely rather than printing an empty amount or an empty time range.
     liquidatedPerDay: String(b.liquidatedPerDay || '').trim(),
-    workDays: String(b.workDays || 'Mondays through Fridays').trim(),
-    workStart: String(b.workStart || '8:00 AM').trim(),
-    workEnd: String(b.workEnd || '5:00 PM').trim(),
+    workDays: String(b.workDays || '').trim(),
+    workStart: String(b.workStart || '').trim(),
+    workEnd: String(b.workEnd || '').trim(),
     insuranceDeductible: String(b.insuranceDeductible || '').trim(),
-    ongoingPeriod: String(b.ongoingPeriod || 'monthly').trim(),
     exhibitBText: String(b.exhibitBText || ''),
   };
 
@@ -707,7 +713,6 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
   const required: [string, string][] = [
     ['contractorName', 'Contractor name'], ['contractSum', 'Contract Sum'],
     ['effectiveDate', 'Effective Date'], ['workCompletionDate', 'Work Completion Date'],
-    ['liquidatedPerDay', 'Liquidated damages per day'], ['insuranceDeductible', "Owner's insurance deductible"],
   ];
   const blank = required.filter(([k]) => !String((vars as any)[k]).trim()).map(([, label]) => label);
   if (blank.length) return res.status(400).json({ error: `Missing: ${blank.join(', ')}.` });
@@ -760,10 +765,10 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
        String(b.scope || '').trim() || 'Multi-property contract', fileKey,
        JSON.stringify({
          entities, properties: codes, ownerReps: reps, contractType: vars.contractType,
-         workCompletionDate: vars.workCompletionDate, liquidatedPerDay: vars.liquidatedPerDay,
+         workCompletionDate: vars.workCompletionDate, billing: vars.billing,
+         construction: vars.construction, liquidatedPerDay: vars.liquidatedPerDay,
          workDays: vars.workDays, workStart: vars.workStart, workEnd: vars.workEnd,
-         insuranceDeductible: vars.insuranceDeductible, ongoingPeriod: vars.ongoingPeriod,
-         exhibitBText: vars.exhibitBText,
+         insuranceDeductible: vars.insuranceDeductible, exhibitBText: vars.exhibitBText,
          sigAnchor, tailoring: opts,
        })]
     );

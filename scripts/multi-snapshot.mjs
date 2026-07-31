@@ -47,14 +47,11 @@ const vars = {
     { name: 'Holly Haman', email: 'hhaman@monarchinvestment.com' },
     { name: 'Kara Garrison', email: 'kgarrison@monarchinvestment.com' },
   ],
-  workCompletionDate: 'November 30, 2024',
+  workCompletionDate: '11/30/2024',
   contractSum: '$55,950.00',
-  liquidatedPerDay: '$250',
-  workDays: 'Monday, Tuesday, Wednesday, Thursday and Friday',
-  workStart: '8:00 a.m.',
-  workEnd: '6:00 p.m.',
-  insuranceDeductible: '$100,000.00',
-  ongoingPeriod: 'monthly',
+  // The default shape: a recurring service agreement. No liquidated damages, no
+  // stated work hours, no construction apparatus.
+  billing: 'monthly',
   exhibitBText: '',
 };
 
@@ -89,16 +86,34 @@ report.push('', '=== single entity ===', `pages: ${(await pdfText(solo.bytes)).l
   const pages = await pdfText(built.bytes);
   const all = pages.join('\n');
   const sec1 = all.slice(all.indexOf('1. General Terms'), all.indexOf('2. Services'));
-  const exB = pages.find((p) => p.startsWith('EXHIBIT B')) || '';
+  const exB = pages.find((p) => p.startsWith('EXHIBIT A & B')) || '(EXHIBIT A & B page not found)';
   report.push('', '=== up front vs ongoing ===',
     '--- section 1 breakdown ---', sec1.slice(sec1.indexOf('"Contract Sum"')),
-    '--- exhibit B ---', exB);
+    '--- exhibit A & B ---', exB.slice(0, 900));
   // A blank side must not emit an empty item.
   report.push(`chateau up-front item present (should be false): ${/The Chateau \(up front\)/.test(all)}`);
   // And the quarterly label must follow ongoingPeriod.
-  const q = await buildMultiContract({ ...split, ongoingPeriod: 'quarterly' }, [{ buffer: bid, name: 'bid.pdf' }]);
+  const q = await buildMultiContract({ ...split, billing: 'annual' }, [{ buffer: bid, name: 'bid.pdf' }]);
   const qAll = (await pdfText(q.bytes)).join('\n');
-  report.push(`quarterly label used: ${/South Pointe \(quarterly\)/.test(qAll)}`);
+  report.push(`annual label used: ${/South Pointe \(annual\)/.test(qAll)}`);
+}
+
+/* The service default must leave the construction apparatus out entirely, and
+   turning it back on must bring all of it back. These phrases are the tell. */
+{
+  const CONSTRUCTION_ONLY = ['punch-list', 'punch list', 'Certificate of Occupancy',
+    'final drawings and specifications', 'Ownership of Drawings',
+    'TIME IS OF THE ESSENCE', 'liquidated damages', 'between the hours of'];
+  const svc = (await pdfText((await buildMultiContract(vars, [{ buffer: bid, name: 'bid.pdf' }])).bytes)).join('\n');
+  const con = (await pdfText((await buildMultiContract({
+    ...vars, construction: true, liquidatedPerDay: '$250',
+    workDays: 'Mondays through Fridays', workStart: '8:00 AM', workEnd: '5:00 PM',
+    insuranceDeductible: '$100,000.00',
+  }, [{ buffer: bid, name: 'bid.pdf' }])).bytes)).join('\n');
+  report.push('', '=== service default vs construction ===');
+  for (const phrase of CONSTRUCTION_ONLY) {
+    report.push(`  ${phrase.padEnd(34)} service:${svc.includes(phrase) ? 'PRESENT (should be absent!)' : 'absent'}  construction:${con.includes(phrase) ? 'present' : 'ABSENT (should be present!)'}`);
+  }
 }
 
 report.push('', '=== refusals ===');
@@ -161,11 +176,12 @@ try {
     workCompletionDate: '08/31/2026',
     contractSum: '$330,000.00',
     liquidatedPerDay: '$100',
+    construction: true,
     workDays: 'Mondays through Fridays',
     workStart: '8:00 AM',
     workEnd: '5:00 PM',
     insuranceDeductible: '$100,000.00',
-    ongoingPeriod: 'monthly',
+    billing: 'monthly',
     exhibitBText: '$330,000.00, per bid in Exhibit A.\n\nThis price includes a total of $27,500 per month for 12 months, from September 2025 to August 2026.\n\nPlease note, the work at The Wyatt at Northern Lights is subject to a purchase closing date on or before September 1, 2025. If closing occurs after September 1, 2025, then work will begin starting on the closing date & the amount due for the first month will be prorated based on the number of days serviced for that month.',
   };
   const b = await buildMultiContract(legend, [{ buffer: bid, name: 'bid.pdf' }]);

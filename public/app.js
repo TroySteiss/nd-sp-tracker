@@ -2565,10 +2565,13 @@ const multiDraftDefaults=()=>({
   contractType:'Bid Contract',
   ownerReps:[{name:'',email:''}],
   effectiveDate:today(), workCompletionDate:'',
-  contractSum:'', liquidatedPerDay:'$100', insuranceDeductible:'$100,000.00',
-  workDays:'Mondays through Fridays', workStart:'8:00 AM', workEnd:'5:00 PM',
+  contractSum:'', billing:'monthly',
+  // A recurring service agreement by default: no liquidated damages, no stated
+  // work hours, none of the construction apparatus. All available under Tailor.
+  construction:false, liquidatedPerDay:'', insuranceDeductible:'',
+  workDays:'', workStart:'', workEnd:'',
   exhibitBText:'', scope:'',
-  splitAmounts:false, ongoingPeriod:'monthly',
+  splitAmounts:false,
   bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[], bidPageCount:0,
   omitSections:[], excludedTerms:[], electedTerms:[],
   scope_:{pages:{},marks:{}},          // page selection + marks for the previewer
@@ -2638,7 +2641,7 @@ async function openMultiContract(){
     noEntityWarn.style.display=bad.length?'':'none';
     if(bad.length) noEntityWarn.textContent='No owner entity on file for '+bad.join(', ')+' — set it in Settings ▸ Properties before generating.';
     if(!d.properties.length) return;
-    const period=(d.ongoingPeriod||'monthly').trim()||'monthly';
+    const period=d.billing==='annual'?'annual':'monthly';
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},d.splitAmounts
       ? tr(th('Property'),th('Up front (one-time)'),th(period.charAt(0).toUpperCase()+period.slice(1)),th('Notice address'),th('Notice phone'),th('Notice email'))
@@ -2688,27 +2691,23 @@ async function openMultiContract(){
       cb, propChip(p.code), el('span',{style:'flex:1'},p.name),
       p.ownerEntity?null:el('span',{class:'chip hold',title:'No owner entity on file'},'⚠')));
   });
-  // Service contracts on this template usually carry a one-time mobilisation or
-  // setup charge on top of a recurring fee. Splitting them keeps the two from
-  // being read as one number on a signed document.
-  const periodInp=el('input',{value:d.ongoingPeriod,placeholder:'monthly',style:'max-width:150px',
-    oninput:e=>{d.ongoingPeriod=e.target.value;renderPer();}});
-  const periodField=el('div',{class:'field',style:'display:none;margin-top:10px'},
-    el('label',{},'Ongoing amount recurs'),
-    el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Labels the recurring line item — "monthly", "quarterly", "annually".'),
-    periodInp);
+  // A recurring service contract often carries a one-time setup or mobilisation
+  // charge on top of the recurring fee. Splitting them keeps the two from being
+  // read as one number. Meaningless when the whole contract is billed once.
   const splitCb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
-    d.splitAmounts=e.target.checked;
-    periodField.style.display=d.splitAmounts?'':'none';
-    renderPer();
+    d.splitAmounts=e.target.checked; renderPer();
   }});
   splitCb.checked=d.splitAmounts;
-  if(d.splitAmounts) periodField.style.display='';
-  pBody.append(grid, noEntityWarn,
-    el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer'},
-      splitCb, el('span',{},'Break each property out into up front vs ongoing'),
-      el('span',{style:'color:var(--ink-3)'},'— two line items per property')),
-    periodField, perWrap);
+  const splitRow=el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer'},
+    splitCb, el('span',{},'Break each property out into up front vs ongoing'),
+    el('span',{style:'color:var(--ink-3)'},'— two line items per property'));
+  const paintSplitAvailability=()=>{
+    const once=d.billing==='one-time';
+    splitRow.style.display=once?'none':'';
+    if(once&&d.splitAmounts){ d.splitAmounts=false; splitCb.checked=false; renderPer(); }
+  };
+  pBody.append(grid, noEntityWarn, splitRow, perWrap);
+  paintSplitAvailability();
   body.append(pPanel);
 
   // The notice fields autofill per property, so the only thing worth automating
@@ -2752,21 +2751,19 @@ async function openMultiContract(){
   const tPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
   tPanel.append(el('div',{class:'ph'},el('h3',{},'Terms')));
   const tb2=el('div',{class:'pad'}); tPanel.append(tb2);
+  const billingSel=el('select',{onchange:e=>{ d.billing=e.target.value; renderPer(); paintSplitAvailability(); }},
+    ...[['monthly','Monthly'],['annual','Annual'],['one-time','One-time']]
+      .map(([v,l])=>el('option',{value:v,...(d.billing===v?{selected:true}:{})},l)));
   tb2.append(
     el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
       field('Type of contract',inp('contractType','Bid Contract')),
-      field('Contract Sum',inp('contractSum','$55,950.00'))),
+      field('Billing',billingSel,'How the Contract Sum is invoiced. Sets the payment sentence in Payment for Services, and labels the recurring amount per property.')),
+    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
+      field('Contract Sum',inp('contractSum','$353,400.00'),'The whole term. For a monthly contract that is the monthly figure times the number of months.'),
+      field('Scope label',inp('scope','e.g. Landscaping & snow removal'),'Internal only — names the record in the Contracts list.')),
     el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
       field('Effective date',inp('effectiveDate','','date')),
-      field('Work completion date',inp('workCompletionDate','','date'))),
-    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
-      field('Liquidated damages per day',inp('liquidatedPerDay','$100'),'Deducted from the Contract Sum for each day past the completion date.'),
-      field("Owner's insurance deductible",inp('insuranceDeductible','$100,000.00'),'Cited in Ownership of Drawings and Materials.')),
-    field('Work days',inp('workDays','Mondays through Fridays')),
-    el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},
-      field('Work starts',inp('workStart','8:00 AM')),
-      field('Work ends',inp('workEnd','5:00 PM'))),
-    field('Scope label',inp('scope','e.g. Landscaping & snow removal'),'Internal only — names the record in the Contracts list.'));
+      field('Work completion date',inp('workCompletionDate','','date'),'The end of the term.')));
   body.append(tPanel);
 
   /* ---- 4. Owner's Representatives ---- */
@@ -2843,6 +2840,33 @@ async function openMultiContract(){
   tailor.append(el('summary',{class:'ph as-summary'},el('span',{class:'chev'},'▸'),el('h3',{},'Tailor this contract'),
     el('div',{class:'sp'}),el('span',{class:'chip'},'optional')));
   const tlb=el('div',{class:'pad'}); tailor.append(tlb);
+
+  /* Construction extras. This form began life as Monarch's build contract, so it
+     carries punch lists, a Certificate of Occupancy payment condition, a drawings
+     and specifications clause and an Ownership of Drawings section. None of that
+     belongs in a landscaping or pest contract, so it is all off unless asked for
+     here. Liquidated damages and stated work hours are likewise opt-in: leave
+     them blank and the passages don't appear at all. */
+  const dedField=el('div',{class:'field',style:'display:none'},el('label',{},"Owner's insurance deductible"),
+    el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Cited in Ownership of Drawings and Materials.'),
+    inp('insuranceDeductible','$100,000.00'));
+  const consCb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
+    d.construction=e.target.checked; dedField.style.display=d.construction?'':'none';
+  }});
+  consCb.checked=!!d.construction;
+  if(d.construction) dedField.style.display='';
+  tlb.append(el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;cursor:pointer;margin-bottom:4px'},
+      consCb, el('span',{},'This is construction work, not a service contract'),
+      el('span',{style:'color:var(--ink-3)'},'— adds punch lists, Certificate of Occupancy, drawings & stored materials')),
+    dedField,
+    el('p',{class:'bs-hint',style:'margin:0 0 12px'},'Leave off for landscaping and snow, pest, pool and the like.'));
+  tlb.append(el('div',{style:'display:grid;grid-template-columns:1fr 1fr 1fr;gap:12px'},
+    field('Liquidated damages / day',inp('liquidatedPerDay','$100'),'Blank = no liquidated-damages clause.'),
+    field('Work starts',inp('workStart','8:00 AM')),
+    field('Work ends',inp('workEnd','5:00 PM'))));
+  tlb.append(field('Work days',inp('workDays','Mondays through Fridays'),
+    'All three of days, start and end must be filled for the stated-hours clause to appear. Blank on a service contract.'));
+
   const electTa=el('textarea',{rows:'3',placeholder:'One per line — for bids that offer a choice',
     oninput:e=>{d.electedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}});
   electTa.value=d.electedTerms.join('\n');
@@ -2908,7 +2932,7 @@ async function openMultiContract(){
         ownerReps:d.ownerReps.filter(x=>x.name.trim()||x.email.trim()),
         effectiveDate:d.effectiveDate, workCompletionDate:d.workCompletionDate,
         contractSum:d.contractSum, liquidatedPerDay:d.liquidatedPerDay,
-        insuranceDeductible:d.insuranceDeductible, ongoingPeriod:d.ongoingPeriod,
+        insuranceDeductible:d.insuranceDeductible, billing:d.billing, construction:d.construction,
         workDays:d.workDays, workStart:d.workStart, workEnd:d.workEnd,
         exhibitBText:d.exhibitBText, scope:d.scope,
         bidFileKey:d.bidFileKey, bidPages:d.bidPages, bidMarks:d.bidMarks,

@@ -309,6 +309,20 @@ LLCs — landscaping/snow, pest, pool. **Not** a Special Project: no `project_id
 lifecycle, no signature chain. Entered from *Contractors ▸ ＋ New multi-entity contract* (that tab
 is top-tier admin only — see below).
 
+- **It defaults to a recurring SERVICE agreement.** This form began as Monarch's build contract, so
+  it carries punch lists, a Certificate of Occupancy payment condition, a drawings-and-specifications
+  clause and an Ownership of Drawings section — none of which belong in a landscaping, pest or pool
+  contract. All of it is behind `construction: true` and off by default, as are liquidated damages
+  (`liquidatedPerDay`) and stated work hours (`workDays`/`workStart`/`workEnd`) — each blank field
+  simply leaves its passage out of Section 6 rather than printing an empty amount. The builder keeps
+  them under *Tailor this contract*. `multi-snapshot.mjs` asserts every one of those phrases is
+  absent in service mode and present in construction mode.
+- **`billing`** is `monthly` | `annual` | `one-time`. It writes the payment sentence in §5.a, labels
+  the recurring per-property line item, and feeds the Exhibit A & B narrative. `one-time` hides the
+  up-front/ongoing split, which has no meaning when the whole sum is billed once.
+- **Exhibits A and B print as one page** — `EXHIBIT A & B / CONTRACT SUM & SCOPE` — with the pricing
+  and narrative on top and the bid embedded directly below, the same shape the SP contract uses. A
+  long Exhibit B narrative eats the space the bid gets, so keep it short.
 - **`src/contract-multi.ts` is a separate template, not a parameterisation of `contract.ts`.** The
   wording differs throughout: 27 sections vs 25, "Contract Sum" not "Contract Price", a §1 General
   Terms block, liquidated damages per day, stated work hours, a warranty split into materials

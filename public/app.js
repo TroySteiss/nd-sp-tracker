@@ -2553,29 +2553,46 @@ async function findSignSpot(pdfDoc){
    paper, so the server reads them from properties.owner_entity — this screen only
    sends property codes. A property with no entity on file is shown as blocking.
 ========================================================= */
+/* The in-progress form. This is a long form and nothing is persisted anywhere
+   until Generate, so closing the sheet — including a stray click on the backdrop —
+   used to throw the lot away. The draft now outlives the sheet: reopening resumes
+   exactly where you were, and only "Start over" or a successful generate clears
+   it. Data only, no DOM, so it is safe to hold. */
+let MULTI_DRAFT=null;
+const multiDraftDefaults=()=>({
+  properties:[], perProperty:{},
+  contractorName:'', contractorAddr:'', contractorPhone:'', contractorEmail:'',
+  contractType:'Bid Contract',
+  ownerReps:[{name:'',email:''}],
+  effectiveDate:today(), workCompletionDate:'',
+  contractSum:'', liquidatedPerDay:'$100', insuranceDeductible:'$100,000.00',
+  workDays:'Mondays through Fridays', workStart:'8:00 AM', workEnd:'5:00 PM',
+  exhibitBText:'', scope:'',
+  splitAmounts:false, ongoingPeriod:'monthly',
+  bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[], bidPageCount:0,
+  omitSections:[], excludedTerms:[], electedTerms:[],
+  scope_:{pages:{},marks:{}},          // page selection + marks for the previewer
+});
+
 async function openMultiContract(){
-  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const resuming=!!MULTI_DRAFT;
+  const d=MULTI_DRAFT||(MULTI_DRAFT=multiDraftDefaults());
+
+  // Closing keeps the draft — see MULTI_DRAFT. Nothing here discards work.
+  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)close();}});
   const sheet=el('div',{class:'sheet sheet-editor'});
+  function close(){ scrim.remove(); }
   const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Multi-entity contract'),
-    el('button',{class:'btn',onclick:()=>scrim.remove()},'Cancel'));
+    el('button',{class:'btn ghost',title:'Discard everything entered and begin a new contract',onclick:()=>{
+      if(!confirm('Discard everything entered and start a new contract?')) return;
+      MULTI_DRAFT=null; scrim.remove(); openMultiContract();
+    }},'Start over'),
+    el('button',{class:'btn',title:'Close — what you have entered is kept until you generate or start over',onclick:close},'Close'));
   const body=el('div',{class:'sb'});
   const foot=el('div',{class:'sh',style:'border-top:1px solid var(--line);border-bottom:none'});
   sheet.append(head,body,foot); scrim.append(sheet); document.body.append(scrim);
-
-  const d={
-    properties:[], perProperty:{},
-    contractorName:'', contractorAddr:'', contractorPhone:'', contractorEmail:'',
-    contractType:'Bid Contract',
-    ownerReps:[{name:'',email:''}],
-    effectiveDate:today(), workCompletionDate:'',
-    contractSum:'', liquidatedPerDay:'$100', insuranceDeductible:'$100,000.00',
-    workDays:'Mondays through Fridays', workStart:'8:00 AM', workEnd:'5:00 PM',
-    exhibitBText:'', scope:'',
-    sharedNoticeAddr:'',
-    splitAmounts:false, ongoingPeriod:'monthly',
-    bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[],
-    omitSections:[], excludedTerms:[], electedTerms:[],
-  };
+  if(resuming) body.append(el('div',{class:'bs-hint',style:'margin-bottom:12px'},
+    '↩ Picked up where you left off. Closing this panel never discards what you have entered — use Start over for a clean form.'));
   const field=(label,ctrl,hint)=>{
     const f=el('div',{class:'field'},el('label',{},label));
     if(hint) f.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},hint));
@@ -2611,7 +2628,7 @@ async function openMultiContract(){
     const cells=[td(el('span',{style:'font-weight:600;font-size:12px'},'Entered totals'))];
     if(d.splitAmounts){ cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('upfront')))); cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('ongoing')))); }
     else cells.push(td(el('span',{class:'mono',style:'font-size:12px'},subtotal('sum'))));
-    cells.push(td(''),td(''));
+    cells.push(td(''),td(''),td(''));   // notice address / phone / email
     cells.forEach(c=>totalsRow.append(c));
   };
 
@@ -2624,12 +2641,19 @@ async function openMultiContract(){
     const period=(d.ongoingPeriod||'monthly').trim()||'monthly';
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},d.splitAmounts
-      ? tr(th('Property'),th('Up front (one-time)'),th(period.charAt(0).toUpperCase()+period.slice(1)),th('Notice phone'),th('Notice email'))
-      : tr(th('Property'),th("This property's share"),th('Notice phone'),th('Notice email'))));
+      ? tr(th('Property'),th('Up front (one-time)'),th(period.charAt(0).toUpperCase()+period.slice(1)),th('Notice address'),th('Notice phone'),th('Notice email'))
+      : tr(th('Property'),th("This property's share"),th('Notice address'),th('Notice phone'),th('Notice email'))));
     const tb=el('tbody');
     d.properties.forEach(code=>{
-      const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',upfront:'',ongoing:'',noticePhone:'',noticeEmail:''};
+      const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',upfront:'',ongoing:''};
       const pr=PROP(code)||{};
+      // Autofill the notice fields from the property the first time it is ticked,
+      // so they arrive filled in and editable rather than as grey placeholders.
+      // `??=` only fills a field that has never been touched, so re-ticking a
+      // property doesn't overwrite something typed here.
+      if(pp.noticeAddr==null) pp.noticeAddr=pr.ownerNoticeAddr||pr.address||'';
+      if(pp.noticePhone==null) pp.noticePhone=pr.noticePhone||'';
+      if(pp.noticeEmail==null) pp.noticeEmail=pr.noticeEmail||'';
       const cells=[td(el('div',{style:'font-size:12px'},el('div',{},propChip(code),' ',pr.name||code),
         el('div',{style:'color:var(--ink-3);font-size:11px'},pr.ownerEntity||'⚠ no owner entity')))];
       if(d.splitAmounts){
@@ -2638,8 +2662,9 @@ async function openMultiContract(){
       } else {
         cells.push(td(el('input',{value:pp.sum||'',placeholder:'optional, e.g. $8,649.28',oninput:e=>{pp.sum=e.target.value;refreshTotals();}})));
       }
-      cells.push(td(el('input',{value:pp.noticePhone||'',placeholder:pr.noticePhone||'701-…',oninput:e=>{pp.noticePhone=e.target.value;}})));
-      cells.push(td(el('input',{value:pp.noticeEmail||'',placeholder:pr.noticeEmail||'manager@…',oninput:e=>{pp.noticeEmail=e.target.value;}})));
+      cells.push(td(el('input',{value:pp.noticeAddr,placeholder:'Street, City, ST ZIP',oninput:e=>{pp.noticeAddr=e.target.value;}})));
+      cells.push(td(el('input',{value:pp.noticePhone,placeholder:'701-…',oninput:e=>{pp.noticePhone=e.target.value;}})));
+      cells.push(td(el('input',{value:pp.noticeEmail,placeholder:'manager@…',oninput:e=>{pp.noticeEmail=e.target.value;}})));
       const row=el('tr',{}); cells.forEach(c=>row.append(c)); tb.append(row);
     });
     t.append(tb,el('tfoot',{},totalsRow));
@@ -2658,6 +2683,7 @@ async function openMultiContract(){
       else d.properties=d.properties.filter(c=>c!==p.code);
       renderPer();
     }});
+    cb.checked=d.properties.includes(p.code);
     grid.append(el('label',{style:'display:flex;align-items:center;gap:7px;font-size:12.5px;padding:3px 0;cursor:pointer'},
       cb, propChip(p.code), el('span',{style:'flex:1'},p.name),
       p.ownerEntity?null:el('span',{class:'chip hold',title:'No owner entity on file'},'⚠')));
@@ -2676,6 +2702,8 @@ async function openMultiContract(){
     periodField.style.display=d.splitAmounts?'':'none';
     renderPer();
   }});
+  splitCb.checked=d.splitAmounts;
+  if(d.splitAmounts) periodField.style.display='';
   pBody.append(grid, noEntityWarn,
     el('label',{style:'display:flex;align-items:center;gap:8px;font-size:12.5px;margin-top:12px;cursor:pointer'},
       splitCb, el('span',{},'Break each property out into up front vs ongoing'),
@@ -2683,9 +2711,20 @@ async function openMultiContract(){
     periodField, perWrap);
   body.append(pPanel);
 
-  const sharedInp=el('input',{placeholder:'e.g. 1909 31st Ave SW, Minot, ND 58701',oninput:e=>{d.sharedNoticeAddr=e.target.value;}});
-  pBody.append(field('Redirect all notices to one address (optional)',sharedInp,
-    'Leave blank and Notices lists each entity above its own property address, which is how the executed contract reads. Fill it in only if notices for every entity should go to one management office instead — each entity still gets its own block.'));
+  // The notice fields autofill per property, so the only thing worth automating
+  // here is pushing one row's details down when a portfolio shares an office.
+  const copyDown=el('button',{class:'btn sm',onclick:()=>{
+    const first=d.perProperty[d.properties[0]];
+    if(!first){ toast('Tick a property first.'); return; }
+    d.properties.slice(1).forEach(c=>{
+      const pp=d.perProperty[c]; if(!pp) return;
+      pp.noticeAddr=first.noticeAddr||''; pp.noticePhone=first.noticePhone||''; pp.noticeEmail=first.noticeEmail||'';
+    });
+    renderPer();
+    toast('Copied the first property’s notice details to the rest');
+  }},'⇩ Copy first row’s notice details to all');
+  pBody.append(el('div',{style:'margin-top:10px'},copyDown,
+    el('p',{class:'bs-hint',style:'margin:6px 0 0'},'Notice address, phone and email fill in from each property automatically. Notices prints one block per entity with its own details, as the executed contract does — use this only when the whole portfolio is noticed at one office.')));
 
   /* ---- 2. Contractor ---- */
   const cPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
@@ -2755,8 +2794,7 @@ async function openMultiContract(){
   const bBody=el('div',{class:'pad'}); bPanel.append(bBody);
   const bidLabel=el('span',{style:'font-size:12px;color:var(--ink-3)'},'no bid attached');
   const scopeSummary=el('span',{style:'font-size:12px;color:var(--ink-3)'},'');
-  const scopeState={pages:{},marks:{}};
-  let bidPageCount=0;
+  const scopeState=d.scope_;
   const syncScope=()=>{
     d.bidPages=''; d.bidMarks=[];
     const sel=scopeState.pages[d.bidFileKey];
@@ -2767,7 +2805,7 @@ async function openMultiContract(){
     scopeSummary.textContent='  ·  '+bits.join('  ·  ');
   };
   const reviewBtn=el('button',{class:'btn sm',style:'display:none',onclick:()=>openScopePreviewer(
-    [{fileKey:d.bidFileKey,fileName:d.bidFileName,pages:bidPageCount}],scopeState,syncScope)},'🔍 Review bid pages');
+    [{fileKey:d.bidFileKey,fileName:d.bidFileName,pages:d.bidPageCount}],scopeState,syncScope)},'🔍 Review bid pages');
   const fileInp=el('input',{type:'file',accept:'.pdf,.jpg,.jpeg,.png,.doc,.docx,.xls,.xlsx',onchange:async e=>{
     const f=e.target.files&&e.target.files[0]; if(!f) return;
     const fd=new FormData(); fd.append('file',f);
@@ -2776,7 +2814,7 @@ async function openMultiContract(){
       const r=await fetch('/api/contracts/multi/bid',{method:'POST',body:fd});
       if(!r.ok){ let m; try{m=(await r.json()).error;}catch(err){m='upload failed';} throw new Error(m); }
       const meta=await r.json();
-      d.bidFileKey=meta.fileKey; d.bidFileName=meta.fileName; bidPageCount=meta.pages||0;
+      d.bidFileKey=meta.fileKey; d.bidFileName=meta.fileName; d.bidPageCount=meta.pages||0;
       scopeState.pages={}; scopeState.marks={}; syncScope();
       bidLabel.textContent=meta.fileName+(meta.pages?`  ·  ${meta.pages} page${meta.pages===1?'':'s'}`:'  ·  image');
       reviewBtn.style.display=meta.pages?'':'none';
@@ -2789,8 +2827,11 @@ async function openMultiContract(){
   body.append(bPanel);
 
   /* ---- 6. Exhibit B narrative ---- */
-  const exbTa=el('textarea',{rows:'5',placeholder:'Leave blank to generate from the Contract Sum and the per-property shares above.\n\nOr write it out, e.g.:\n$55,950.00, per bid estimate provided in Exhibit A.\n\nBilled monthly at $4,662.50 for the 12-month term. A partial first month is prorated.',
+  // A textarea's text is its child content, not a `value` attribute, so el()'s
+  // setAttribute can't seed it — assign the property after construction.
+  const exbTa=el('textarea',{rows:'5',placeholder:'Leave blank to generate from the Contract Sum and the per-property shares above.\n\nOr write it out, e.g.:\n$330,000.00, per bid in Exhibit A.\n\nThis price includes a total of $27,500 per month for 12 months, from September 2025 to August 2026.',
     oninput:e=>{d.exhibitBText=e.target.value;}});
+  exbTa.value=d.exhibitBText;
   const ePanel=el('div',{class:'panel',style:'margin-bottom:14px'});
   ePanel.append(el('div',{class:'ph'},el('h3',{},'Exhibit B — Contract Sum')));
   ePanel.append(el('div',{class:'pad'},field('Narrative',exbTa,
@@ -2802,11 +2843,15 @@ async function openMultiContract(){
   tailor.append(el('summary',{class:'ph as-summary'},el('span',{class:'chev'},'▸'),el('h3',{},'Tailor this contract'),
     el('div',{class:'sp'}),el('span',{class:'chip'},'optional')));
   const tlb=el('div',{class:'pad'}); tailor.append(tlb);
-  tlb.append(field('Elected options',el('textarea',{rows:'3',placeholder:'One per line — for bids that offer a choice',
-      oninput:e=>{d.electedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}}),
+  const electTa=el('textarea',{rows:'3',placeholder:'One per line — for bids that offer a choice',
+    oninput:e=>{d.electedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}});
+  electTa.value=d.electedTerms.join('\n');
+  tlb.append(field('Elected options',electTa,
     'What you record here controls over every other option shown in the exhibit.'));
-  tlb.append(field('Bid terms to exclude',el('textarea',{rows:'3',placeholder:'One per line, e.g.\n50% deposit due on signing',
-      oninput:e=>{d.excludedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}}),
+  const exclTa=el('textarea',{rows:'3',placeholder:'One per line, e.g.\n50% deposit due on signing',
+    oninput:e=>{d.excludedTerms=e.target.value.split('\n').map(s=>s.trim()).filter(Boolean);}});
+  exclTa.value=d.excludedTerms.join('\n');
+  tlb.append(field('Bid terms to exclude',exclTa,
     'Rejected on the face of the agreement and reprinted on the Exhibit A cover page — an embedded bid cannot be edited.'));
   const secWrap=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:4px'});
   tlb.append(field('Sections to omit',secWrap,'The remaining sections renumber and cross-references follow. If another section cites the one you drop, generation stops rather than shipping a dangling reference.'));
@@ -2815,11 +2860,22 @@ async function openMultiContract(){
       const cb=el('input',{type:'checkbox',style:'width:auto;margin:0',onchange:e=>{
         if(e.target.checked) d.omitSections.push(s.slug); else d.omitSections=d.omitSections.filter(x=>x!==s.slug);
       }});
+      cb.checked=d.omitSections.includes(s.slug);
       secWrap.append(el('label',{style:'display:flex;align-items:center;gap:7px;font-size:12px;padding:2px 0;cursor:pointer'},
         cb,el('span',{style:'color:var(--ink-3)'},String(i+1)+'.'),s.title));
     });
   }).catch(()=>{ secWrap.append(el('div',{class:'bs-hint'},'Could not load the section list.')); });
   body.append(tailor);
+
+  /* Paint the parts that are built from the draft rather than from a fresh
+     default: the per-property table and the attached bid. Without this a resumed
+     draft shows ticked properties above an empty table. */
+  renderPer();
+  if(d.bidFileKey){
+    bidLabel.textContent=d.bidFileName+(d.bidPageCount?`  ·  ${d.bidPageCount} page${d.bidPageCount===1?'':'s'}`:'  ·  image');
+    reviewBtn.style.display=d.bidPageCount?'':'none';
+    syncScope();
+  }
 
   /* ---- Generate ---- */
   const status=el('span',{style:'flex:1;font-size:12.5px;color:var(--ink-3)'});
@@ -2836,12 +2892,11 @@ async function openMultiContract(){
     const per={};
     d.properties.forEach(code=>{
       const pp=d.perProperty[code]||{};
-      per[code]={noticePhone:pp.noticePhone||'',noticeEmail:pp.noticeEmail||''};
+      per[code]={noticeAddr:pp.noticeAddr||'',noticePhone:pp.noticePhone||'',noticeEmail:pp.noticeEmail||''};
       // Send only the amount shape actually in use, so a value left behind by
       // toggling the split doesn't turn into a stray line item.
       if(d.splitAmounts){ per[code].upfront=pp.upfront||''; per[code].ongoing=pp.ongoing||''; }
       else per[code].sum=pp.sum||'';
-      if(d.sharedNoticeAddr.trim()) per[code].noticeAddr=d.sharedNoticeAddr.trim();
     });
     genBtn.disabled=true; status.textContent='Generating…';
     try{
@@ -2860,6 +2915,7 @@ async function openMultiContract(){
         omitSections:d.omitSections, excludedTerms:d.excludedTerms, electedTerms:d.electedTerms,
       });
       window.open(r.downloadUrl,'_blank');
+      MULTI_DRAFT=null;
       scrim.remove();
       await afterWrite('Contract generated — '+r.contractFileName);
     }catch(err){ status.textContent=err.message; genBtn.disabled=false; }
@@ -2872,7 +2928,8 @@ async function openMultiContract(){
    multi-entity builder passes since it holds its uploaded bid directly. */
 async function openScopePreviewer(source, state, onSave){
   const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
-  const sheet=el('div',{class:'sheet sheet-editor'});
+  // Wider than the editor sheet: this is where the bid actually gets read.
+  const sheet=el('div',{class:'sheet sheet-editor sheet-wide'});
   const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Review contract scope'),
     el('button',{class:'btn',onclick:()=>scrim.remove()},'Cancel'));
   const body=el('div',{class:'sb'});
@@ -2896,8 +2953,31 @@ async function openScopePreviewer(source, state, onSave){
   const toolBtn=(k,label)=>{ const b=el('button',{class:'btn sm'+(tool===k?' pri':''),onclick:()=>{
       tool=k; [...toolbar.querySelectorAll('button[data-tool]')].forEach(x=>x.className='btn sm'+(x.dataset.tool===tool?' pri':''));
     }},label); b.dataset.tool=k; return b; };
+  /* Page size. A bid is dense small print — at thumbnail size it can't be read,
+     and a strike box can't be placed accurately over a line you can't see. Pages
+     render at the width they are actually displayed at (times the device pixel
+     ratio, capped), so changing this re-renders rather than upscaling a blurry
+     bitmap. One-across is roughly full width, which is what reading needs. */
+  const SIZES=[['1','One across'],['2','Two across'],['3','Three across']];
+  let cols=window.matchMedia('(max-width:820px)').matches?1:2;
+  const rerenders=[];                       // one per rendered page
+  const sizeBtn=(n,label)=>{ const b=el('button',{class:'btn sm'+(cols===Number(n)?' pri':''),title:label,
+      onclick:async()=>{ cols=Number(n);
+        [...toolbar.querySelectorAll('button[data-cols]')].forEach(x=>x.className='btn sm'+(Number(x.dataset.cols)===cols?' pri':''));
+        relayout(); for(const fn of rerenders) await fn();
+      }},n+'▦'); b.dataset.cols=n; return b; };
+  const grids=[];
+  const colWidth=()=>{
+    const avail=Math.max(240,(body.clientWidth||900)-8);
+    return Math.floor((avail-(cols-1)*14)/cols);
+  };
+  const relayout=()=>{ grids.forEach(g=>{ g.style.gridTemplateColumns=`repeat(${cols},minmax(0,1fr))`; }); };
+
   toolbar.append(el('span',{style:'font-size:12px;color:var(--ink-3)'},'Draw:'),
     toolBtn('strike','✏ Strike through'), toolBtn('cover','▭ Cover'),
+    el('span',{style:'width:14px'}),
+    el('span',{style:'font-size:12px;color:var(--ink-3)'},'Size:'),
+    ...SIZES.map(([n,label])=>sizeBtn(n,label)),
     el('span',{style:'flex:1'}),
     el('span',{style:'font-size:11.5px;color:var(--ink-3)'},'Click a box to remove it'));
   body.append(toolbar);
@@ -2919,8 +2999,8 @@ async function openScopePreviewer(source, state, onSave){
     try{ doc=await pdfjs.getDocument({data:bytes}).promise; }
     catch(e){ wrap.append(el('div',{class:'bs-hint'},'Could not open this file for preview.')); continue; }
 
-    const grid=el('div',{style:'display:grid;grid-template-columns:repeat(auto-fill,minmax(230px,1fr));gap:14px'});
-    wrap.append(grid);
+    const grid=el('div',{style:`display:grid;grid-template-columns:repeat(${cols},minmax(0,1fr));gap:14px`});
+    wrap.append(grid); grids.push(grid);
 
     for(let pno=1;pno<=doc.numPages;pno++){
       const cell=el('div',{style:'border:1px solid var(--line);border-radius:9px;overflow:hidden;background:var(--panel)'});
@@ -2940,12 +3020,20 @@ async function openScopePreviewer(source, state, onSave){
 
       const page=await doc.getPage(pno);
       const base=page.getViewport({scale:1});
-      const scale=230/base.width;
-      const vp=page.getViewport({scale});
-      const cvs=el('canvas',{width:String(Math.floor(vp.width)),height:String(Math.floor(vp.height)),style:'width:100%;display:block'});
+      const cvs=el('canvas',{style:'width:100%;display:block'});
       canvasWrap.append(cvs);
-      // intent:'print' — rAF-scheduled rendering stalls in a background tab.
-      await page.render({canvasContext:cvs.getContext('2d'),viewport:vp,intent:'print'}).promise;
+      // Render at the displayed width times the device pixel ratio so the small
+      // print is legible, capped so a long bid doesn't exhaust memory (a page at
+      // 1600px wide is already ~8MB of bitmap).
+      const draw=async()=>{
+        const target=Math.min(1600,Math.max(240,colWidth())*Math.min(2,window.devicePixelRatio||1));
+        const vp=page.getViewport({scale:target/base.width});
+        cvs.width=Math.floor(vp.width); cvs.height=Math.floor(vp.height);
+        // intent:'print' — rAF-scheduled rendering stalls in a background tab.
+        await page.render({canvasContext:cvs.getContext('2d'),viewport:vp,intent:'print'}).promise;
+      };
+      rerenders.push(draw);
+      await draw();
 
       const overlay=el('div',{style:'position:absolute;inset:0'});
       canvasWrap.append(overlay);

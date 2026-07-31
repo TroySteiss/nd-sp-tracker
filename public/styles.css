@@ -420,6 +420,9 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 
 /* ---- project editor: two columns (lifecycle on the right) ---- */
 .sheet-editor{width:min(1060px,97vw)}
+/* The bid-scope previewer is a reading and mark-up surface: a US Letter page is
+   816px at 96dpi, so give it room to show one at or above natural size. */
+.sheet-wide{width:min(1440px,98vw)}
 .editor-grid{display:grid;grid-template-columns:minmax(0,1fr) 320px;gap:16px;align-items:start}
 .ed-main{min-width:0;display:flex;flex-direction:column}
 .ed-side{min-width:0}

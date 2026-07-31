@@ -291,9 +291,16 @@ shouldn't need an admin, and it only moves work backwards) and `POST /projects/:
   section another one cites **throws** rather than shipping a dangling "Section 6".
 
 UI: *Generate contract → Tailor this contract → 🔍 Review bid pages* opens a pdf.js previewer
-(`openScopePreviewer` in app.js) — page thumbnails with include/exclude checkboxes, drag to draw
+(`openScopePreviewer` in app.js) — pages with include/exclude checkboxes, drag to draw
 strike/cover boxes, click a box to remove it. Marks persist on the bid file (`bids.files[].marks`),
 which round-trips because `writeProject` stores `files` as wholesale JSON.
+
+The previewer sheet uses `.sheet-wide` (1440px, vs the editor's 1060px) and has a **1/2/3-across
+size control**. Pages render at their *displayed* width × devicePixelRatio, capped at 1600px, and
+**re-render when the size changes** rather than upscaling a small bitmap — a bid is dense small
+print, and a strike box can't be placed over a line you can't read. One-across is ~1200px, above a
+US Letter page's natural 816px at 96dpi. Marks are stored as fractions of the page, so resizing
+never moves them.
 
 ## Multi-entity contract generator (027, 2026-07-30)
 
@@ -323,6 +330,20 @@ is top-tier admin only — see below).
 - **`scripts/multi-snapshot.mjs` reproduces the executed contract** from its own inputs as its last
   case. That is the check that matters after any wording change: dump it and read it against the
   scan. It also writes `<out>-legend.pdf` when given a PDF path.
+- **`scripts/compare-templates.mjs` diffs the two templates clause by clause** (`--diff` for the
+  word-level differences). The two forms are meant to be mostly in line: 23 of 27 multi sections
+  pair with an SP section, and across the clauses they share the only systematic difference is the
+  defined term — this form says **"Contract"** where the SP form says **"Agreement"**. Everything
+  else in the ≥0.85 band is a real difference carried by the executed document. Run it after
+  touching either template; unexplained new drift is a bug.
+- The multi form has **no Waiver of Jury Trial and no separate Disputes section**, both of which the
+  SP form does have. That is the executed document, not an omission here — but it is a real
+  difference in Owner's protections, so it is worth a conscious decision rather than a surprise.
+- **The builder keeps its draft** (`MULTI_DRAFT` in app.js). It is a long form and nothing is stored
+  until Generate, so closing the sheet — backdrop click included — no longer discards it; reopening
+  resumes. Only *Start over* or a successful generate clears it. When adding a field, seed its
+  widget from the draft: note that `el()` sets `value` with `setAttribute`, which **does not work
+  for `<textarea>`** — assign `.value` after construction.
 - **Exhibits A–E** (SP has A&B, C, D): A "See attached bid." + the embedded bid · B the Contract Sum
   as centered free narrative (falls back to the sum + per-property shares if the admin leaves it
   blank) · C conditional waiver, every entity in the `TO:` block · D final waiver, entities inline
@@ -353,6 +374,11 @@ is top-tier admin only — see below).
   share a destination and no "Office Address:" prefix; an earlier version did both and was wrong.
   A blank per-property phone/email falls back to the property's stored value — the endpoint uses
   `||`, not `??`, precisely because the builder posts `''` for an untouched field.
+- **Ticking a property autofills its notice address, phone and email** into editable fields (from
+  `owner_notice_addr`/`address`, `notice_phone`, `notice_email`), rather than hinting at them as
+  placeholders. Fill happens only when the field has never been touched, so re-ticking a property
+  won't overwrite typing. A *Copy first row's notice details to all* button covers the
+  one-office-per-portfolio case; there is no separate global override field any more.
 - **Refusals** (all HTTP 400, never a half-built document): no property ticked, a ticked property
   with no `owner_entity`, a bid that can't embed (`NO_SCOPE`), a blank field that appears in the
   operative text, and omitting a section another one cites. Note that in *this* template every

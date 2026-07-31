@@ -50,8 +50,17 @@ import {
         addresses rather than hard-coded, so it reproduces "ND" here and stays
         right elsewhere — the 2024 file still said "Kentucky", which is exactly
         what hard-coding a state does to you.
-     2. Two evident typos in the form are corrected: "any others items" and
-        Exhibit E's "ARE NTO CHANGED". A typo we emit reads as our bug.
+     2. Three evident typos in the form are corrected: "any others items",
+        Exhibit E's "ARE NTO CHANGED", and Severability's "in full or force and
+        effect" (the SP template has that last one right). A typo we emit reads
+        as our bug.
+
+   Otherwise this template stays deliberately in line with src/contract.ts: 23 of
+   its 27 sections have an SP counterpart, and across the clauses the two forms
+   share, the only systematic difference is the defined term — this form says
+   "Contract" where the SP form says "Agreement". Run scripts/compare-templates.mjs
+   to see the clause-by-clause diff; keep new wording in line unless the executed
+   document says otherwise.
 
    Entity names print EXACTLY as stored. They are legal names on signed paper,
    and the ", LLC" comma genuinely differs between entities, so nothing here
@@ -359,7 +368,9 @@ function buildSections(v: MultiContractVars): MultiSection[] {
 
     { title: 'Exhibits; Conflict', paras: ['The exhibits attached to this Contract are a part of and incorporated into this Contract; **provided, however, that if any provision of this Contract conflicts with the provision of any exhibit, this Contract shall control and govern to the extent of the conflict.** Any termination or expiration of this Contract will automatically and simultaneously terminate all exhibits.'] },
 
-    { title: 'Severability', paras: ['If any provision of this Contract is invalid or held unenforceable, the provision shall be deemed void. All remaining provisions shall remain in full or force and effect.'] },
+    // "in full or force and effect" is a typo in both source documents; the SP
+    // template has it right, so this follows the SP wording.
+    { title: 'Severability', paras: ['If any provision of this Contract is invalid or held unenforceable, the provision shall be deemed void. All remaining provisions shall remain in full force and effect.'] },
   ];
 }
 

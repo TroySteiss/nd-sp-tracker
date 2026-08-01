@@ -12,7 +12,8 @@ import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
-import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, type Project, type AppState } from '../shared/domain.js';
+import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planTotal, type Project, type AppState } from '../shared/domain.js';
+import { buildPlanWorkbook } from './plan-export.js';
 
 export const api = Router();
 
@@ -232,19 +233,24 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
   // Server recomputes derived rules: cost→planned tick + no-contract auto-default (spec §10.4).
   applyCostRules(p);
   normalizeSplit(p);
+  // Long-range plan (028): keep only valid year/"post" keys with positive amounts.
+  p.planYears = normalizePlanYears(p.planYears);
+  p.planKind = p.planKind === 'recurring' ? 'recurring' : p.planKind === 'completion' ? 'completion' : null;
+  p.lenderFlag = String(p.lenderFlag || '').trim().slice(0, 60);
   const cols = [
     p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '', p.actionItem || '',
     p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost), dnull(p.dateAdded), dnull(p.plannedStart), dnull(p.plannedEnd),
     JSON.stringify(p.steps || {}), p.notes || '', !!p.onHold, !!p.pinned, !!p.inHouse, p.ihUnit === 'quantity' ? 'quantity' : 'budget',
     nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet, !!p.commitCash,
     p.split ? JSON.stringify(p.split) : null,
+    p.planYears ? JSON.stringify(p.planYears) : null, p.planKind, p.lenderFlag,
   ];
   if (isNew) {
     await client.query(
       `insert into projects(property_code,category,name,description,plan,action_item,contractor,anticipated_cost,actual_cost,
          date_added,planned_start,planned_end,steps,notes,on_hold,pinned,in_house,ih_unit,total_to_complete,amount_completed,
-         no_contract,no_contract_set,commit_cash,split,id)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25)`,
+         no_contract,no_contract_set,commit_cash,split,plan_years,plan_kind,lender_flag,id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
       [...cols, p.id]
     );
   } else {
@@ -252,7 +258,7 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
       `update projects set property_code=$1,category=$2,name=$3,description=$4,plan=$5,action_item=$6,contractor=$7,
          anticipated_cost=$8,actual_cost=$9,date_added=$10,planned_start=$11,planned_end=$12,steps=$13,notes=$14,on_hold=$15,
          pinned=$16,in_house=$17,ih_unit=$18,total_to_complete=$19,amount_completed=$20,no_contract=$21,no_contract_set=$22,commit_cash=$23,
-         split=$24, updated_at=now() where id=$25`,
+         split=$24, plan_years=$25, plan_kind=$26, lender_flag=$27, updated_at=now() where id=$28`,
       [...cols, p.id]
     );
   }
@@ -313,6 +319,11 @@ function projectDiff(old: any, p: Project): string[] {
   if (unticked.length) out.push(`step${unticked.length > 1 ? 's' : ''} cleared: ${unticked.join(', ')}`);
   const splitStr = (s: any) => (s && Array.isArray(s.list) && s.list.length > 1) ? s.list.map((a: any) => `${a.property} ${a.pct}%`).join(' / ') : 'none';
   if (splitStr(old.split) !== splitStr(p.split)) out.push(`split ${splitStr(old.split)} → ${splitStr(p.split)}`);
+  // Long-range plan (028) — log the year-by-year change compactly.
+  const planStr = (v: any) => { const n = normalizePlanYears(v); return n ? Object.keys(n).sort().map((k) => `${k} ${fmtMoney(n[k])}`).join(', ') : '—'; };
+  if (planStr(old.plan_years) !== planStr(p.planYears)) out.push(`plan ${planStr(old.plan_years)} → ${planStr(p.planYears)}`);
+  cmp('plan kind', old.plan_kind || '', p.planKind || '');
+  cmp('lender flag', old.lender_flag || '', p.lenderFlag || '');
   if ((old.description || '') !== (p.description || '')) out.push('description edited');
   if ((old.plan || '') !== (p.plan || '')) out.push('plan edited');
   if ((old.action_item || '') !== (p.actionItem || '')) out.push('action item edited');
@@ -1343,6 +1354,8 @@ function propFromBody(b: any): Record<string, any> {
     contract_code: String(b.contractCode || '').trim(), owner_entity: String(b.ownerEntity || '').trim(),
     address: String(b.address || '').trim(), owner_notice_addr: String(b.ownerNoticeAddr || '').trim(),
     sp_budget: nnull(b.spBudget), units: nnull(b.units),
+    // Plan horizon override (028): a year 2000–2099, or null = use the loan-due year.
+    plan_end_year: (() => { const n = nnull(b.planEndYear); return n != null && n >= 2000 && n <= 2099 ? Math.round(n) : null; })(),
   };
 }
 
@@ -1366,9 +1379,9 @@ api.post('/properties', requireAdmin, async (req, res) => {
   await tx(async (c) => {
     await ensureRegion(v.region, c);
     await c.query(
-      `insert into properties(code,name,region,manager,color,portfolio,sp_budget,units,owner_entity,address,owner_notice_addr,contract_code)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12)`,
-      [code, v.name, v.region, v.manager, v.color, v.portfolio, v.sp_budget ?? 0, v.units ?? 0, v.owner_entity, v.address, v.owner_notice_addr, v.contract_code || code]
+      `insert into properties(code,name,region,manager,color,portfolio,sp_budget,units,owner_entity,address,owner_notice_addr,contract_code,plan_end_year)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13)`,
+      [code, v.name, v.region, v.manager, v.color, v.portfolio, v.sp_budget ?? 0, v.units ?? 0, v.owner_entity, v.address, v.owner_notice_addr, v.contract_code || code, v.plan_end_year]
     );
   });
   logChange(req, { action: 'property.create', entityType: 'property', entityId: code, property: code, summary: `Property ${code} — "${v.name}" added to ${v.region}${glCount ? ` (${glCount} previously imported GL lines now visible)` : ''}${snap ? ' (cushion snapshot already on file)' : ''}` });
@@ -1386,14 +1399,15 @@ api.patch('/properties/:code', requireAdmin, async (req, res) => {
     contractCode: b.contractCode ?? old.contract_code, ownerEntity: b.ownerEntity ?? old.owner_entity,
     address: b.address ?? old.address, ownerNoticeAddr: b.ownerNoticeAddr ?? old.owner_notice_addr,
     spBudget: b.spBudget ?? old.sp_budget, units: b.units ?? old.units,
+    planEndYear: b.planEndYear !== undefined ? b.planEndYear : old.plan_end_year,
   });
   if (!v.name || !v.region) return res.status(400).json({ error: 'name and region are required' });
   await tx(async (c) => {
     await ensureRegion(v.region, c);
     await c.query(
       `update properties set name=$1, region=$2, manager=$3, color=$4, portfolio=$5, contract_code=$6,
-         owner_entity=$7, address=$8, owner_notice_addr=$9, sp_budget=$10, units=$11 where code=$12`,
-      [v.name, v.region, v.manager, v.color, v.portfolio, v.contract_code || code, v.owner_entity, v.address, v.owner_notice_addr, v.sp_budget ?? 0, v.units ?? 0, code]
+         owner_entity=$7, address=$8, owner_notice_addr=$9, sp_budget=$10, units=$11, plan_end_year=$12 where code=$13`,
+      [v.name, v.region, v.manager, v.color, v.portfolio, v.contract_code || code, v.owner_entity, v.address, v.owner_notice_addr, v.sp_budget ?? 0, v.units ?? 0, v.plan_end_year, code]
     );
   });
   const diffs: string[] = [];
@@ -1402,6 +1416,7 @@ api.patch('/properties/:code', requireAdmin, async (req, res) => {
   cmp('portfolio', old.portfolio, v.portfolio); cmp('color', old.color, v.color);
   if (Number(old.sp_budget ?? 0) !== Number(v.sp_budget ?? 0)) diffs.push(`SP budget ${fmtMoney(old.sp_budget)} → ${fmtMoney(v.sp_budget)}`);
   if (Number(old.units ?? 0) !== Number(v.units ?? 0)) diffs.push(`units ${old.units ?? 0} → ${v.units ?? 0}`);
+  if ((old.plan_end_year ?? '') !== (v.plan_end_year ?? '')) diffs.push(`plan end year ${old.plan_end_year ?? 'auto'} → ${v.plan_end_year ?? 'auto'}`);
   logChange(req, { action: 'property.update', entityType: 'property', entityId: code, property: code, summary: `Property ${code} updated${diffs.length ? ': ' + diffs.join('; ') : ''}` });
   res.json({ ok: true });
 });
@@ -1462,13 +1477,33 @@ api.get('/export/backup.json', requireAdmin, async (_req, res) => {
   res.send(JSON.stringify(state, null, 2));
 });
 
+/* Long-range plan workbook (028) — TRMO-tracker layout, one sheet per property
+   plus Summary and Raw Data sheets. Formula-driven (totals are SUMs referencing
+   the raw data), so the math is reviewable in Excel. Open to every signed-in
+   user: it contains nothing the Plan tab doesn't already show. */
+api.get('/export/plan.xlsx', async (req, res) => {
+  const state = await assembleState();
+  const want = String(req.query.property || '').toUpperCase();
+  const codes = want
+    ? state.properties.filter((p) => p.code === want).map((p) => p.code)
+    : state.properties.map((p) => p.code);
+  if (!codes.length) return res.status(404).json({ error: 'property not found' });
+  const buf = buildPlanWorkbook(state, codes, new Date());
+  const stamp = new Date().toISOString().slice(0, 10);
+  res.setHeader('Content-Type', 'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet');
+  res.setHeader('Content-Disposition', `attachment; filename="sp-plan-${want || 'all'}-${stamp}.xlsx"`);
+  res.send(buf);
+});
+
 api.get('/export/projects.csv', requireAdmin, async (_req, res) => {
   const state = await assembleState();
-  const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', ...STEP_KEYS];
+  const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', 'lenderFlag', 'planKind', 'planTotal', ...STEP_KEYS];
   const lines = [cols.join(',')];
   for (const p of state.projects) {
     lines.push(cols.map((cc) => {
-      let v: any = STEP_KEYS.includes(cc) ? (p.steps && (p.steps as any)[cc] ? 1 : 0) : (p as any)[cc];
+      let v: any = STEP_KEYS.includes(cc) ? (p.steps && (p.steps as any)[cc] ? 1 : 0)
+        : cc === 'planTotal' ? (planTotal(p) || '')
+        : (p as any)[cc];
       v = v == null ? '' : String(v).replace(/"/g, '""');
       return /[",\n]/.test(v) ? `"${v}"` : v;
     }).join(','));

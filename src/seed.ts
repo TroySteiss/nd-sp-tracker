@@ -51,6 +51,11 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
       'update properties set notice_phone=$1, notice_email=$2 where code=$3',
       [fromBlob.noticePhone || '', fromBlob.noticeEmail || '', p.code]
     ).catch(() => { /* pre-migration DB */ });
+    // long-range plan horizon override (028)
+    await client.query(
+      'update properties set plan_end_year=$1 where code=$2',
+      [nnull(fromBlob.planEndYear), p.code]
+    ).catch(() => { /* pre-migration DB */ });
   }
 
   // regions — from the blob when present, otherwise derived from the properties in order
@@ -67,8 +72,9 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     await client.query(
       `insert into projects(id,property_code,category,name,description,plan,action_item,contractor,
          anticipated_cost,actual_cost,date_added,planned_start,planned_end,steps,notes,on_hold,pinned,
-         in_house,ih_unit,total_to_complete,amount_completed,no_contract,no_contract_set,split)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24)`,
+         in_house,ih_unit,total_to_complete,amount_completed,no_contract,no_contract_set,split,
+         plan_years,plan_kind,lender_flag)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
       [
         p.id, p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '',
         p.actionItem || '', p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost),
@@ -76,6 +82,8 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
         p.notes || '', !!p.onHold, !!p.pinned, !!p.inHouse, p.ihUnit === 'quantity' ? 'quantity' : 'budget',
         nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet,
         (p as any).split ? JSON.stringify((p as any).split) : null,
+        (p as any).planYears ? JSON.stringify((p as any).planYears) : null,
+        (p as any).planKind || null, (p as any).lenderFlag || '',
       ]
     );
     let slot = 0;

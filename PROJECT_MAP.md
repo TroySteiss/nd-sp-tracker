@@ -2,7 +2,9 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-30 (multi-entity contract generator — separate 27-section
+> Last updated: 2026-07-31 (long-range plan — loan-term horizon per property,
+> per-year $ on projects + Post-Refi bucket, Plan tab, TRMO-layout Excel export).
+> Previously: 2026-07-30 (multi-entity contract generator — separate 27-section
 > template, Exhibits A–E, shared PDF layout engine extracted from contract.ts).
 > Previously: 2026-07-28 (property-manager view at /pm; two admin tiers; contract
 > revision rollback; contract tailoring — bid page selection, strike/cover marks,
@@ -38,6 +40,9 @@ Express (src/server.ts) ── static: public/
    │     ├── src/convert.ts     Office→PDF via headless LibreOffice (bid uploads auto-convert;
    │     │                      original kept; nixpacks.toml installs LO on Railway;
    │     │                      /healthz reports docConvert; SOFFICE_PATH env override)
+   │     ├── src/plan-export.ts long-range plan workbook (SheetJS): Summary +
+   │     │                      per-property sheets (formulas × share) + Raw Data
+
    │     └── src/seed.ts        loadStateInto() = full-state replace (seed/reset/restore)
    ├── src/db.ts          pool, tx(), assembleState() → the /api/state blob, rowToProject
    ├── src/migrate.ts     runs migrations/*.sql in filename order on boot (tracked in _migrations)
@@ -136,9 +141,9 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 
 | Table | Purpose | Notes |
 |---|---|---|
-| properties | property registry | pk `code`; region/manager/color/portfolio/contract_code/owner_entity/addresses/projection settings; update-email fields incl. `update_enabled` (in bulk download) + `update_include_discussed` (015); `notice_phone`/`notice_email` (027 — the multi-entity Notices block) |
+| properties | property registry | pk `code`; region/manager/color/portfolio/contract_code/owner_entity/addresses/projection settings; update-email fields incl. `update_enabled` (in bulk download) + `update_include_discussed` (015); `notice_phone`/`notice_email` (027 — the multi-entity Notices block); `plan_end_year` (028 — plan horizon override) |
 | regions | region registry | pk `name`, `sort` — drives nav & dashboard grouping (014) |
-| projects | SP projects | jsonb `steps`; server re-applies cost rules on write |
+| projects | SP projects | jsonb `steps`; server re-applies cost rules on write; `plan_years` jsonb + `plan_kind` + `lender_flag` (028 — see Long-range plan below) |
 | bids / progress_notes | per-project children | rewritten wholesale on each project save; notes carry `username`, `ts`, `files` jsonb (015) — server stamps missing author/ts from the session |
 | cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
 | cash_adjustments | mid-month deltas | FK to properties; survives imports |
@@ -181,6 +186,8 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
 - Change log: `GET /changelog?limit&before&user&property`.
 - Contractors: `GET/POST/DELETE /contractors`, `POST /contractors/import`.
 - Backup: `GET /export/backup.json`, `GET /export/projects.csv`, `POST /restore`, `POST /reset`.
+- Plan: `GET /export/plan.xlsx[?property=CODE]` — long-range plan workbook (any signed-in user;
+  it shows nothing the Plan tab doesn't). CSV export gained lenderFlag/planKind/planTotal columns.
 - Auth (open): `POST /api/login` {username, password}, `POST /api/logout`, `GET /api/auth/status`
   (returns `{authed, username, appTitle}` — title is shown pre-auth on the login card).
 
@@ -200,6 +207,7 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles |
 | property | viewProperty | per-property: financial summary, projects by phase, GL reconciliation, update email |
 | cash | viewCash | snapshot/loan table (grouped by region), adjustments, quarterly summary panel |
+| plan | viewPlan | long-range plan: portfolio summary grid → per-property plan grid (editable year cells), unscheduled backlog, Excel export |
 | data | viewData | Admin group; GL/cushion upload + preview modals, **import history**, backup/restore |
 | directory | viewDirectory | Admin group; vendor directory + the **＋ New multi-entity contract** builder |
 | settings | viewSettings | Admin group; app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
@@ -260,6 +268,51 @@ localStorage key, so it reads as the same product and shares dark mode.
   Keep the copies in step.
 - A "note" is **not a separate store**: it's a project with no cost (`phase()` → `'note'`), which is
   the NOTES group in the property view. Adding a cost later promotes it to a planned project.
+
+## Long-range plan — loan-term horizon (028, 2026-07-31)
+
+Modeled on the TRMO Fannie Inspection Tracker: every plan line IS a project (no
+parallel list), with three new columns on `projects`:
+
+- **`plan_years` jsonb** — planned $ per calendar year (`{"2026":75000,...}`)
+  plus the special key **`"post"` = Post-Refi bucket** (work deferred until cash
+  replenishes after refinance). NULL = not on the plan. `normalizePlanYears`
+  (domain.ts, applied on every write) keeps only 4-digit-year/"post" keys with
+  positive amounts, rounded to cents — an emptied plan stores NULL, not `{}`.
+- **`plan_kind`** — `'completion' | 'recurring'` (the tracker's "To Completion
+  or Recurring?"). Recurring items still store explicit per-year amounts (the
+  editor has a "fill every year" helper) because real recurring costs taper.
+- **`lender_flag`** — free-text designation ("Fannie"); non-empty = the item is
+  lender-required. Generalized so non-Fannie debt works.
+
+**Horizon** = current year → `planHorizonEnd`: property `plan_end_year` override
+→ any 4-digit year in the latest cushion's `loan_due` → now+4. Clamped to
+[now, now+14]. A 2-year remaining loan term gives a 2-column plan — that is the
+"tied out to loan term" requirement. `planYearCols` also resurrects stray data
+years so a past-year amount never silently disappears from the grid.
+
+**The plan is a pure overlay.** cashModel / auditModel / projOutflow never read
+`plan_years` (unit-tested), so scheduling $500K across five years changes no
+cash projection, GL tie-out, or update email. Splits share plan dollars exactly
+like costs (`planForProp` = amount × `shareFor`), and ATL projects are excluded
+from the plan views entirely.
+
+**UI:** *Money ▸ Long-Range Plan* (all users; not `/pm`). Portfolio summary
+grid (row per property, click into it) → per-property plan grid with editable
+year cells (inline PATCH per cell; split projects are read-only there — edit
+full amounts in the project editor, which gained a "Long-range plan" panel) and
+an **Unscheduled / future items** section (the tracker's "Future SP Items"):
+open, ATL-free projects with no plan years; "Schedule ↴" seeds this year with
+the anticipated cost.
+
+**Excel export** (`src/plan-export.ts`, SheetJS): `GET /export/plan.xlsx` (all
+properties) or `?property=CODE`. Sheets: Summary (multi-property only) →
+per-property (TRMO column layout) → **Raw Data**. Show-your-work structure:
+Raw Data holds FULL project amounts as values; property-sheet year cells are
+formulas `'Raw Data'!cell × share-cell`, all totals are SUMs, and Summary
+references each property sheet's TOTAL row. Every formula cell also carries a
+cached value so the file previews before Excel recalculates. Don't "simplify"
+the formulas into hardcoded values — the reviewability is the point.
 
 ## Contract revision — send a bad contract back (024)
 

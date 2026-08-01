@@ -58,6 +58,7 @@ let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts vie
 let IHF={region:''};   // in-house view region toggle
 let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
+let PLANV={prop:''};         // long-range plan view: ''=portfolio summary, else a property code
 let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
 /* Per-property color comes from the properties table (editable in Settings).
    Unknown codes (e.g. GL lines kept for a future property) get a stable fallback. */
@@ -244,6 +245,37 @@ const involvesProp=(p,code)=>allocsOf(p).some(a=>a.property===code);
 function projForProp(code){ return S.projects.filter(p=>involvesProp(p,code)); }
 function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&&!p.onHold).reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0); }
 
+/* ---------- Long-range plan (mirrors shared/domain.ts, migration 028) ----------
+   planYears: {"2026":75000,...,"post":50000} on a project — "post" = Post-Refi
+   bucket. A planning overlay only: cashModel/auditModel never read it. */
+const PLAN_POST='post';
+const onPlan=p=>!!(p&&p.planYears&&Object.keys(p.planYears).some(k=>Number(p.planYears[k])>0));
+const planFor=(p,key)=>Number((p.planYears||{})[key])||0;
+const planTotal=p=>Object.values(p.planYears||{}).reduce((a,b)=>a+(Number(b)||0),0);
+const planForProp=(p,code,key)=>planFor(p,key)*shareFor(p,code);
+const planTotalForProp=(p,code)=>planTotal(p)*shareFor(p,code);
+const lenderFlagged=p=>!!(p.lenderFlag&&String(p.lenderFlag).trim());
+/* Final plan year: property override → loan-due year (cushion) → now+4. */
+function planHorizonEnd(code){
+  const nowYear=new Date().getFullYear();
+  const prop=PROP(code)||{}; const snap=S.cash[code]||{};
+  let end=null;
+  const o=Number(prop.planEndYear);
+  if(o>=2000&&o<=2099)end=o;
+  if(end==null&&snap.loanDue){ const m=String(snap.loanDue).match(/(\d{4})/); if(m)end=+m[1]; }
+  if(end==null)end=nowYear+4;
+  return Math.min(Math.max(end,nowYear),nowYear+14);
+}
+/* Year columns for a property's plan grid: now..end plus stray data years. */
+function planYearColsFor(code){
+  const nowYear=new Date().getFullYear();
+  const ys=new Set(); for(let y=nowYear;y<=planHorizonEnd(code);y++)ys.add(y);
+  projForProp(code).forEach(p=>Object.keys(p.planYears||{}).forEach(k=>{ if(/^\d{4}$/.test(k))ys.add(+k); }));
+  return [...ys].sort((a,b)=>a-b).map(String);
+}
+const planYearLabel=(key)=>{ if(key===PLAN_POST)return 'Post-Refi';
+  const n=+key-new Date().getFullYear()+1; return n>=1?`${key} · Yr ${n}`:key; };
+
 /* ---------- Cash projection + audit model ---------- */
 const OVER_THRESHOLD = 5000;                       // unplanned-spend flag threshold
 const APPROVED_IDX = STEP_KEYS.indexOf('approved'); // workflow "lock-in" point
@@ -424,6 +456,7 @@ function rail(){
   });
   nav.append(el('div',{class:'grp'},'Money'));
   nav.append(item('cash','$','Cash & Loans'));
+  nav.append(item('plan','🗓','Long-Range Plan',S.projects.filter(onPlan).length||null));
   if(IS_ADMIN){
     // Upload & Data (imports, backup/restore/reset) and Contractors (the vendor
     // directory + the multi-entity contract builder) are top-tier admin only.
@@ -450,7 +483,7 @@ function mainCol(){
   // Admin-only tabs. The server enforces the same on every endpoint these use —
   // this only keeps a non-admin from landing on a view they can't act in.
   if(!IS_ADMIN&&['changelog','settings','data','directory'].includes(VIEW.tab))VIEW.tab='dashboard';
-  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
+  const views={dashboard:viewDashboard,projects:viewProjects,inhouse:viewInHouse,contracts:viewContracts,property:viewProperty,cash:viewCash,plan:viewPlan,data:viewData,directory:viewDirectory,changelog:viewChangelog,settings:viewSettings};
   const {bar,body}=(views[VIEW.tab]||viewDashboard)();
   // Property view goes edge-to-edge on mobile (no side margins) with sticky section headers.
   m.append(bar,el('div',{class:'content'+(VIEW.tab==='property'?' content-flush':'')},body));
@@ -1399,6 +1432,7 @@ function openProject(id,preset){
     p.property=e.target.value;
     if(p.split&&p.split.list&&!p.split.list.some(a=>a.property===p.property)){ p.split.list.unshift({property:p.property,pct:0}); }
     if(typeof drawSplit==='function')drawSplit();
+    if(typeof drawPlan==='function')drawPlan();   // plan horizon follows the property's loan
   }});
   propsByRegion().forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
@@ -1522,6 +1556,53 @@ function openProject(id,preset){
   }
   b.append(splitPanel);
   drawSplit();
+
+  // --- long-range plan: per-year $ out to loan maturity + Post-Refi bucket ---
+  const planPanel=el('div',{class:'panel',style:'margin-top:16px'});
+  const planMeta=el('span',{class:'chip'},'');
+  planPanel.append(el('div',{class:'ph'}, el('h3',{},'Long-range plan'), el('div',{class:'sp'}), planMeta));
+  const planBody=el('div',{class:'pad'});
+  planPanel.append(planBody);
+  function drawPlan(){
+    planBody.innerHTML='';
+    p.planYears=p.planYears||{};
+    const refreshPlanMeta=()=>{ planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':'not on the plan'; };
+    refreshPlanMeta();
+    const years=[...new Set([...planYearColsFor(p.property),...Object.keys(p.planYears).filter(k=>/^\d{4}$/.test(k))])].sort();
+    const keys=[...years,PLAN_POST];
+    planBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
+      'Spread the dollars across the years to '+PROP(p.property).code+'’s loan maturity (through '+planHorizonEnd(p.property)+'). Post-Refi = deferred until cash replenishes after refinance. Planning only — cash projections and GL tie-out are unaffected.'));
+    const lab=(txt)=>el('label',{style:'display:block;font-size:11px;color:var(--ink-3);margin-bottom:3px'},txt);
+    const seg=el('div',{class:'seg-ctl sm'},
+      el('button',{class:!p.planKind?'on':'',onclick:()=>{p.planKind=null;drawPlan();}},'—'),
+      el('button',{class:p.planKind==='completion'?'on':'',onclick:()=>{p.planKind='completion';drawPlan();}},'To completion'),
+      el('button',{class:p.planKind==='recurring'?'on':'',onclick:()=>{p.planKind='recurring';drawPlan();}},'Recurring'));
+    const lenderInp=el('input',{value:p.lenderFlag||'',placeholder:'e.g. Fannie',style:'width:110px',oninput:e=>p.lenderFlag=e.target.value});
+    const fillAmt=el('input',{type:'number',placeholder:'annual $',style:'width:100px'});
+    planBody.append(el('div',{style:'display:flex;gap:16px;align-items:end;flex-wrap:wrap;margin-bottom:10px'},
+      el('div',{},lab('Kind'),seg),
+      el('div',{},lab('Lender designation (blank = none)'),lenderInp),
+      el('div',{},lab('Fill every year with'),
+        el('span',{style:'display:inline-flex;gap:6px'},fillAmt,
+          el('button',{class:'btn ghost sm',onclick:()=>{ const n=Number(fillAmt.value);
+            if(!(n>0)){toast('Enter an annual amount first.');return;}
+            years.forEach(y=>{ if(+y>=new Date().getFullYear())p.planYears[y]=n; });
+            if(p.planKind==null)p.planKind='recurring';
+            drawPlan(); }},'Fill')))));
+    const grid=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap'});
+    keys.forEach(k=>{
+      const yInp=el('input',{type:'number',min:'0',step:'any',value:planFor(p,k)||'',placeholder:'—',style:'width:92px;text-align:right',
+        onchange:e=>{ const n=Number(e.target.value);
+          if(isFinite(n)&&n>0)p.planYears[k]=n; else delete p.planYears[k];
+          refreshPlanMeta(); }});
+      grid.append(el('div',{},lab(planYearLabel(k)),yInp));
+    });
+    planBody.append(grid);
+    if(isSplitP(p))planBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},
+      '⇄ Amounts here are the FULL project figures — each property’s plan grid shows its split share.'));
+  }
+  b.append(planPanel);
+  drawPlan();
 
   // --- in-house panel: progress + additional notes ---
   const inhousePanel=el('div',{class:'panel ih-panel',style:'margin-top:16px'});
@@ -3912,6 +3993,173 @@ function quarterlySummaryPanel(){
   return qs;
 }
 
+/* =========================================================
+   LONG-RANGE PLAN — loan-term horizon (TRMO Fannie tracker, 028)
+   Horizon = this year → the property's loan-due year (Settings override),
+   plus a Post-Refi bucket for work deferred until cash replenishes after
+   refinance. Planning overlay only — projections/GL tie-out never read it.
+========================================================= */
+function viewPlan(){
+  if(PLANV.prop&&!PROP(PLANV.prop))PLANV.prop='';
+  return PLANV.prop?planDetail(PLANV.prop):planSummary();
+}
+function planExcelBtn(code){
+  return el('a',{class:'btn ghost sm',href:'/api/export/plan.xlsx'+(code?'?property='+encodeURIComponent(code):''),
+    title:'Download the plan workbook (TRMO tracker layout, with a raw-data sheet)',
+    onclick:()=>toast('Plan workbook downloading…')},'⬇ Excel');
+}
+async function savePlanCells(p,msg){
+  try{ await saveProjectSilent(p); await refreshState(); }
+  catch(e){ toast('Save failed: '+e.message); try{ await refreshState(); }catch(_e){} }
+  render(); if(msg)toast(msg);
+}
+function planCellInp(p,key){
+  return el('input',{type:'number',min:'0',step:'any',value:planFor(p,key)||'',placeholder:'—',
+    style:'width:88px;text-align:right;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)',
+    onchange:e=>{ const n=Number(e.target.value); p.planYears=p.planYears||{};
+      if(isFinite(n)&&n>0)p.planYears[key]=n; else delete p.planYears[key];
+      savePlanCells(p); }});
+}
+function planChips(p){
+  const w=el('span',{style:'display:inline-flex;gap:4px;flex-wrap:wrap'});
+  if(lenderFlagged(p))w.append(el('span',{class:'chip',style:'background:var(--wheat-soft);color:var(--wheat-d)',title:'Lender-required item'},'🏦 '+String(p.lenderFlag).trim()));
+  if(p.planKind==='recurring')w.append(el('span',{class:'chip',title:'Recurring — repeats each year'},'↻'));
+  if(p.inHouse)w.append(el('span',{class:'chip',title:'In-house'},'🛠'));
+  if(isSplitP(p))w.append(el('span',{class:'chip',title:'Split across properties — amounts shown are this property’s share; edit the full figures in the project editor'},'⇄'));
+  return w;
+}
+function planSummary(){
+  const bar=topbar('Money','Long-Range Plan', planExcelBtn(''));
+  const body=el('div');
+  const years=new Set(); S.properties.forEach(pr=>planYearColsFor(pr.code).forEach(y=>years.add(y)));
+  const cols=[...years].sort();
+  const panel=el('div',{class:'panel'});
+  panel.append(el('div',{class:'ph'},el('h3',{},'Portfolio plan by year'),el('div',{class:'sp'}),
+    el('span',{class:'chip'},'horizon = loan term remaining')));
+  const t=el('table',{class:'tbl'});
+  const hd=tr(th('Property'),th('Loan due'),th('Through'));
+  cols.forEach(y=>hd.append(th(planYearLabel(y),'r')));
+  hd.append(th('Post-Refi','r'),th('Plan total','r'),th('Unscheduled est.','r'));
+  t.append(el('thead',{},hd));
+  const tb=el('tbody');
+  const totals={}; let gTot=0,gUn=0;
+  propsByRegion().forEach(pr=>{
+    const code=pr.code;
+    const projs=projForProp(code).filter(p=>!isATL(p));
+    const sched=projs.filter(onPlan);
+    const unsched=projs.filter(p=>!onPlan(p)&&phase(p)!=='done');
+    const end=planHorizonEnd(code);
+    const rowTot=sched.reduce((a,p)=>a+planTotalForProp(p,code),0);
+    const unTot=unsched.reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0);
+    gTot+=rowTot; gUn+=unTot;
+    const row=tr(
+      td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},propChip(code),el('span',{},pr.name))),
+      td(S.cash[code]&&S.cash[code].loanDue?S.cash[code].loanDue:'—'),
+      td(String(end)));
+    cols.forEach(y=>{
+      const inH=+y<=end;
+      const v=sched.reduce((a,p)=>a+planForProp(p,code,y),0);
+      totals[y]=(totals[y]||0)+v;
+      row.append(el('td',{class:'num r',style:inH?'':'opacity:.35'},v?fmt(v):(inH?'—':'')));
+    });
+    const vPost=sched.reduce((a,p)=>a+planForProp(p,code,PLAN_POST),0);
+    totals[PLAN_POST]=(totals[PLAN_POST]||0)+vPost;
+    row.append(tdn(vPost||null,true), td(el('strong',{},fmt(rowTot)),'r'), tdn(unTot||null,true));
+    row.style.cursor='pointer';
+    row.onclick=()=>{PLANV.prop=code;render();};
+    tb.append(row);
+  });
+  const trow=tr(td(el('strong',{},'TOTAL')),td(''),td(''));
+  cols.forEach(y=>trow.append(td(el('strong',{},fmt(totals[y]||0)),'r')));
+  trow.append(td(el('strong',{},fmt(totals[PLAN_POST]||0)),'r'), td(el('strong',{},fmt(gTot)),'r'), td(el('strong',{},fmt(gUn)),'r'));
+  tb.append(trow);
+  t.append(tb);
+  panel.append(el('div',{style:'overflow:auto'},t));
+  body.append(panel);
+  body.append(el('p',{style:'color:var(--ink-3);font-size:12px;margin-top:10px'},
+    'Each property’s plan runs from this year to its loan-due year (override it per property in Settings) plus a Post-Refi bucket — a shorter remaining loan term means a shorter plan. Click a property to schedule its items. Plan dollars are planning figures only: cash projections, GL tie-out and update emails are unaffected.'));
+  return {bar,body};
+}
+function planDetail(code){
+  const pr=PROP(code);
+  const nowYear=new Date().getFullYear();
+  const end=planHorizonEnd(code);
+  const keys=[...planYearColsFor(code),PLAN_POST];
+  const projs=projForProp(code).filter(p=>!isATL(p));
+  const sched=projs.filter(onPlan).sort((a,b)=>planTotalForProp(b,code)-planTotalForProp(a,code));
+  const unsched=projs.filter(p=>!onPlan(p)&&phase(p)!=='done').sort((a,b)=>(Number(b.anticipatedCost)||0)-(Number(a.anticipatedCost)||0));
+  const snap=S.cash[code]||{};
+  const planT=sched.reduce((a,p)=>a+planTotalForProp(p,code),0);
+  const bar=topbar('Money · Long-Range Plan', code+' — '+pr.name,
+    el('button',{class:'btn ghost sm',onclick:()=>{PLANV.prop='';render();}},'‹ All properties'),
+    planExcelBtn(code),
+    el('button',{class:'btn accent sm',onclick:()=>openProject(null,{property:code})},'＋ New plan item'));
+  const body=el('div');
+  const stat=(l,v)=>el('div',{},el('div',{style:'font-size:11px;color:var(--ink-3);text-transform:uppercase;letter-spacing:.05em'},l),el('div',{style:'font-weight:600'},v));
+  body.append(el('div',{class:'panel pad',style:'display:flex;gap:22px;flex-wrap:wrap;align-items:center'},
+    stat('Loan due',snap.loanDue||'—'),
+    stat('Plan horizon',nowYear+'–'+end+' + Post-Refi'),
+    stat('Items on plan',String(sched.length)),
+    stat('Plan total ('+code+' share)',fmt(planT))));
+  const panel=el('div',{class:'panel',style:'margin-top:14px'});
+  panel.append(el('div',{class:'ph'},el('h3',{},'Plan grid'),el('div',{class:'sp'}),el('span',{class:'chip'},'amounts = '+code+'’s share')));
+  const t=el('table',{class:'tbl'});
+  const hd=tr(th('Item'),th(''));
+  keys.forEach(k=>hd.append(th(planYearLabel(k),'r')));
+  hd.append(th('Total','r'),th('Est. cost','r'),th('Actual','r'));
+  t.append(el('thead',{},hd));
+  const tb=el('tbody');
+  sched.forEach(p=>{
+    const split=isSplitP(p), share=shareFor(p,code);
+    const row=tr(
+      td(el('a',{href:'javascript:void 0',style:'font-weight:600;color:var(--ink)',onclick:()=>openProject(p.id)},p.name)),
+      td(planChips(p)));
+    keys.forEach(k=>{
+      if(split){ const v=planForProp(p,code,k); row.append(el('td',{class:'num r',title:'Shared project — '+Math.round(share*100)+'% shown'},v?fmt(v):'—')); }
+      else row.append(td(planCellInp(p,k),'r'));
+    });
+    row.append(td(el('strong',{},fmt(planTotalForProp(p,code))),'r'),
+      tdn(p.anticipatedCost!=null?Number(p.anticipatedCost)*share:null,true),
+      tdn(p.actualCost!=null?Number(p.actualCost)*share:null,true));
+    tb.append(row);
+  });
+  if(!sched.length)tb.append(tr(td(el('span',{style:'color:var(--ink-3)'},'Nothing scheduled yet — use “Schedule” below, or ＋ New plan item.'))));
+  const trow=tr(td(el('strong',{},'TOTAL')),td(''));
+  keys.forEach(k=>{ const v=sched.reduce((a,p)=>a+planForProp(p,code,k),0); trow.append(td(el('strong',{},fmt(v)),'r')); });
+  trow.append(td(el('strong',{},fmt(planT)),'r'),td(''),td(''));
+  tb.append(trow);
+  t.append(tb);
+  panel.append(el('div',{style:'overflow:auto'},t));
+  body.append(panel);
+  const up=el('div',{class:'panel',style:'margin-top:14px'});
+  up.append(el('div',{class:'ph'},el('h3',{},'Unscheduled / future items'),el('div',{class:'sp'}),el('span',{class:'chip'},String(unsched.length))));
+  const ub=el('div',{class:'pad'});
+  if(!unsched.length)ub.append(el('span',{style:'color:var(--ink-3);font-size:12.5px'},'Every open project at '+code+' is on the plan.'));
+  else{
+    const ut=el('table',{class:'tbl'});
+    ut.append(el('thead',{},tr(th('Item'),th('Status'),th('Category'),th('Est. cost','r'),th(''))));
+    const utb=el('tbody');
+    unsched.forEach(p=>{
+      const est=(Number(p.anticipatedCost)||0)*shareFor(p,code);
+      const pm=phaseMeta(phase(p))||{};
+      utb.append(tr(
+        td(el('a',{href:'javascript:void 0',style:'font-weight:600;color:var(--ink)',onclick:()=>openProject(p.id)},p.name)),
+        td(el('span',{class:'chip '+(pm.chip||'')},pm.label||'')),
+        td(p.category||''),
+        tdn(est||null,true),
+        td(el('button',{class:'btn ghost sm',title:'Put on the plan — seeds this year with the anticipated cost (adjust after)',onclick:()=>{
+          if(Number(p.anticipatedCost)>0){ p.planYears={[String(nowYear)]:Number(p.anticipatedCost)}; savePlanCells(p,'Scheduled into '+nowYear+' — adjust the years in the grid'); }
+          else openProject(p.id);
+        }},'Schedule ↴'))));
+    });
+    ut.append(utb);
+    ub.append(el('div',{style:'overflow:auto'},ut));
+  }
+  up.append(ub);
+  body.append(up);
+  return {bar,body};
+}
+
 function viewCash(){
   const bar=topbar('Money','Cash & Loans',
     el('button',{class:'btn accent',onclick:openAdjust},'+ Cash adjustment'));
@@ -4375,7 +4623,8 @@ function openPropertyEditor(code){
           field('Contract code (filenames)','contractCode',pr?pr.contractCode:'',{placeholder:'defaults to the property code'})),
     field('Owner entity (contracts)','ownerEntity',pr?pr.ownerEntity:''),
     field('Property address','address',pr?pr.address:''),
-    field('Owner notice address','ownerNoticeAddr',pr?pr.ownerNoticeAddr:''));
+    field('Owner notice address','ownerNoticeAddr',pr?pr.ownerNoticeAddr:''),
+    field('Plan horizon end year (blank = loan-due year from the cushion)','planEndYear',pr?pr.planEndYear:'',{type:'number',placeholder:'e.g. 2031'}));
   if(pr){
     b.append(el('div',{style:'margin-top:6px'},
       el('button',{class:'btn danger sm',onclick:async()=>{ if(!confirm(`Delete ${pr.code} — ${pr.name}? Blocked if it has projects, contracts or cash adjustments. Imported GL/cushion data is kept.`))return;
@@ -4384,7 +4633,8 @@ function openPropertyEditor(code){
   const save=async()=>{
     const payload={ code:pr?pr.code:f.code.value, name:f.name.value, region:f.region.value, manager:f.manager.value,
       portfolio:f.portfolio.value, color:f.color.value, contractCode:f.contractCode.value, ownerEntity:f.ownerEntity.value,
-      address:f.address.value, ownerNoticeAddr:f.ownerNoticeAddr.value, units:f.units.value, spBudget:f.spBudget.value };
+      address:f.address.value, ownerNoticeAddr:f.ownerNoticeAddr.value, units:f.units.value, spBudget:f.spBudget.value,
+      planEndYear:f.planEndYear.value };
     try{
       if(pr) await API.send('PATCH','/properties/'+pr.code,payload);
       else{

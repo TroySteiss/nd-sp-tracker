@@ -47,6 +47,12 @@ export interface Project {
   dateAdded?: string;
   plannedStart?: string;
   plannedEnd?: string;
+  /* Long-range plan (migration 028): planned $ per calendar year ("2026"...)
+     plus the "post" key = Post-Refi bucket. Planning overlay ONLY — never read
+     by cashModel/auditModel/projOutflow. */
+  planYears?: Record<string, number> | null;
+  planKind?: PlanKind | null;
+  lenderFlag?: string | null;
   bids?: Bid[];
   /* Contract revision (migration 024). Set when a bad contract is sent back to
      pre-approval: approval is withdrawn, the contract chain cleared, and the
@@ -102,6 +108,7 @@ export interface Property {
   address?: string;
   ownerNoticeAddr?: string;
   contractCode?: string;
+  planEndYear?: number | null;
   accretionPct?: number | null;
   avgMonthlyInterest?: number | null;
   includeAccretionInProj?: boolean | null;
@@ -386,6 +393,62 @@ export function shareFor(p: Project, code: string): number {
 export const involvesProp = (p: Project, code: string): boolean => allocsOf(p).some(a => a.property === code);
 /** This property's slice of the project outflow (= full outflow for unsplit projects). */
 export const projOutflowFor = (p: Project, code: string): number => projOutflow(p) * shareFor(p, code);
+
+/* ---------- Long-range plan (loan-term horizon, migration 028) ----------
+   The plan spreads a project's dollars across calendar years out to the
+   property's loan-due year, plus a "post" bucket for work deferred until cash
+   replenishes after refinance. It is a PLANNING OVERLAY: nothing here is read
+   by cashModel, auditModel or projOutflow, so adding a project to the plan
+   never changes reconciliation vs Yardi. */
+export const PLAN_POST = 'post';
+export type PlanKind = 'completion' | 'recurring';
+export const PLAN_KINDS: PlanKind[] = ['completion', 'recurring'];
+
+/** Valid keys only (4-digit year or "post"), positive finite amounts rounded
+    to cents. Returns null when nothing survives — "not on the plan". */
+export function normalizePlanYears(v: any): Record<string, number> | null {
+  if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
+  const out: Record<string, number> = {};
+  for (const k of Object.keys(v)) {
+    if (!/^\d{4}$/.test(k) && k !== PLAN_POST) continue;
+    const n = Number(v[k]);
+    if (!isFinite(n) || n <= 0) continue;
+    out[k] = Math.round(n * 100) / 100;
+  }
+  return Object.keys(out).length ? out : null;
+}
+export const onPlan = (p: Project): boolean => !!(p.planYears && Object.keys(p.planYears).some(k => Number((p.planYears as any)[k]) > 0));
+export const planFor = (p: Project, key: string): number => Number((p.planYears || ({} as any))[key]) || 0;
+export const planTotal = (p: Project): number => Object.values(p.planYears || {}).reduce((a: number, b: any) => a + (Number(b) || 0), 0);
+/** This property's slice of a plan bucket — splits share plan $ like costs. */
+export const planForProp = (p: Project, code: string, key: string): number => planFor(p, key) * shareFor(p, code);
+export const planTotalForProp = (p: Project, code: string): number => planTotal(p) * shareFor(p, code);
+export const lenderFlagged = (p: Project): boolean => !!(p.lenderFlag && String(p.lenderFlag).trim());
+
+/** Final plan year for a property: override → loan-due year (any 4-digit group
+    in the cushion's loan_due text) → nowYear+4 (a 5-column plan). Clamped to
+    [nowYear, nowYear+14] so a typo can't render 70 columns. */
+export function planHorizonEnd(prop: { planEndYear?: number | null } | undefined, snap: { loanDue?: string } | undefined, nowYear: number): number {
+  let end: number | null = null;
+  const o = Number(prop?.planEndYear);
+  if (o >= 2000 && o <= 2099) end = o;
+  if (end == null && snap?.loanDue) {
+    const m = String(snap.loanDue).match(/(\d{4})/);
+    if (m) end = +m[1];
+  }
+  if (end == null) end = nowYear + 4;
+  return Math.min(Math.max(end, nowYear), nowYear + 14);
+}
+/** Year columns for a property's plan grid: nowYear..endYear plus any data
+    years already scheduled (a past-year amount never silently disappears).
+    Returns 4-digit strings, ascending; the "post" bucket is rendered by the
+    caller after these. */
+export function planYearCols(projs: Project[], endYear: number, nowYear: number): string[] {
+  const ys = new Set<number>();
+  for (let y = nowYear; y <= endYear; y++) ys.add(y);
+  for (const p of projs) for (const k of Object.keys(p.planYears || {})) if (/^\d{4}$/.test(k)) ys.add(+k);
+  return [...ys].sort((a, b) => a - b).map(String);
+}
 
 export function cashAdjFor(state: AppState, code: string): number {
   return state.cashAdjustments.filter(a => a.property === code).reduce((a, b) => a + (Number(b.amount) || 0), 0);

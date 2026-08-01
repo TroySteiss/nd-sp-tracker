@@ -6,6 +6,8 @@ import {
   cashModel, auditModel, glMatchScore, glSpentFor, cashAdjFor,
   toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
   allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
+  PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
+  lenderFlagged, planHorizonEnd, planYearCols,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -268,5 +270,57 @@ describe('reference data (seed defaults — runtime source of truth is the prope
     expect(bcnd.region).toBe('Williston');
     expect(clnd.portfolio).toBe('Minot 4 Portfolio');
     expect(PROPERTIES.every((p) => p.region && p.manager && p.portfolio)).toBe(true);
+  });
+});
+
+describe('long-range plan (migration 028)', () => {
+  it('normalizePlanYears keeps 4-digit years and "post", drops junk, rounds to cents', () => {
+    expect(normalizePlanYears({ '2026': 75000, '2027': '25000.129', post: 50000, '26': 1, banana: 9, '2028': -5, '2029': 0 }))
+      .toEqual({ '2026': 75000, '2027': 25000.13, post: 50000 });
+    expect(normalizePlanYears({})).toBeNull();
+    expect(normalizePlanYears(null)).toBeNull();
+    expect(normalizePlanYears([1, 2])).toBeNull();
+    expect(normalizePlanYears({ '2026': 'abc' })).toBeNull();
+  });
+  it('onPlan / planFor / planTotal', () => {
+    const p = proj({ planYears: { '2026': 75000, '2027': 75000, post: 50000 } });
+    expect(onPlan(p)).toBe(true);
+    expect(onPlan(proj())).toBe(false);
+    expect(planFor(p, '2026')).toBe(75000);
+    expect(planFor(p, '2030')).toBe(0);
+    expect(planFor(p, PLAN_POST)).toBe(50000);
+    expect(planTotal(p)).toBe(200000);
+  });
+  it('split projects share plan dollars like costs', () => {
+    const p = proj({ planYears: { '2026': 100000 }, split: { mode: 'custom', list: [{ property: 'CLND', pct: 60 }, { property: 'SPND', pct: 40 }] } });
+    expect(planForProp(p, 'CLND', '2026')).toBe(60000);
+    expect(planForProp(p, 'SPND', '2026')).toBe(40000);
+    expect(planTotalForProp(p, 'SPND')).toBe(40000);
+  });
+  it('planHorizonEnd: override > loan-due year > now+4, clamped', () => {
+    expect(planHorizonEnd({ planEndYear: 2028 }, { loanDue: '12/1/2031' }, 2026)).toBe(2028);
+    expect(planHorizonEnd({}, { loanDue: '12/1/2031' }, 2026)).toBe(2031);           // 6-year loan → 6-year plan
+    expect(planHorizonEnd({}, { loanDue: '6/30/2027' }, 2026)).toBe(2027);           // 2 years left → 2-year plan
+    expect(planHorizonEnd({}, { loanDue: '2029-06-30' }, 2026)).toBe(2029);          // ISO text also parses
+    expect(planHorizonEnd({}, {}, 2026)).toBe(2030);                                 // no loan info → 5 columns
+    expect(planHorizonEnd(undefined, undefined, 2026)).toBe(2030);
+    expect(planHorizonEnd({}, { loanDue: '1/1/2020' }, 2026)).toBe(2026);            // past due clamps to now
+    expect(planHorizonEnd({}, { loanDue: '1/1/2099' }, 2026)).toBe(2040);            // typo clamps to now+14
+  });
+  it('planYearCols covers now..end plus any stray data years', () => {
+    const p = proj({ planYears: { '2024': 5000, '2027': 1000 } });
+    expect(planYearCols([p], 2028, 2026)).toEqual(['2024', '2026', '2027', '2028']);
+    expect(planYearCols([], 2027, 2026)).toEqual(['2026', '2027']);
+  });
+  it('lenderFlagged on non-blank flags only', () => {
+    expect(lenderFlagged(proj({ lenderFlag: 'Fannie' }))).toBe(true);
+    expect(lenderFlagged(proj({ lenderFlag: '  ' }))).toBe(false);
+    expect(lenderFlagged(proj())).toBe(false);
+  });
+  it('plan is a pure overlay — cash and audit models ignore it', () => {
+    const p = proj({ planYears: { '2026': 500000 }, steps: { approved: true }, anticipatedCost: 10000 });
+    const st = blankState({ projects: [p], cash: { CLND: { cash: 50000 } } });
+    expect(cashModel(st, 'CLND').outstandingTotal).toBe(10000);   // anticipated, NOT the plan
+    expect(cashModel(st, 'CLND').projectedCash).toBe(40000);
   });
 });

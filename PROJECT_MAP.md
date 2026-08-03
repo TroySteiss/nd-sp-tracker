@@ -276,9 +276,11 @@ parallel list), with three new columns on `projects`:
 
 - **`plan_years` jsonb** — planned $ per calendar year (`{"2026":75000,...}`)
   plus the special key **`"post"` = Post-Refi bucket** (work deferred until cash
-  replenishes after refinance). NULL = not on the plan. `normalizePlanYears`
+  replenishes after refinance). NULL = not explicitly scheduled. `normalizePlanYears`
   (domain.ts, applied on every write) keeps only 4-digit-year/"post" keys with
-  positive amounts, rounded to cents — an emptied plan stores NULL, not `{}`.
+  non-negative amounts, rounded to cents — an emptied plan stores NULL, not `{}`.
+  **An explicit ZERO is kept on purpose**: it means "deliberately nothing that
+  year" and is the opt-out from the auto layer below.
 - **`plan_kind`** — `'completion' | 'recurring'` (the tracker's "To Completion
   or Recurring?"). Recurring items still store explicit per-year amounts (the
   editor has a "fill every year" helper) because real recurring costs taper.
@@ -291,6 +293,19 @@ parallel list), with three new columns on `projects`:
 "tied out to loan term" requirement. `planYearCols` also resurrects stray data
 years so a past-year amount never silently disappears from the grid.
 
+**The auto layer — the live pipeline IS the plan's first year.** An open
+project (phase active / paid / discussed) that nobody has explicitly scheduled
+flows its projected spend into the CURRENT year automatically: `autoPlanAmount`
+= actual-else-anticipated cost (in-house budget mode: total to complete;
+quantity mode, hold, done, notes and ATL contribute nothing). All plan math
+goes through the `eff*` helpers (`effPlanFor/effPlanTotal/effPlanForProp/...`),
+which return explicit years when any are set, else the auto amount in the
+current year only. Setting ANY explicit year — including a 0 — takes the
+project off the auto layer; the grid materializes the current year at the auto
+amount on a project's first edit elsewhere, so "layer 1" survives spreading.
+Parking a project (hold) removes it from the plan; there is no other exclusion
+flag.
+
 **The plan is a pure overlay.** cashModel / auditModel / projOutflow never read
 `plan_years` (unit-tested), so scheduling $500K across five years changes no
 cash projection, GL tie-out, or update email. Splits share plan dollars exactly
@@ -298,21 +313,24 @@ like costs (`planForProp` = amount × `shareFor`), and ATL projects are excluded
 from the plan views entirely.
 
 **UI:** *Money ▸ Long-Range Plan* (all users; not `/pm`). Portfolio summary
-grid (row per property, click into it) → per-property plan grid with editable
-year cells (inline PATCH per cell; split projects are read-only there — edit
-full amounts in the project editor, which gained a "Long-range plan" panel) and
-an **Unscheduled / future items** section (the tracker's "Future SP Items"):
-open, ATL-free projects with no plan years; "Schedule ↴" seeds this year with
-the anticipated cost.
+grid (row per property, effective = explicit + auto, click into it) →
+per-property plan grid: explicitly scheduled rows first, then a divider and the
+auto rows ("this year's pipeline"), all with editable year cells (inline PATCH
+per cell; auto amounts render as italic placeholders; split projects are
+read-only there — edit full amounts in the project editor, which gained a
+"Long-range plan" panel). A **Not in the plan** section lists only on-hold and
+no-cost items; "Schedule ↴" seeds this year with the anticipated cost.
 
 **Excel export** (`src/plan-export.ts`, SheetJS): `GET /export/plan.xlsx` (all
 properties) or `?property=CODE`. Sheets: Summary (multi-property only) →
-per-property (TRMO column layout) → **Raw Data**. Show-your-work structure:
-Raw Data holds FULL project amounts as values; property-sheet year cells are
-formulas `'Raw Data'!cell × share-cell`, all totals are SUMs, and Summary
-references each property sheet's TOTAL row. Every formula cell also carries a
-cached value so the file previews before Excel recalculates. Don't "simplify"
-the formulas into hardcoded values — the reviewability is the point.
+per-property (TRMO column layout; auto rows are marked "Auto → <year>" and a
+"Plan source" column in Raw Data says plan/auto) → **Raw Data**.
+Show-your-work structure: Raw Data holds FULL effective amounts as values;
+property-sheet year cells are formulas `'Raw Data'!cell × share-cell`, all
+totals are SUMs, and Summary references each property sheet's TOTAL row. Every
+formula cell also carries a cached value so the file previews before Excel
+recalculates. Don't "simplify" the formulas into hardcoded values — the
+reviewability is the point.
 
 ## Contract revision — send a bad contract back (024)
 

@@ -249,12 +249,28 @@ function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&
    planYears: {"2026":75000,...,"post":50000} on a project — "post" = Post-Refi
    bucket. A planning overlay only: cashModel/auditModel never read it. */
 const PLAN_POST='post';
-const onPlan=p=>!!(p&&p.planYears&&Object.keys(p.planYears).some(k=>Number(p.planYears[k])>0));
+const onPlan=p=>!!(p&&p.planYears&&Object.keys(p.planYears).length);   // explicitly scheduled (zeros count)
 const planFor=(p,key)=>Number((p.planYears||{})[key])||0;
 const planTotal=p=>Object.values(p.planYears||{}).reduce((a,b)=>a+(Number(b)||0),0);
 const planForProp=(p,code,key)=>planFor(p,key)*shareFor(p,code);
 const planTotalForProp=(p,code)=>planTotal(p)*shareFor(p,code);
 const lenderFlagged=p=>!!(p.lenderFlag&&String(p.lenderFlag).trim());
+/* Auto layer: an open project (active/paid/discussed) nobody has scheduled
+   flows its projected spend into the CURRENT year — the live pipeline is the
+   plan's first layer. Any explicit plan year (a zero too) takes over. */
+function autoPlanAmount(p){
+  if(onPlan(p)||isATL(p))return 0;
+  const ph=phase(p);
+  if(ph!=='active'&&ph!=='paid'&&ph!=='discussed')return 0;
+  if(p.inHouse)return ihIsBudget(p)?ihTotal(p):0;
+  return projOutflow(p);
+}
+const nowYearStr=()=>String(new Date().getFullYear());
+const effPlanFor=(p,key)=>onPlan(p)?planFor(p,key):(key===nowYearStr()?autoPlanAmount(p):0);
+const effPlanTotal=p=>onPlan(p)?planTotal(p):autoPlanAmount(p);
+const effPlanForProp=(p,code,key)=>effPlanFor(p,key)*shareFor(p,code);
+const effPlanTotalForProp=(p,code)=>effPlanTotal(p)*shareFor(p,code);
+const inPlan=p=>onPlan(p)||autoPlanAmount(p)>0;
 /* Final plan year: property override → loan-due year (cushion) → now+4. */
 function planHorizonEnd(code){
   const nowYear=new Date().getFullYear();
@@ -1566,11 +1582,14 @@ function openProject(id,preset){
   function drawPlan(){
     planBody.innerHTML='';
     p.planYears=p.planYears||{};
-    const refreshPlanMeta=()=>{ planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':'not on the plan'; };
+    const refreshPlanMeta=()=>{ const au=autoPlanAmount(p);
+      planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':(au>0?'auto — '+fmt(au)+' → '+nowYearStr():'not in the plan'); };
     refreshPlanMeta();
     const years=[...new Set([...planYearColsFor(p.property),...Object.keys(p.planYears).filter(k=>/^\d{4}$/.test(k))])].sort();
     const keys=[...years,PLAN_POST];
+    const au0=autoPlanAmount(p);
     planBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
+      (au0>0?'Flowing '+fmt(au0)+' into '+nowYearStr()+' automatically (this year’s projected spend). Set any year below to take over the spread — a 0 means deliberately nothing that year. ':'')+
       'Spread the dollars across the years to '+PROP(p.property).code+'’s loan maturity (through '+planHorizonEnd(p.property)+'). Post-Refi = deferred until cash replenishes after refinance. Planning only — cash projections and GL tie-out are unaffected.'));
     const lab=(txt)=>el('label',{style:'display:block;font-size:11px;color:var(--ink-3);margin-bottom:3px'},txt);
     const seg=el('div',{class:'seg-ctl sm'},
@@ -1591,9 +1610,9 @@ function openProject(id,preset){
             drawPlan(); }},'Fill')))));
     const grid=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap'});
     keys.forEach(k=>{
-      const yInp=el('input',{type:'number',min:'0',step:'any',value:planFor(p,k)||'',placeholder:'—',style:'width:92px;text-align:right',
-        onchange:e=>{ const n=Number(e.target.value);
-          if(isFinite(n)&&n>0)p.planYears[k]=n; else delete p.planYears[k];
+      const yInp=el('input',{type:'number',min:'0',step:'any',value:(p.planYears&&k in p.planYears)?p.planYears[k]:'',placeholder:'—',style:'width:92px;text-align:right',
+        onchange:e=>{ const raw=e.target.value, n=Number(raw);
+          if(raw!==''&&isFinite(n)&&n>=0)p.planYears[k]=n; else delete p.planYears[k];
           refreshPlanMeta(); }});
       grid.append(el('div',{},lab(planYearLabel(k)),yInp));
     });
@@ -4014,14 +4033,24 @@ async function savePlanCells(p,msg){
   render(); if(msg)toast(msg);
 }
 function planCellInp(p,key){
-  return el('input',{type:'number',min:'0',step:'any',value:planFor(p,key)||'',placeholder:'—',
-    style:'width:88px;text-align:right;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)',
-    onchange:e=>{ const n=Number(e.target.value); p.planYears=p.planYears||{};
-      if(isFinite(n)&&n>0)p.planYears[key]=n; else delete p.planYears[key];
+  const explicit=p.planYears&&(key in p.planYears);
+  const auto=!onPlan(p)?autoPlanAmount(p):0;
+  const isNowCell=key===nowYearStr();
+  return el('input',{type:'number',min:'0',step:'any',
+    value:explicit?p.planYears[key]:'',
+    placeholder:(auto>0&&isNowCell)?String(Math.round(auto)):'—',
+    title:(auto>0&&isNowCell)?'Auto — this year’s projected spend flows through by default. Type an amount to take over (0 = deliberately nothing this year).':'',
+    style:'width:88px;text-align:right;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)'+((auto>0&&isNowCell)?';font-style:italic':''),
+    onchange:e=>{ const raw=e.target.value, n=Number(raw); p.planYears=p.planYears||{};
+      // First explicit edit of an auto project: keep layer 1 — materialize the
+      // current year at the auto amount before applying the edit elsewhere.
+      if(auto>0&&!isNowCell)p.planYears[nowYearStr()]=auto;
+      if(raw!==''&&isFinite(n)&&n>=0)p.planYears[key]=n; else delete p.planYears[key];
       savePlanCells(p); }});
 }
 function planChips(p){
   const w=el('span',{style:'display:inline-flex;gap:4px;flex-wrap:wrap'});
+  if(!onPlan(p)&&autoPlanAmount(p)>0)w.append(el('span',{class:'chip',title:'Auto — this year’s projected spend flows into '+nowYearStr()+' until scheduled'},'auto'));
   if(lenderFlagged(p))w.append(el('span',{class:'chip',style:'background:var(--wheat-soft);color:var(--wheat-d)',title:'Lender-required item'},'🏦 '+String(p.lenderFlag).trim()));
   if(p.planKind==='recurring')w.append(el('span',{class:'chip',title:'Recurring — repeats each year'},'↻'));
   if(p.inHouse)w.append(el('span',{class:'chip',title:'In-house'},'🛠'));
@@ -4039,18 +4068,18 @@ function planSummary(){
   const t=el('table',{class:'tbl'});
   const hd=tr(th('Property'),th('Loan due'),th('Through'));
   cols.forEach(y=>hd.append(th(planYearLabel(y),'r')));
-  hd.append(th('Post-Refi','r'),th('Plan total','r'),th('Unscheduled est.','r'));
+  hd.append(th('Post-Refi','r'),th('Plan total','r'),th('Not in plan est.','r'));
   t.append(el('thead',{},hd));
   const tb=el('tbody');
   const totals={}; let gTot=0,gUn=0;
   propsByRegion().forEach(pr=>{
     const code=pr.code;
     const projs=projForProp(code).filter(p=>!isATL(p));
-    const sched=projs.filter(onPlan);
-    const unsched=projs.filter(p=>!onPlan(p)&&phase(p)!=='done');
+    const planned=projs.filter(inPlan);   // explicit + auto (this year's pipeline)
+    const notIn=projs.filter(p=>!inPlan(p)&&phase(p)!=='done');   // hold / no-cost only
     const end=planHorizonEnd(code);
-    const rowTot=sched.reduce((a,p)=>a+planTotalForProp(p,code),0);
-    const unTot=unsched.reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0);
+    const rowTot=planned.reduce((a,p)=>a+effPlanTotalForProp(p,code),0);
+    const unTot=notIn.reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0);
     gTot+=rowTot; gUn+=unTot;
     const row=tr(
       td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},propChip(code),el('span',{},pr.name))),
@@ -4058,11 +4087,11 @@ function planSummary(){
       td(String(end)));
     cols.forEach(y=>{
       const inH=+y<=end;
-      const v=sched.reduce((a,p)=>a+planForProp(p,code,y),0);
+      const v=planned.reduce((a,p)=>a+effPlanForProp(p,code,y),0);
       totals[y]=(totals[y]||0)+v;
       row.append(el('td',{class:'num r',style:inH?'':'opacity:.35'},v?fmt(v):(inH?'—':'')));
     });
-    const vPost=sched.reduce((a,p)=>a+planForProp(p,code,PLAN_POST),0);
+    const vPost=planned.reduce((a,p)=>a+effPlanForProp(p,code,PLAN_POST),0);
     totals[PLAN_POST]=(totals[PLAN_POST]||0)+vPost;
     row.append(tdn(vPost||null,true), td(el('strong',{},fmt(rowTot)),'r'), tdn(unTot||null,true));
     row.style.cursor='pointer';
@@ -4077,7 +4106,7 @@ function planSummary(){
   panel.append(el('div',{style:'overflow:auto'},t));
   body.append(panel);
   body.append(el('p',{style:'color:var(--ink-3);font-size:12px;margin-top:10px'},
-    'Each property’s plan runs from this year to its loan-due year (override it per property in Settings) plus a Post-Refi bucket — a shorter remaining loan term means a shorter plan. Click a property to schedule its items. Plan dollars are planning figures only: cash projections, GL tie-out and update emails are unaffected.'));
+    'Each property’s plan runs from this year to its loan-due year (override it per property in Settings) plus a Post-Refi bucket — a shorter remaining loan term means a shorter plan. This year’s open items flow their projected spend into the current-year column automatically; scheduling a project takes over its spread. Click a property to schedule its items. Plan dollars are planning figures only: cash projections, GL tie-out and update emails are unaffected.'));
   return {bar,body};
 }
 function planDetail(code){
@@ -4086,10 +4115,13 @@ function planDetail(code){
   const end=planHorizonEnd(code);
   const keys=[...planYearColsFor(code),PLAN_POST];
   const projs=projForProp(code).filter(p=>!isATL(p));
-  const sched=projs.filter(onPlan).sort((a,b)=>planTotalForProp(b,code)-planTotalForProp(a,code));
-  const unsched=projs.filter(p=>!onPlan(p)&&phase(p)!=='done').sort((a,b)=>(Number(b.anticipatedCost)||0)-(Number(a.anticipatedCost)||0));
+  const sched=projs.filter(onPlan).sort((a,b)=>effPlanTotalForProp(b,code)-effPlanTotalForProp(a,code));
+  const auto=projs.filter(p=>inPlan(p)&&!onPlan(p)).sort((a,b)=>effPlanTotalForProp(b,code)-effPlanTotalForProp(a,code));
+  const gridRows=[...sched,...auto];
+  const notIn=projs.filter(p=>!inPlan(p)&&phase(p)!=='done').sort((a,b)=>(Number(b.anticipatedCost)||0)-(Number(a.anticipatedCost)||0));
   const snap=S.cash[code]||{};
-  const planT=sched.reduce((a,p)=>a+planTotalForProp(p,code),0);
+  const planT=gridRows.reduce((a,p)=>a+effPlanTotalForProp(p,code),0);
+  const autoT=auto.reduce((a,p)=>a+effPlanTotalForProp(p,code),0);
   const bar=topbar('Money · Long-Range Plan', code+' — '+pr.name,
     el('button',{class:'btn ghost sm',onclick:()=>{PLANV.prop='';render();}},'‹ All properties'),
     planExcelBtn(code),
@@ -4099,8 +4131,9 @@ function planDetail(code){
   body.append(el('div',{class:'panel pad',style:'display:flex;gap:22px;flex-wrap:wrap;align-items:center'},
     stat('Loan due',snap.loanDue||'—'),
     stat('Plan horizon',nowYear+'–'+end+' + Post-Refi'),
-    stat('Items on plan',String(sched.length)),
-    stat('Plan total ('+code+' share)',fmt(planT))));
+    stat('Items in plan',String(gridRows.length)),
+    stat('Plan total ('+code+' share)',fmt(planT)),
+    stat('Auto from this year’s pipeline',fmt(autoT))));
   const panel=el('div',{class:'panel',style:'margin-top:14px'});
   panel.append(el('div',{class:'ph'},el('h3',{},'Plan grid'),el('div',{class:'sp'}),el('span',{class:'chip'},'amounts = '+code+'’s share')));
   const t=el('table',{class:'tbl'});
@@ -4109,37 +4142,45 @@ function planDetail(code){
   hd.append(th('Total','r'),th('Est. cost','r'),th('Actual','r'));
   t.append(el('thead',{},hd));
   const tb=el('tbody');
-  sched.forEach(p=>{
+  const gridRow=p=>{
     const split=isSplitP(p), share=shareFor(p,code);
     const row=tr(
       td(el('a',{href:'javascript:void 0',style:'font-weight:600;color:var(--ink)',onclick:()=>openProject(p.id)},p.name)),
       td(planChips(p)));
     keys.forEach(k=>{
-      if(split){ const v=planForProp(p,code,k); row.append(el('td',{class:'num r',title:'Shared project — '+Math.round(share*100)+'% shown'},v?fmt(v):'—')); }
+      if(split){ const v=effPlanForProp(p,code,k); row.append(el('td',{class:'num r',title:'Shared project — '+Math.round(share*100)+'% shown'},v?fmt(v):'—')); }
       else row.append(td(planCellInp(p,k),'r'));
     });
-    row.append(td(el('strong',{},fmt(planTotalForProp(p,code))),'r'),
+    row.append(td(el('strong',{},fmt(effPlanTotalForProp(p,code))),'r'),
       tdn(p.anticipatedCost!=null?Number(p.anticipatedCost)*share:null,true),
       tdn(p.actualCost!=null?Number(p.actualCost)*share:null,true));
     tb.append(row);
-  });
-  if(!sched.length)tb.append(tr(td(el('span',{style:'color:var(--ink-3)'},'Nothing scheduled yet — use “Schedule” below, or ＋ New plan item.'))));
+  };
+  sched.forEach(gridRow);
+  if(auto.length){
+    tb.append(tr(el('td',{colspan:String(keys.length+5),style:'background:var(--panel);color:var(--ink-3);font-size:11.5px;padding:5px 10px'},
+      '⤵ This year’s pipeline — projected spend flows into '+nowYear+' automatically until you schedule it (type an amount in any year to take over; 0 = nothing this year)')));
+    auto.forEach(gridRow);
+  }
+  if(!gridRows.length)tb.append(tr(td(el('span',{style:'color:var(--ink-3)'},'Nothing in the plan yet — open items flow in automatically once they carry a cost, or use ＋ New plan item.'))));
   const trow=tr(td(el('strong',{},'TOTAL')),td(''));
-  keys.forEach(k=>{ const v=sched.reduce((a,p)=>a+planForProp(p,code,k),0); trow.append(td(el('strong',{},fmt(v)),'r')); });
+  keys.forEach(k=>{ const v=gridRows.reduce((a,p)=>a+effPlanForProp(p,code,k),0); trow.append(td(el('strong',{},fmt(v)),'r')); });
   trow.append(td(el('strong',{},fmt(planT)),'r'),td(''),td(''));
   tb.append(trow);
   t.append(tb);
   panel.append(el('div',{style:'overflow:auto'},t));
   body.append(panel);
   const up=el('div',{class:'panel',style:'margin-top:14px'});
-  up.append(el('div',{class:'ph'},el('h3',{},'Unscheduled / future items'),el('div',{class:'sp'}),el('span',{class:'chip'},String(unsched.length))));
+  up.append(el('div',{class:'ph'},el('h3',{},'Not in the plan'),el('div',{class:'sp'}),el('span',{class:'chip'},String(notIn.length))));
   const ub=el('div',{class:'pad'});
-  if(!unsched.length)ub.append(el('span',{style:'color:var(--ink-3);font-size:12.5px'},'Every open project at '+code+' is on the plan.'));
+  if(!notIn.length)ub.append(el('span',{style:'color:var(--ink-3);font-size:12.5px'},'Every open project at '+code+' is in the plan — this year’s items flow in automatically.'));
   else{
+    ub.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
+      'On-hold projects and notes without a cost don’t flow into the plan automatically. “Schedule” puts one on the plan by hand.'));
     const ut=el('table',{class:'tbl'});
     ut.append(el('thead',{},tr(th('Item'),th('Status'),th('Category'),th('Est. cost','r'),th(''))));
     const utb=el('tbody');
-    unsched.forEach(p=>{
+    notIn.forEach(p=>{
       const est=(Number(p.anticipatedCost)||0)*shareFor(p,code);
       const pm=phaseMeta(phase(p))||{};
       utb.append(tr(

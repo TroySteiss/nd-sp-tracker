@@ -404,26 +404,56 @@ export const PLAN_POST = 'post';
 export type PlanKind = 'completion' | 'recurring';
 export const PLAN_KINDS: PlanKind[] = ['completion', 'recurring'];
 
-/** Valid keys only (4-digit year or "post"), positive finite amounts rounded
-    to cents. Returns null when nothing survives — "not on the plan". */
+/** Valid keys only (4-digit year or "post"), non-negative finite amounts
+    rounded to cents. An EXPLICIT ZERO is kept — it means "deliberately nothing
+    this year" and switches the project off the auto layer (see below). Returns
+    null when nothing survives — "not explicitly on the plan". */
 export function normalizePlanYears(v: any): Record<string, number> | null {
   if (!v || typeof v !== 'object' || Array.isArray(v)) return null;
   const out: Record<string, number> = {};
   for (const k of Object.keys(v)) {
     if (!/^\d{4}$/.test(k) && k !== PLAN_POST) continue;
     const n = Number(v[k]);
-    if (!isFinite(n) || n <= 0) continue;
+    if (!isFinite(n) || n < 0) continue;
     out[k] = Math.round(n * 100) / 100;
   }
   return Object.keys(out).length ? out : null;
 }
-export const onPlan = (p: Project): boolean => !!(p.planYears && Object.keys(p.planYears).some(k => Number((p.planYears as any)[k]) > 0));
+/** Explicitly scheduled (any plan-year key, zeros included). */
+export const onPlan = (p: Project): boolean => !!(p.planYears && Object.keys(p.planYears).length);
 export const planFor = (p: Project, key: string): number => Number((p.planYears || ({} as any))[key]) || 0;
 export const planTotal = (p: Project): number => Object.values(p.planYears || {}).reduce((a: number, b: any) => a + (Number(b) || 0), 0);
 /** This property's slice of a plan bucket — splits share plan $ like costs. */
 export const planForProp = (p: Project, code: string, key: string): number => planFor(p, key) * shareFor(p, code);
 export const planTotalForProp = (p: Project, code: string): number => planTotal(p) * shareFor(p, code);
 export const lenderFlagged = (p: Project): boolean => !!(p.lenderFlag && String(p.lenderFlag).trim());
+
+/* ---- The auto layer: the tracker's live pipeline IS the plan's first year.
+   An open project (active / paid / discussed) that nobody has explicitly
+   scheduled flows its projected spend into the CURRENT year by default —
+   "all items in this year and projected spend flow through to 2026". Setting
+   ANY explicit plan year (a zero counts) takes the project off the auto layer:
+   from then on the spread is exactly what was typed. Hold, done, notes,
+   quantity-tracked in-house and ATL projects contribute nothing. */
+export function autoPlanAmount(p: Project): number {
+  if (onPlan(p) || isAboveLine(p)) return 0;
+  const ph = phase(p);
+  if (ph !== 'active' && ph !== 'paid' && ph !== 'discussed') return 0;
+  if (p.inHouse) return ihIsBudget(p) ? ihTotal(p) : 0;
+  return projOutflow(p);
+}
+/** Effective plan $ for a bucket: explicit years win; otherwise the auto
+    amount lands in the current year only. */
+export const effPlanFor = (p: Project, key: string, nowYear: number): number =>
+  onPlan(p) ? planFor(p, key) : (key === String(nowYear) ? autoPlanAmount(p) : 0);
+export const effPlanTotal = (p: Project, nowYear: number): number =>
+  onPlan(p) ? planTotal(p) : autoPlanAmount(p);
+export const effPlanForProp = (p: Project, code: string, key: string, nowYear: number): number =>
+  effPlanFor(p, key, nowYear) * shareFor(p, code);
+export const effPlanTotalForProp = (p: Project, code: string, nowYear: number): number =>
+  effPlanTotal(p, nowYear) * shareFor(p, code);
+/** In the plan at all — explicitly scheduled or riding the auto layer. */
+export const inPlan = (p: Project): boolean => onPlan(p) || autoPlanAmount(p) > 0;
 
 /** Final plan year for a property: override → loan-due year (any 4-digit group
     in the cushion's loan_due text) → nowYear+4 (a 5-column plan). Clamped to

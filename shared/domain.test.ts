@@ -8,6 +8,7 @@ import {
   allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planHorizonEnd, planYearCols,
+  autoPlanAmount, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -276,7 +277,7 @@ describe('reference data (seed defaults — runtime source of truth is the prope
 describe('long-range plan (migration 028)', () => {
   it('normalizePlanYears keeps 4-digit years and "post", drops junk, rounds to cents', () => {
     expect(normalizePlanYears({ '2026': 75000, '2027': '25000.129', post: 50000, '26': 1, banana: 9, '2028': -5, '2029': 0 }))
-      .toEqual({ '2026': 75000, '2027': 25000.13, post: 50000 });
+      .toEqual({ '2026': 75000, '2027': 25000.13, post: 50000, '2029': 0 });   // explicit zero KEPT — it opts out of the auto layer
     expect(normalizePlanYears({})).toBeNull();
     expect(normalizePlanYears(null)).toBeNull();
     expect(normalizePlanYears([1, 2])).toBeNull();
@@ -322,5 +323,42 @@ describe('long-range plan (migration 028)', () => {
     const st = blankState({ projects: [p], cash: { CLND: { cash: 50000 } } });
     expect(cashModel(st, 'CLND').outstandingTotal).toBe(10000);   // anticipated, NOT the plan
     expect(cashModel(st, 'CLND').projectedCash).toBe(40000);
+  });
+});
+
+describe('auto layer — the live pipeline is the plan\'s first year', () => {
+  it('open projects flow projected spend into the current year by default', () => {
+    const disc = proj({ anticipatedCost: 50000 });                                 // discussed
+    const act = proj({ anticipatedCost: 80000, actualCost: 75000, steps: { approved: true } });
+    expect(autoPlanAmount(disc)).toBe(50000);
+    expect(autoPlanAmount(act)).toBe(75000);                                       // actual overrides anticipated
+    expect(effPlanFor(disc, '2026', 2026)).toBe(50000);
+    expect(effPlanFor(disc, '2027', 2026)).toBe(0);                                // auto lands in the current year only
+    expect(effPlanTotal(disc, 2026)).toBe(50000);
+    expect(inPlan(disc)).toBe(true);
+    expect(onPlan(disc)).toBe(false);
+  });
+  it('hold, done, notes, quantity in-house and ATL contribute nothing', () => {
+    expect(autoPlanAmount(proj({ anticipatedCost: 50000, onHold: true }))).toBe(0);
+    expect(autoPlanAmount(proj({ anticipatedCost: 50000, steps: { completed: true } }))).toBe(0);
+    expect(autoPlanAmount(proj({}))).toBe(0);                                      // note — no cost
+    expect(autoPlanAmount(proj({ inHouse: true, ihUnit: 'quantity', totalToComplete: 40 }))).toBe(0);
+    expect(autoPlanAmount(proj({ name: 'Above the Line paint', anticipatedCost: 9000 }))).toBe(0);
+    expect(autoPlanAmount(proj({ inHouse: true, totalToComplete: 30000, amountCompleted: 5000 }))).toBe(30000); // budget in-house = total
+  });
+  it('any explicit plan year takes the project off the auto layer — a zero too', () => {
+    const spread = proj({ anticipatedCost: 375000, planYears: { '2027': 75000 } });
+    expect(autoPlanAmount(spread)).toBe(0);
+    expect(effPlanFor(spread, '2026', 2026)).toBe(0);                              // explicit spread wins entirely
+    expect(effPlanFor(spread, '2027', 2026)).toBe(75000);
+    const zeroed = proj({ anticipatedCost: 375000, planYears: { '2026': 0 } });
+    expect(onPlan(zeroed)).toBe(true);
+    expect(effPlanTotal(zeroed, 2026)).toBe(0);                                    // deliberately nothing this year
+    expect(inPlan(zeroed)).toBe(true);
+  });
+  it('share-weights like everything else', () => {
+    const p = proj({ anticipatedCost: 100000, split: { mode: 'custom', list: [{ property: 'CLND', pct: 60 }, { property: 'SPND', pct: 40 }] } });
+    expect(effPlanForProp(p, 'SPND', '2026', 2026)).toBe(40000);
+    expect(effPlanTotalForProp(p, 'CLND', 2026)).toBe(60000);
   });
 });

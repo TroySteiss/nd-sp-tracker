@@ -293,18 +293,21 @@ parallel list), with three new columns on `projects`:
 "tied out to loan term" requirement. `planYearCols` also resurrects stray data
 years so a past-year amount never silently disappears from the grid.
 
-**The auto layer — the live pipeline IS the plan's first year.** An open
+**The auto layer — the live pipeline IS the plan's first layer.** An open
 project (phase active / paid / discussed) that nobody has explicitly scheduled
-flows its projected spend into the CURRENT year automatically: `autoPlanAmount`
+flows its projected spend into ONE year automatically: `autoPlanAmount`
 = actual-else-anticipated cost (in-house budget mode: total to complete;
-quantity mode, hold, done, notes and ATL contribute nothing). All plan math
-goes through the `eff*` helpers (`effPlanFor/effPlanTotal/effPlanForProp/...`),
-which return explicit years when any are set, else the auto amount in the
-current year only. Setting ANY explicit year — including a 0 — takes the
-project off the auto layer; the grid materializes the current year at the auto
-amount on a project's first edit elsewhere, so "layer 1" survives spreading.
-Parking a project (hold) removes it from the plan; there is no other exclusion
-flag.
+quantity mode, hold, done, notes and ATL contribute nothing), landing in
+`autoPlanYear` = the **planned-end year** ("planned end in 2026 → all cost in
+2026"), floored at the current year when the end date is missing or past.
+`planYearCols` always includes the auto year, so an end date past the loan
+horizon still gets a visible column. All plan math goes through the `eff*`
+helpers (`effPlanFor/effPlanTotal/effPlanForProp/...`), which return explicit
+years when any are set, else the auto amount in the auto year only. Setting ANY
+explicit year — including a 0 — takes the project off the auto layer; the grid
+materializes the auto year at the auto amount on a project's first edit
+elsewhere, so "layer 1" survives spreading. Parking a project (hold) removes it
+from the plan; there is no other exclusion flag.
 
 **The plan is a pure overlay.** cashModel / auditModel / projOutflow never read
 `plan_years` (unit-tested), so scheduling $500K across five years changes no

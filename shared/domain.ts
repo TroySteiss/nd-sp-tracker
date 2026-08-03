@@ -442,10 +442,18 @@ export function autoPlanAmount(p: Project): number {
   if (p.inHouse) return ihIsBudget(p) ? ihTotal(p) : 0;
   return projOutflow(p);
 }
+/** The year an auto project's cost lands in: the planned-end year ("if planned
+    end is in 2026, all project cost goes to 2026"), floored at the current year
+    when the end date is missing or already past. */
+export function autoPlanYear(p: Project, nowYear: number): string {
+  const m = String(p.plannedEnd || '').match(/^(\d{4})/);
+  const y = m ? +m[1] : 0;
+  return String(y > nowYear ? y : nowYear);
+}
 /** Effective plan $ for a bucket: explicit years win; otherwise the auto
-    amount lands in the current year only. */
+    amount lands in the planned-end year (current year at earliest). */
 export const effPlanFor = (p: Project, key: string, nowYear: number): number =>
-  onPlan(p) ? planFor(p, key) : (key === String(nowYear) ? autoPlanAmount(p) : 0);
+  onPlan(p) ? planFor(p, key) : (key === autoPlanYear(p, nowYear) ? autoPlanAmount(p) : 0);
 export const effPlanTotal = (p: Project, nowYear: number): number =>
   onPlan(p) ? planTotal(p) : autoPlanAmount(p);
 export const effPlanForProp = (p: Project, code: string, key: string, nowYear: number): number =>
@@ -476,7 +484,12 @@ export function planHorizonEnd(prop: { planEndYear?: number | null } | undefined
 export function planYearCols(projs: Project[], endYear: number, nowYear: number): string[] {
   const ys = new Set<number>();
   for (let y = nowYear; y <= endYear; y++) ys.add(y);
-  for (const p of projs) for (const k of Object.keys(p.planYears || {})) if (/^\d{4}$/.test(k)) ys.add(+k);
+  for (const p of projs) {
+    for (const k of Object.keys(p.planYears || {})) if (/^\d{4}$/.test(k)) ys.add(+k);
+    // An auto project ending past the horizon still needs its column — its
+    // dollars land in the planned-end year and must never be invisible.
+    if (!onPlan(p) && autoPlanAmount(p) > 0) ys.add(+autoPlanYear(p, nowYear));
+  }
   return [...ys].sort((a, b) => a - b).map(String);
 }
 

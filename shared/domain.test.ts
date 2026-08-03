@@ -8,7 +8,7 @@ import {
   allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planHorizonEnd, planYearCols,
-  autoPlanAmount, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
+  autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -333,10 +333,25 @@ describe('auto layer — the live pipeline is the plan\'s first year', () => {
     expect(autoPlanAmount(disc)).toBe(50000);
     expect(autoPlanAmount(act)).toBe(75000);                                       // actual overrides anticipated
     expect(effPlanFor(disc, '2026', 2026)).toBe(50000);
-    expect(effPlanFor(disc, '2027', 2026)).toBe(0);                                // auto lands in the current year only
+    expect(effPlanFor(disc, '2027', 2026)).toBe(0);                                // auto lands in one year only
     expect(effPlanTotal(disc, 2026)).toBe(50000);
     expect(inPlan(disc)).toBe(true);
     expect(onPlan(disc)).toBe(false);
+  });
+  it('auto cost lands in the planned-end year, current year at earliest', () => {
+    const thisYr = proj({ anticipatedCost: 40000, plannedEnd: '2026-11-30' });
+    const future = proj({ anticipatedCost: 90000, plannedEnd: '2028-06-30' });
+    const past = proj({ anticipatedCost: 20000, plannedEnd: '2024-01-15' });
+    expect(autoPlanYear(thisYr, 2026)).toBe('2026');
+    expect(autoPlanYear(future, 2026)).toBe('2028');
+    expect(autoPlanYear(past, 2026)).toBe('2026');                                 // past end date floors to now
+    expect(autoPlanYear(proj({ anticipatedCost: 1 }), 2026)).toBe('2026');         // no end date
+    expect(effPlanFor(thisYr, '2026', 2026)).toBe(40000);                          // "ends 2026 → all cost in 2026"
+    expect(effPlanFor(future, '2028', 2026)).toBe(90000);
+    expect(effPlanFor(future, '2026', 2026)).toBe(0);
+    expect(effPlanTotal(future, 2026)).toBe(90000);
+    // the auto year always gets a column, even past the loan horizon
+    expect(planYearCols([future], 2027, 2026)).toEqual(['2026', '2027', '2028']);
   });
   it('hold, done, notes, quantity in-house and ATL contribute nothing', () => {
     expect(autoPlanAmount(proj({ anticipatedCost: 50000, onHold: true }))).toBe(0);

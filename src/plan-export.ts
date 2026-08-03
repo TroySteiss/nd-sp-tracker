@@ -3,7 +3,7 @@ import {
   type AppState, type Project, type Property,
   PLAN_POST, onPlan, planTotal, shareFor, involvesProp, isSplit, allocsOf,
   planHorizonEnd, planYearCols, isAboveLine, phase, phaseMeta,
-  autoPlanAmount, effPlanFor, effPlanTotal, inPlan,
+  autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, inPlan,
 } from '../shared/domain.js';
 
 /* =============================================================================
@@ -77,7 +77,7 @@ export function buildPlanWorkbook(state: AppState, codes: string[], now: Date): 
   const raw: XLSX.WorkSheet = {};
   const RAW_META = ['Lead property', 'Split shares', 'Project ID', 'Project', 'Category', 'Lender flag', 'Kind', 'Plan source', 'In-house / Contractor', 'Contractor', 'Next steps', 'Status', 'Anticipated cost', 'Actual cost'];
   const RAW_Y0 = RAW_META.length;                       // first year column
-  setCell(raw, 0, 0, txt('RAW DATA — full project amounts (not share-weighted). Property sheets multiply these by each property’s share, so a split project’s slices are reviewable. "auto" rows have no explicit schedule: their projected spend (actual, else anticipated cost) flows into the current year by default.'));
+  setCell(raw, 0, 0, txt('RAW DATA — full project amounts (not share-weighted). Property sheets multiply these by each property’s share, so a split project’s slices are reviewable. "auto" rows have no explicit schedule: their projected spend (actual, else anticipated cost) flows into the planned-end year (current year at earliest) by default.'));
   RAW_META.forEach((h, i) => setCell(raw, 2, i, txt(h)));
   unionKeys.forEach((k, i) => setCell(raw, 2, RAW_Y0 + i, txt(yearLabel(k, nowYear))));
   const RAW_ANT = RAW_META.indexOf('Anticipated cost'), RAW_ACT = RAW_META.indexOf('Actual cost');
@@ -93,7 +93,7 @@ export function buildPlanWorkbook(state: AppState, codes: string[], now: Date): 
     setCell(raw, r, 4, txt(p.category));
     setCell(raw, r, 5, txt(p.lenderFlag || ''));
     setCell(raw, r, 6, txt(p.planKind === 'recurring' ? 'Recurring' : p.planKind === 'completion' ? 'To completion' : ''));
-    setCell(raw, r, 7, txt(onPlan(p) ? 'plan' : autoPlanAmount(p) > 0 ? `auto → ${nowYear}` : ''));
+    setCell(raw, r, 7, txt(onPlan(p) ? 'plan' : autoPlanAmount(p) > 0 ? `auto → ${autoPlanYear(p, nowYear)}` : ''));
     setCell(raw, r, 8, txt(p.inHouse ? 'In-house' : 'Contractor'));
     setCell(raw, r, 9, txt(p.contractor || ''));
     setCell(raw, r, 10, txt(p.actionItem || ''));
@@ -140,7 +140,7 @@ export function buildPlanWorkbook(state: AppState, codes: string[], now: Date): 
       setCell(ws, r, PC.desc, txt(p.name + (isSplit(p) ? '  ⇄' : '')));
       setCell(ws, r, PC.lender, txt(p.lenderFlag || ''));
       setCell(ws, r, PC.who, txt(p.inHouse ? 'In-house' : 'Contractor'));
-      setCell(ws, r, PC.kind, txt(isAuto ? `Auto → ${nowYear}` : p.planKind === 'recurring' ? 'Recurring' : 'Completion'));
+      setCell(ws, r, PC.kind, txt(isAuto ? `Auto → ${autoPlanYear(p, nowYear)}` : p.planKind === 'recurring' ? 'Recurring' : 'Completion'));
       setCell(ws, r, PC.cat, txt(p.category));
       setCell(ws, r, PC.status, txt(statusOf(p)));
       setCell(ws, r, PC.ctr, txt(p.contractor || ''));

@@ -266,7 +266,10 @@ function autoPlanAmount(p){
   return projOutflow(p);
 }
 const nowYearStr=()=>String(new Date().getFullYear());
-const effPlanFor=(p,key)=>onPlan(p)?planFor(p,key):(key===nowYearStr()?autoPlanAmount(p):0);
+/* Auto cost lands in the planned-end year ("ends 2026 → all cost in 2026"),
+   floored at the current year when the end date is missing or past. */
+function autoPlanYear(p){ const m=String(p.plannedEnd||'').match(/^(\d{4})/); const y=m?+m[1]:0; const nw=+nowYearStr(); return String(y>nw?y:nw); }
+const effPlanFor=(p,key)=>onPlan(p)?planFor(p,key):(key===autoPlanYear(p)?autoPlanAmount(p):0);
 const effPlanTotal=p=>onPlan(p)?planTotal(p):autoPlanAmount(p);
 const effPlanForProp=(p,code,key)=>effPlanFor(p,key)*shareFor(p,code);
 const effPlanTotalForProp=(p,code)=>effPlanTotal(p)*shareFor(p,code);
@@ -286,7 +289,10 @@ function planHorizonEnd(code){
 function planYearColsFor(code){
   const nowYear=new Date().getFullYear();
   const ys=new Set(); for(let y=nowYear;y<=planHorizonEnd(code);y++)ys.add(y);
-  projForProp(code).forEach(p=>Object.keys(p.planYears||{}).forEach(k=>{ if(/^\d{4}$/.test(k))ys.add(+k); }));
+  projForProp(code).forEach(p=>{
+    Object.keys(p.planYears||{}).forEach(k=>{ if(/^\d{4}$/.test(k))ys.add(+k); });
+    if(!onPlan(p)&&autoPlanAmount(p)>0)ys.add(+autoPlanYear(p));   // auto dollars always get a column
+  });
   return [...ys].sort((a,b)=>a-b).map(String);
 }
 const planYearLabel=(key)=>{ if(key===PLAN_POST)return 'Post-Refi';
@@ -1442,6 +1448,7 @@ function openProject(id,preset){
       if(typeof refreshNC==='function')refreshNC();
       if(typeof refreshGenPanel==='function')refreshGenPanel();
       if(typeof drawSplit==='function')drawSplit();
+      if(typeof drawPlan==='function')drawPlan();   // auto plan amount follows the cost
     });
     return n;};
   const propSel=el('select',{onchange:e=>{
@@ -1466,10 +1473,13 @@ function openProject(id,preset){
   core.append(el('div',{class:'frow'},
     f('Contractor',ctrInp('contractor','contractor-dl-proj',{placeholder:'Awarded / leading contractor'})),
     f('Current action item',inp('actionItem',{placeholder:'Next step / who owns it'}))));
+  // The auto plan year follows the planned-end date — redraw the plan panel on change.
+  const plannedEndInp=inp('plannedEnd',{type:'date'});
+  plannedEndInp.addEventListener('change',()=>{ if(typeof drawPlan==='function')drawPlan(); });
   core.append(el('div',{class:'frow3'},
     f('Date added',inp('dateAdded',{type:'date'})),
     f('Planned start',inp('plannedStart',{type:'date'})),
-    f('Planned end',inp('plannedEnd',{type:'date'}))));
+    f('Planned end',plannedEndInp)));
   // mode-specific cost block
   const contractorCost=el('div',{class:'frow'},
     f('Anticipated cost',costInp('anticipatedCost')),
@@ -1585,7 +1595,7 @@ function openProject(id,preset){
     planBody.innerHTML='';
     p.planYears=p.planYears||{};
     const refreshPlanMeta=()=>{ const au=autoPlanAmount(p);
-      planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':(au>0?'auto — '+fmt(au)+' → '+nowYearStr():'not in the plan'); };
+      planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':(au>0?'auto — '+fmt(au)+' → '+autoPlanYear(p):'not in the plan'); };
     refreshPlanMeta();
     const years=[...new Set([...planYearColsFor(p.property),...Object.keys(p.planYears).filter(k=>/^\d{4}$/.test(k))])].sort();
     // Collapsed view: the first 5 years, plus any year already carrying a value
@@ -1594,7 +1604,7 @@ function openProject(id,preset){
     const keys=[...visYears,PLAN_POST];
     const au0=autoPlanAmount(p);
     planBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
-      (au0>0?'Flowing '+fmt(au0)+' into '+nowYearStr()+' automatically (this year’s projected spend). Set any year below to take over the spread — a 0 means deliberately nothing that year. ':'')+
+      (au0>0?'Flowing '+fmt(au0)+' into '+autoPlanYear(p)+' automatically (projected spend lands in the planned-end year, this year at earliest). Set any year below to take over the spread — a 0 means deliberately nothing that year. ':'')+
       'Spread the dollars across the years to '+PROP(p.property).code+'’s loan maturity (through '+planHorizonEnd(p.property)+'). Post-Refi = deferred until cash replenishes after refinance. Planning only — cash projections and GL tie-out are unaffected.'));
     const lab=(txt)=>el('label',{style:'display:block;font-size:11px;color:var(--ink-3);margin-bottom:3px'},txt);
     const seg=el('div',{class:'seg-ctl sm'},
@@ -4049,22 +4059,23 @@ async function savePlanCells(p,msg){
 function planCellInp(p,key){
   const explicit=p.planYears&&(key in p.planYears);
   const auto=!onPlan(p)?autoPlanAmount(p):0;
-  const isNowCell=key===nowYearStr();
+  const autoYr=autoPlanYear(p);
+  const isAutoCell=key===autoYr;
   return el('input',{type:'number',min:'0',step:'any',
     value:explicit?p.planYears[key]:'',
-    placeholder:(auto>0&&isNowCell)?String(Math.round(auto)):'—',
-    title:(auto>0&&isNowCell)?'Auto — this year’s projected spend flows through by default. Type an amount to take over (0 = deliberately nothing this year).':'',
-    style:'width:88px;text-align:right;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)'+((auto>0&&isNowCell)?';font-style:italic':''),
+    placeholder:(auto>0&&isAutoCell)?String(Math.round(auto)):'—',
+    title:(auto>0&&isAutoCell)?'Auto — projected spend flows into the planned-end year ('+autoYr+') by default. Type an amount to take over (0 = deliberately nothing that year).':'',
+    style:'width:88px;text-align:right;padding:4px 6px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink)'+((auto>0&&isAutoCell)?';font-style:italic':''),
     onchange:e=>{ const raw=e.target.value, n=Number(raw); p.planYears=p.planYears||{};
       // First explicit edit of an auto project: keep layer 1 — materialize the
-      // current year at the auto amount before applying the edit elsewhere.
-      if(auto>0&&!isNowCell)p.planYears[nowYearStr()]=auto;
+      // auto year at the auto amount before applying the edit elsewhere.
+      if(auto>0&&!isAutoCell)p.planYears[autoYr]=auto;
       if(raw!==''&&isFinite(n)&&n>=0)p.planYears[key]=n; else delete p.planYears[key];
       savePlanCells(p); }});
 }
 function planChips(p){
   const w=el('span',{style:'display:inline-flex;gap:4px;flex-wrap:wrap'});
-  if(!onPlan(p)&&autoPlanAmount(p)>0)w.append(el('span',{class:'chip',title:'Auto — this year’s projected spend flows into '+nowYearStr()+' until scheduled'},'auto'));
+  if(!onPlan(p)&&autoPlanAmount(p)>0)w.append(el('span',{class:'chip',title:'Auto — projected spend flows into '+autoPlanYear(p)+' (planned-end year) until scheduled'},'auto'));
   if(lenderFlagged(p))w.append(el('span',{class:'chip',style:'background:var(--wheat-soft);color:var(--wheat-d)',title:'Lender-required item'},'🏦 '+String(p.lenderFlag).trim()));
   if(p.planKind==='recurring')w.append(el('span',{class:'chip',title:'Recurring — repeats each year'},'↻'));
   if(p.inHouse)w.append(el('span',{class:'chip',title:'In-house'},'🛠'));
@@ -4173,7 +4184,7 @@ function planDetail(code){
   sched.forEach(gridRow);
   if(auto.length){
     tb.append(tr(el('td',{colspan:String(keys.length+5),style:'background:var(--panel);color:var(--ink-3);font-size:11.5px;padding:5px 10px'},
-      '⤵ This year’s pipeline — projected spend flows into '+nowYear+' automatically until you schedule it (type an amount in any year to take over; 0 = nothing this year)')));
+      '⤵ Open pipeline — projected spend flows into each item’s planned-end year ('+nowYear+' at earliest) automatically until you schedule it (type an amount in any year to take over; 0 = nothing that year)')));
     auto.forEach(gridRow);
   }
   if(!gridRows.length)tb.append(tr(td(el('span',{style:'color:var(--ink-3)'},'Nothing in the plan yet — open items flow in automatically once they carry a cost, or use ＋ New plan item.'))));

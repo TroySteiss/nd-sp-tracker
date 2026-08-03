@@ -1574,11 +1574,13 @@ function openProject(id,preset){
   drawSplit();
 
   // --- long-range plan: per-year $ out to loan maturity + Post-Refi bucket ---
+  // (constructed here, appended at the very bottom, below Notes & activity)
   const planPanel=el('div',{class:'panel',style:'margin-top:16px'});
   const planMeta=el('span',{class:'chip'},'');
   planPanel.append(el('div',{class:'ph'}, el('h3',{},'Long-range plan'), el('div',{class:'sp'}), planMeta));
   const planBody=el('div',{class:'pad'});
   planPanel.append(planBody);
+  let planYearsExpanded=false;   // 5 years by default; longer loan terms expand on demand
   function drawPlan(){
     planBody.innerHTML='';
     p.planYears=p.planYears||{};
@@ -1586,7 +1588,10 @@ function openProject(id,preset){
       planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':(au>0?'auto — '+fmt(au)+' → '+nowYearStr():'not in the plan'); };
     refreshPlanMeta();
     const years=[...new Set([...planYearColsFor(p.property),...Object.keys(p.planYears).filter(k=>/^\d{4}$/.test(k))])].sort();
-    const keys=[...years,PLAN_POST];
+    // Collapsed view: the first 5 years, plus any year already carrying a value
+    // (dollars can never hide behind the fold).
+    const visYears=planYearsExpanded?years:years.filter((y,i)=>i<5||(p.planYears&&y in p.planYears));
+    const keys=[...visYears,PLAN_POST];
     const au0=autoPlanAmount(p);
     planBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
       (au0>0?'Flowing '+fmt(au0)+' into '+nowYearStr()+' automatically (this year’s projected spend). Set any year below to take over the spread — a 0 means deliberately nothing that year. ':'')+
@@ -1616,11 +1621,17 @@ function openProject(id,preset){
           refreshPlanMeta(); }});
       grid.append(el('div',{},lab(planYearLabel(k)),yInp));
     });
+    if(!planYearsExpanded&&visYears.length<years.length)
+      grid.append(el('div',{style:'align-self:end'},el('button',{class:'btn ghost sm',
+        title:'This loan runs past the first 5 years — show every year through '+years[years.length-1],
+        onclick:()=>{planYearsExpanded=true;drawPlan();}},'+'+(years.length-visYears.length)+' more years → '+years[years.length-1])));
+    else if(planYearsExpanded&&years.length>5)
+      grid.append(el('div',{style:'align-self:end'},el('button',{class:'btn ghost sm',
+        onclick:()=>{planYearsExpanded=false;drawPlan();}},'Show first 5 years')));
     planBody.append(grid);
     if(isSplitP(p))planBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},
       '⇄ Amounts here are the FULL project figures — each property’s plan grid shows its split share.'));
   }
-  b.append(planPanel);
   drawPlan();
 
   // --- in-house panel: progress + additional notes ---
@@ -2438,6 +2449,9 @@ function openProject(id,preset){
   actBody.append(noteInp, stagedWrap, attachRow, noteList);
   actPanel.append(actBody); b.append(actPanel);
   drawNotes();
+
+  // Long-range plan sits at the very bottom, below Notes & activity.
+  b.append(planPanel);
 
   if(!isNew){
     b.append(el('div',{style:'margin-top:18px;display:flex'}, el('div',{style:'flex:1'}),

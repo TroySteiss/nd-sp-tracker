@@ -66,9 +66,25 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 - **Multi-property split**: `projects.split` jsonb `{mode:'units'|'custom', list:[{property,pct}]}`
   (016). Helpers `allocsOf/isSplit/shareFor/involvesProp/projOutflowFor` in domain.ts (mirrored in
   app.js). `projForProp` includes split projects; cashModel/glMatchScore/email amounts are
-  share-weighted; the property view shows the slice with a ⇄ chip; editor has a "Cost split" panel
-  (by-unit-count default — pcts recomputed from current units at save; custom % must sum to 100).
-  Server normalizes via `normalizeSplit` (lead property = list[0] = projects.property_code).
+  share-weighted. Server normalizes via `normalizeSplit` (lead = list[0] = projects.property_code).
+  - **The editor's Properties field IS the control** — a checkbox dropdown (`.cat-dd` pattern,
+    grouped by region). Tick one site for a normal project, tick several to allocate across them.
+    The old "⇄ Split properties" pill is gone. First ticked stays the lead; unticking the lead
+    promotes the next; the last one can't be removed. 2+ ticked reveals the **Cost allocation**
+    panel (by-unit-count default — pcts recomputed from current units at save; custom % must sum
+    to 100). The panel no longer picks properties, only the mode and the per-site table.
+  - **2+ properties routes contract generation to the multi-entity template** — those sites are
+    owned by different LLCs, so the single-property SP form can't name the Owner. The Generate
+    panel switches to "Generate multi-entity contract", which seeds `MULTI_DRAFT` from the project
+    (ticked codes, per-property amounts from the shares, contractor, sum, scope, planned end,
+    winning bid file; `billing:'one-time'`) and opens the builder. Admin-only, and an owner entity
+    on **every** ticked property becomes a REQUIRED readiness check — the server 400s otherwise.
+    Note the generated multi row still has `project_id` null by design (see 027).
+  - **In the property view they sit in a collapsed "⇄ Shared across properties" group, hidden by
+    default** (`PFILT.hide.shared`; a ⇄ Shared chip reveals it) — same shape as the ATL group but
+    **display only**: the share is real money at that site, so it stays in the financial summary,
+    cash projection and GL tie-out either way. `projs` in viewProperty is therefore display-only —
+    never hang a total off it. Rows still show `⇄ <pct>%` with the full cost in the tooltip.
 - **Roles** (`src/auth.ts`) — four tiers, resolved fresh on every request by `roleOf()`:
 
   | Role | Set by | Can do |
@@ -167,6 +183,10 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
   `POST /projects/:id/note-file` (note attachments — stored in files, referenced from the note's
   `files` jsonb), `POST /projects/:id/contract` (generate PDF), contract-file / executed-contract /
   lien-waiver uploads.
+- **Progress notes are their own row-level API** (any signed-in user): `POST /projects/:id/notes`
+  (append one, stamped with the session user + now), `DELETE /projects/:id/notes/:noteId`,
+  `PATCH /projects/:id/notes/:noteId` (replace that note's `files` — how an attachment is removed).
+  See "Notes are append-only" below — **do not** go back to saving notes through the project.
 - Cash: `PATCH /cash/:code`, `POST/DELETE /cash-adjustments`.
 - GL: `PATCH /gl/:id/link`.
 - Imports: `POST /import/gl` + `/confirm`, `POST /import/cushion` + `/confirm`, `GET /imports`.
@@ -335,6 +355,31 @@ formula cell also carries a cached value so the file previews before Excel
 recalculates. Don't "simplify" the formulas into hardcoded values — the
 reviewability is the point.
 
+## Notes are append-only — never save them through the project
+
+`writeProject` replaces a project's notes **wholesale** (delete-all + reinsert). That meant two
+people with the editor open lost each other's notes: whoever saved last won. The fix has two halves
+and both must stay in place:
+
+- **Server**: `writeProject` only touches `progress_notes` when the payload actually contains a
+  `progressNotes` key. Absent ⇒ the note table is left alone. The PATCH handler's change-log diff
+  skips note/attachment comparison in that case too, or it logs phantom "attachment removed" lines.
+- **Client**: `projectPayload(p, forCreate)` **deletes `progressNotes` from every update payload**
+  (`saveProject`, `saveProjectSilent`, `saveMatch` all route through it). Only a CREATE carries
+  notes, since those rows don't exist yet — that's also why a note typed into an unsaved new
+  project is held locally and posts with the create.
+
+Posting, deleting a note, and removing a note attachment each hit their own endpoint and take
+effect immediately; the editor then re-reads `/state` (`refreshNotesFromServer`) so a note added by
+someone else while the editor was open appears right away. Notes no longer depend on the Save
+button at all. The free-text `projects.notes` textarea was removed from the editor (Notes &
+activity supersedes it) but **the column and its existing values are untouched** — still carried on
+save, still read by the property view and update emails.
+
+`scripts/`-free verification: the race is reproducible directly against the DB — insert two notes,
+append a third as another user, run a save whose payload omits `progressNotes`, and assert all
+three survive.
+
 ## Contract revision — send a bad contract back (024)
 
 `src/revision.ts`, shared by both views so they roll back identically. Clears every step from
@@ -360,6 +405,16 @@ shouldn't need an admin, and it only moves work backwards) and `POST /projects/:
   redaction** — it paints over the text, which is still extractable from the file.
 - **`excludedTerms`** — an embedded PDF can't be edited, so terms Owner won't accept are expressly
   rejected in a generated clause and reprinted on the Exhibit A cover page.
+- **One-time / recurring price split** — optional `oneTimeAmount` / `ongoingAmount` /
+  `ongoingPeriod` ('monthly'|'quarterly'|'annual') on `ContractVars`, so a property-level contract
+  can carry a one-off charge (mobilization, setup, the job) and a recurring charge. Both amounts
+  print **verbatim**: a sentence appended to the Contract Price paragraph, and breakdown lines
+  under CONTRACT TOTAL on the Exhibit A & B page. **Nothing is totalled** — same rule as the multi
+  template's Contract Sum, because a derived second figure on signed paper invites the two to
+  disagree. Both blank ⇒ the wording is byte-identical to before (verified against
+  `contract-snapshot.mjs`). The split sentence is appended INTO the existing "Contract Price."
+  paragraph rather than added as a new lettered sub-item — the section's own text cites
+  "this Section 4(b)", so inserting a sub-item would silently shift that reference.
 - **`omitSections`** — slugs from `contractSectionList()`. The rest renumber. Cross-references are
   **symbolic** (`{SEC:slug}` in the section text) and resolve against the final ordering; omitting a
   section another one cites **throws** rather than shipping a dangling "Section 6".

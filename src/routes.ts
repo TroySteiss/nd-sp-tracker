@@ -274,10 +274,20 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
     );
     slot++;
   }
-  await client.query('delete from progress_notes where project_id=$1', [p.id]);
-  for (const n of p.progressNotes || []) {
-    await client.query('insert into progress_notes(id,project_id,date,note,username,ts,files) values($1,$2,$3,$4,$5,$6,$7)',
-      [n.id || uid('N'), p.id, dnull(n.date), n.note || '', n.username || '', n.ts || null, JSON.stringify(Array.isArray(n.files) ? n.files : [])]);
+  /* Notes are only touched when the payload actually carries them.
+     A project save used to delete every note and reinsert the client's copy,
+     so two people with the editor open lost each other's notes — whoever saved
+     last won. The editor now posts notes through the append/delete/patch
+     endpoints below and OMITS `progressNotes` from the project payload, so a
+     save can no longer clobber a note someone else added meanwhile. Callers
+     that do send the key (project creation, seed/restore) keep the old
+     replace-wholesale behavior. */
+  if (p.progressNotes !== undefined) {
+    await client.query('delete from progress_notes where project_id=$1', [p.id]);
+    for (const n of p.progressNotes || []) {
+      await client.query('insert into progress_notes(id,project_id,date,note,username,ts,files) values($1,$2,$3,$4,$5,$6,$7)',
+        [n.id || uid('N'), p.id, dnull(n.date), n.note || '', n.username || '', n.ts || null, JSON.stringify(Array.isArray(n.files) ? n.files : [])]);
+    }
   }
 }
 
@@ -372,17 +382,25 @@ api.patch('/projects/:id', async (req, res) => {
   const newBids = (p.bids || []).map((b) => ({ contractor: b.contractor || '', amount: nnull(b.amount), approved: !!b.approved }));
   if (JSON.stringify(oldBids) !== JSON.stringify(newBids)) changes.push('bids updated');
   // Attachment audit: name every bid/note file that appeared or disappeared in this save.
+  // Notes are only in scope when the payload carried them (see writeProject) —
+  // otherwise their files are untouched and diffing them would log phantom removals.
+  const notesInPayload = p.progressNotes !== undefined;
   const fileSet = (rows: any[]) => new Map(rows.flatMap((r: any) => (Array.isArray(r.files) ? r.files : [])).filter((f: any) => f && f.fileKey).map((f: any) => [f.fileKey, f.fileName || f.fileKey]));
-  const oldFiles = fileSet([...(oldBidRows as any[]), ...(oldNotes as any[])]);
-  const newFiles = fileSet([...((p.bids || []) as any[]), ...((p.progressNotes || []) as any[])]);
+  const oldFiles = fileSet([...(oldBidRows as any[]), ...(notesInPayload ? (oldNotes as any[]) : [])]);
+  const newFiles = fileSet([...((p.bids || []) as any[]), ...(notesInPayload ? ((p.progressNotes || []) as any[]) : [])]);
   for (const [k, name] of oldFiles) if (!newFiles.has(k)) changes.push(`attachment "${name}" removed (file retained in storage)`);
   for (const [k, name] of newFiles) if (!oldFiles.has(k)) changes.push(`attachment "${name}" added`);
-  const newNoteCount = (p.progressNotes || []).length;
-  if (newNoteCount > oldNoteCount) changes.push(`progress note added`);
-  if (newNoteCount < oldNoteCount) changes.push(`progress note removed`);
+  if (notesInPayload) {
+    const newNoteCount = (p.progressNotes || []).length;
+    if (newNoteCount > oldNoteCount) changes.push(`progress note added`);
+    if (newNoteCount < oldNoteCount) changes.push(`progress note removed`);
+  }
   if (changes.length) logChange(req, { action: 'project.update', entityType: 'project', entityId: p.id, property: p.property, summary: `Project "${p.name}": ${changes.join('; ')}` });
   const r = await query('select * from projects where id=$1', [p.id]);
-  res.json(rowToProject(r.rows[0], p.bids || [], p.progressNotes || [], await propLookup()));
+  // Notes come back from the table, not the payload — the payload may not carry them.
+  const notesOut = (await query<any>('select id, date, note, username, ts, files from progress_notes where project_id=$1 order by ts nulls last, id', [p.id]))
+    .rows.map((n) => ({ id: n.id, date: n.date ? String(n.date).slice(0, 10) : '', note: n.note, username: n.username ?? '', ts: n.ts ? new Date(n.ts).toISOString() : '', files: Array.isArray(n.files) ? n.files : [] }));
+  res.json(rowToProject(r.rows[0], p.bids || [], notesOut, await propLookup()));
 });
 
 api.delete('/projects/:id', async (req, res) => {
@@ -390,6 +408,63 @@ api.delete('/projects/:id', async (req, res) => {
   await query('delete from projects where id=$1', [req.params.id]);
   if (old) logChange(req, { action: 'project.delete', entityType: 'project', entityId: req.params.id, property: old.property_code, summary: `Project "${old.name}" deleted` });
   res.json({ ok: true });
+});
+
+/* ---------- progress notes: append-only, one row at a time ----------
+   Posting a note must never depend on saving the whole project, or two people
+   with the editor open overwrite each other (writeProject replaces the note set
+   wholesale). These three endpoints touch exactly one row, so concurrent
+   commenters can't collide. Open to any signed-in user — commenting is not a
+   privileged action, and every note is attributed and logged. */
+api.post('/projects/:id/notes', async (req, res) => {
+  const row = (await query<any>('select id, name, property_code from projects where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const note = String(req.body?.note || '').trim().slice(0, 4000);
+  const files = Array.isArray(req.body?.files)
+    ? req.body.files.filter((f: any) => f && f.fileKey).map((f: any) => ({ fileKey: String(f.fileKey), fileName: String(f.fileName || 'attachment'), fileSize: nnull(f.fileSize) }))
+    : [];
+  if (!note && !files.length) return res.status(400).json({ error: 'Write a note or attach a file first' });
+  const user = (req.session as any)?.username || 'unknown';
+  const id = uid('N') + Date.now().toString(36);
+  const ins = await query<any>(
+    `insert into progress_notes(id, project_id, date, note, username, ts, files)
+     values($1,$2,$3,$4,$5,now(),$6::jsonb) returning id, date, note, username, ts, files`,
+    [id, row.id, new Date().toISOString().slice(0, 10), note, user, JSON.stringify(files)]
+  );
+  logChange(req, { action: 'project.note', entityType: 'project', entityId: row.id, property: row.property_code,
+    summary: `Note added to "${row.name}"${files.length ? ` (${files.length} attachment${files.length > 1 ? 's' : ''})` : ''}${note ? `: ${note.slice(0, 160)}` : ''}` });
+  const n = ins.rows[0];
+  res.json({ id: n.id, date: n.date ? String(n.date).slice(0, 10) : '', note: n.note, username: n.username ?? '',
+             ts: n.ts ? new Date(n.ts).toISOString() : '', files: Array.isArray(n.files) ? n.files : [] });
+});
+
+api.delete('/projects/:id/notes/:noteId', async (req, res) => {
+  const row = (await query<any>('select id, name, property_code from projects where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const old = (await query<any>('select note from progress_notes where id=$1 and project_id=$2', [req.params.noteId, row.id])).rows[0];
+  if (!old) return res.status(404).json({ error: 'note not found' });
+  await query('delete from progress_notes where id=$1 and project_id=$2', [req.params.noteId, row.id]);
+  logChange(req, { action: 'project.note_removed', entityType: 'project', entityId: row.id, property: row.property_code,
+    summary: `Note removed from "${row.name}"${old.note ? `: ${String(old.note).slice(0, 160)}` : ''}` });
+  res.json({ ok: true });
+});
+
+/** Replace a note's attachment list (removing one). The file stays in storage. */
+api.patch('/projects/:id/notes/:noteId', async (req, res) => {
+  const row = (await query<any>('select id, name, property_code from projects where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const old = (await query<any>('select files from progress_notes where id=$1 and project_id=$2', [req.params.noteId, row.id])).rows[0];
+  if (!old) return res.status(404).json({ error: 'note not found' });
+  if (!Array.isArray(req.body?.files)) return res.status(400).json({ error: 'files array required' });
+  const files = req.body.files.filter((f: any) => f && f.fileKey)
+    .map((f: any) => ({ fileKey: String(f.fileKey), fileName: String(f.fileName || 'attachment'), fileSize: nnull(f.fileSize) }));
+  await query('update progress_notes set files=$1::jsonb where id=$2 and project_id=$3', [JSON.stringify(files), req.params.noteId, row.id]);
+  const before = new Map((Array.isArray(old.files) ? old.files : []).filter((f: any) => f?.fileKey).map((f: any) => [f.fileKey, f.fileName || f.fileKey]));
+  const kept = new Set(files.map((f: any) => f.fileKey));
+  const dropped = [...before].filter(([k]) => !kept.has(k)).map(([, name]) => name);
+  if (dropped.length) logChange(req, { action: 'project.note_attachment_removed', entityType: 'project', entityId: row.id, property: row.property_code,
+    summary: `Note attachment${dropped.length > 1 ? 's' : ''} ${dropped.map((d) => `"${d}"`).join(', ')} removed from "${row.name}" (file retained in storage)` });
+  res.json({ ok: true, files });
 });
 
 /* ---------- bid file upload / download (stored in Postgres) ---------- */
@@ -497,6 +572,9 @@ api.post('/projects/:id/contract', async (req, res) => {
     effectiveDate: b.effectiveDate || '', termEndDate: b.termEndDate || '', ownerEntity: b.ownerEntity || '',
     contractorName: b.contractorName || '', propertyName: b.propertyName || '', propertyAddr: b.propertyAddr || '',
     ownerNoticeAddr: b.ownerNoticeAddr || b.propertyAddr || '', contractorAddr: b.contractorAddr || '', contractTotal: b.contractTotal || '',
+    // Optional one-time / recurring breakdown of the Contract Price (printed verbatim, never totalled).
+    oneTimeAmount: String(b.oneTimeAmount || '').trim(), ongoingAmount: String(b.ongoingAmount || '').trim(),
+    ongoingPeriod: b.ongoingPeriod === 'annual' ? 'annual' : b.ongoingPeriod === 'quarterly' ? 'quarterly' : 'monthly',
   };
   if (!vars.ownerEntity || !vars.contractorName || !vars.contractTotal) return res.status(400).json({ error: 'ownerEntity, contractorName and contractTotal are required' });
   // Generating auto-cascades the approval step, so an unapproved project can
@@ -605,7 +683,7 @@ api.post('/projects/:id/contract', async (req, res) => {
     contractOpts.electedTerms.length ? `${contractOpts.electedTerms.length} option(s) elected` : null,
   ].filter(Boolean).join('; ');
   logChange(req, { action: 'contract.generate', entityType: 'project', entityId: proj.id, property: proj.property_code,
-    summary: `Contract generated for "${proj.name}" — ${vars.contractorName}, ${vars.contractTotal} (${fileName})${tailored ? ` · ${tailored}` : ''}`,
+    summary: `Contract generated for "${proj.name}" — ${vars.contractorName}, ${vars.contractTotal}${(vars.oneTimeAmount || vars.ongoingAmount) ? ` (one-time ${vars.oneTimeAmount || '—'} / ${vars.ongoingPeriod} ${vars.ongoingAmount || '—'})` : ''} (${fileName})${tailored ? ` · ${tailored}` : ''}`,
     details: tailored ? contractOpts : undefined });
   res.json({ contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
 });

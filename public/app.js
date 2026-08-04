@@ -146,18 +146,33 @@ try{ applyTheme(localStorage.getItem('theme') || (matchMedia('(prefers-color-sch
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
 function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize,originalFileKey:f.originalFileKey||null,originalFileName:f.originalFileName||null})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
-async function saveProjectSilent(p){ const payload={...p,bids:cleanBids(p)}; if(S.projects.find(x=>x.id===p.id)) await API.send('PATCH','/projects/'+p.id,payload); else await API.send('POST','/projects',payload); }
+/* Progress notes have their own endpoints (POST/DELETE/PATCH /projects/:id/notes)
+   so two people commenting at once can't overwrite each other. An UPDATE payload
+   therefore omits `progressNotes` entirely — the server leaves the note table
+   untouched when the key is absent. A CREATE still carries them: those rows don't
+   exist yet, and notes typed into a brand-new project ride along with it. */
+function projectPayload(p,forCreate){
+  const out={...p,bids:cleanBids(p)};
+  if(!forCreate) delete out.progressNotes;
+  return out;
+}
+async function saveProjectSilent(p){
+  const exists=!!S.projects.find(x=>x.id===p.id);
+  const payload=projectPayload(p,!exists);
+  if(exists) await API.send('PATCH','/projects/'+p.id,payload); else await API.send('POST','/projects',payload);
+}
 async function saveProject(p,msg,isNew){
-  const payload={...p,bids:cleanBids(p)};
+  const create=!!(isNew||!S.projects.find(x=>x.id===p.id));
+  const payload=projectPayload(p,create);
   try{
-    if(isNew||!S.projects.find(x=>x.id===p.id)){ await API.send('POST','/projects',payload); }
+    if(create){ await API.send('POST','/projects',payload); }
     else { await API.send('PATCH','/projects/'+p.id,payload); }
     await afterWrite(msg);
   }catch(e){ toast('Save failed: '+e.message); }
 }
 async function deleteProject(id){ try{ await API.send('DELETE','/projects/'+id); await afterWrite('Project deleted'); }catch(e){ toast('Delete failed: '+e.message); } }
 async function linkGl(g,msg){ try{ await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
-async function saveMatch(g,pr,msg){ try{ await API.send('PATCH','/projects/'+pr.id,{...pr,bids:cleanBids(pr)}); await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
+async function saveMatch(g,pr,msg){ try{ await API.send('PATCH','/projects/'+pr.id,projectPayload(pr,false)); await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
 async function addAdj(a){ try{ await API.send('POST','/cash-adjustments',a); await afterWrite('Adjustment recorded'); }catch(e){ toast('Failed: '+e.message); } }
 async function delAdj(id){ try{ await API.send('DELETE','/cash-adjustments/'+id); await afterWrite('Adjustment removed'); }catch(e){ toast('Failed: '+e.message); } }
 async function saveCash(code,obj,msg){ try{ await API.send('PATCH','/cash/'+code,obj); await afterWrite(msg||'Cash updated'); }catch(e){ toast('Failed: '+e.message); } }
@@ -1451,13 +1466,67 @@ function openProject(id,preset){
       if(typeof drawPlan==='function')drawPlan();   // auto plan amount follows the cost
     });
     return n;};
-  const propSel=el('select',{onchange:e=>{
-    p.property=e.target.value;
-    if(p.split&&p.split.list&&!p.split.list.some(a=>a.property===p.property)){ p.split.list.unshift({property:p.property,pct:0}); }
+  /* Properties — a checkbox dropdown. Tick one for a normal project; tick
+     several to allocate the cost across them (pro-rata by unit count by
+     default). This is the ONLY control for multi-property work: the first
+     ticked site stays the lead (projects.property_code), and 2+ ticked routes
+     contract generation to the multi-entity template, since those sites are
+     owned by different LLCs. */
+  let propDDOpen=false;
+  const propDD=el('div',{class:'cat-dd',style:'display:block'});
+  const propBtn=el('button',{type:'button',class:'bub dd-btn',style:'width:100%;justify-content:space-between',
+    onclick:()=>{propDDOpen=!propDDOpen;drawPropDD();}});
+  const propPanel=el('div',{class:'cat-dd-panel'});
+  propDD.append(propBtn,propPanel);
+  const selCodes=()=>allocsOf(p).map(a=>a.property);
+  function setProps(codes){
+    const uniq=[...new Set(codes)].filter(Boolean);
+    if(!uniq.length)return;
+    if(uniq.length===1){ p.split=null; p.property=uniq[0]; }
+    else{
+      const prev=(p.split&&p.split.list)||[];
+      p.split={mode:(p.split&&p.split.mode==='custom')?'custom':'units',
+        list:uniq.map(c=>({property:c,pct:Number((prev.find(x=>x.property===c)||{}).pct)||0}))};
+      p.property=uniq[0];   // lead = first ticked (mirrors projects.property_code)
+    }
+    drawPropDD();
     if(typeof drawSplit==='function')drawSplit();
-    if(typeof drawPlan==='function')drawPlan();   // plan horizon follows the property's loan
-  }});
-  propsByRegion().forEach(pr=>propSel.append(el('option',{value:pr.code,...(p.property===pr.code?{selected:true}:{})},`${pr.code} — ${pr.name}`)));
+    if(typeof drawPlan==='function')drawPlan();          // plan horizon follows the lead's loan
+    if(typeof refreshGenPanel==='function')refreshGenPanel();   // single ⇄ multi-entity contract
+  }
+  function toggleProp(code){
+    const sel=selCodes(), i=sel.indexOf(code);
+    if(i<0){ setProps([...sel,code]); return; }           // append keeps the lead stable
+    if(sel.length===1){ toast('A project needs at least one property.'); drawPropDD(); return; }
+    setProps(sel.filter(c=>c!==code));                    // unticking the lead promotes the next
+  }
+  function drawPropDD(){
+    const sel=selCodes();
+    propBtn.className='bub dd-btn'+(propDDOpen?' open':'');
+    propBtn.innerHTML='';
+    propBtn.append(el('span',{style:'display:inline-flex;align-items:center;gap:6px;min-width:0'},
+      ...sel.slice(0,4).map(c=>el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(c)};display:inline-block;flex:none`})),
+      el('span',{style:'overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},
+        sel.length>1?`${sel.length} properties · ${sel.join(', ')}`:`${sel[0]||'—'} — ${(PROP(sel[0])||{}).name||'pick a property'}`)),
+      el('span',{class:'chev'},'▾'));
+    propPanel.style.display=propDDOpen?'':'none';
+    propPanel.innerHTML='';
+    let lastRegion=null;
+    propsByRegion().forEach(pr=>{
+      if(pr.region!==lastRegion){ lastRegion=pr.region;
+        propPanel.append(el('div',{style:'font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin:7px 0 2px'},pr.region||'—')); }
+      const on=sel.includes(pr.code);
+      const cb=el('input',{type:'checkbox',onchange:()=>toggleProp(pr.code)});
+      if(on)cb.checked=true;
+      propPanel.append(el('label',{class:'cat-item'},cb,
+        el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(pr.code)};display:inline-block;flex:none`}),
+        el('span',{style:'flex:1;min-width:0'},`${pr.code} — ${pr.name}`+((Number(pr.units)||0)?` · ${pr.units}u`:'')),
+        (on&&sel.length>1&&pr.code===sel[0])?el('span',{class:'chip'},'lead'):null));
+    });
+    if(sel.length>1)propPanel.append(el('div',{style:'font-size:11px;color:var(--ink-3);margin-top:7px;border-top:1px solid var(--line);padding-top:7px'},
+      'Cost is allocated by unit count by default — see the Cost allocation panel below.'));
+  }
+  drawPropDD();
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
   CATEGORIES.forEach(c=>catSel.append(el('option',{value:c,...(p.category===c?{selected:true}:{})},c)));
 
@@ -1468,7 +1537,7 @@ function openProject(id,preset){
   nameInp.addEventListener('input',refreshATL);
   core.append(f('Project name',nameInp), atlHint);
   refreshATL();
-  core.append(el('div',{class:'frow'}, f('Property',propSel), f('Category',catSel)));
+  core.append(el('div',{class:'frow'}, f('Properties (tick several to allocate across sites)',propDD), f('Category',catSel)));
   core.append(f('Plan / scope / comments',el('textarea',{oninput:e=>p.plan=e.target.value},p.plan||'')));
   core.append(el('div',{class:'frow'},
     f('Contractor',ctrInp('contractor','contractor-dl-proj',{placeholder:'Awarded / leading contractor'})),
@@ -1506,18 +1575,15 @@ function openProject(id,preset){
   // Approved projects are always in the projections, so the toggle is moot.
   function refreshCommit(){ commitWrap.style.display=isApproved(p)?'none':''; }
   refreshCommit();
-  const splitPill=optPill('⇄','Split properties','commit',()=>!!(p.split&&p.split.list&&p.split.list.length>1),v=>{
-    if(v){ p.split=(p.split&&p.split.list&&p.split.list.length)?p.split:{mode:'units',list:[{property:p.property,pct:100}]}; }
-    else { p.split=null; }
-    drawSplit();
-  },'Share this project’s cost across multiple properties (by unit count or custom %)');
-  core.append(el('div',{class:'opt-row'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap,splitPill));
+  core.append(el('div',{class:'opt-row'},holdWrap,pinWrap,ihWrap,ncWrap,commitWrap));
   b.append(core);
 
-  // --- multi-property cost split ---
+  /* --- cost allocation across the ticked properties ---
+     Shown only when the Properties dropdown has 2+ sites ticked; that dropdown
+     is what adds and removes them. */
   const splitPanel=el('div',{class:'panel',style:'margin-top:16px'});
   const splitMeta=el('span',{class:'chip'},'');
-  splitPanel.append(el('div',{class:'ph'}, el('h3',{},'Cost split'), el('div',{class:'sp'}), splitMeta));
+  splitPanel.append(el('div',{class:'ph'}, el('h3',{},'Cost allocation'), el('div',{class:'sp'}), splitMeta));
   const splitBody=el('div',{class:'pad'});
   splitPanel.append(splitBody);
   function recomputeSplit(){
@@ -1529,32 +1595,18 @@ function openProject(id,preset){
     }
   }
   function drawSplit(){
-    const on=!!(p.split&&p.split.list);
+    const on=isSplitP(p);          // 2+ ticked properties
     splitPanel.style.display=on?'':'none';
-    splitPill.classList.toggle('on',!!(p.split&&p.split.list&&p.split.list.length>1));
     if(!on)return;
     recomputeSplit();
     splitBody.innerHTML='';
-    splitMeta.textContent=p.split.list.length>1?`${p.split.list.length} properties`:'pick the other properties';
+    splitMeta.textContent=`${p.split.list.length} properties`;
     splitBody.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
-      'The total cost is shared between the selected sites — each property’s cash & budget projections carry only its slice. “By unit count” keeps the split pro-rata as unit counts change.'));
+      'The total cost is shared between the ticked sites — each property’s cash & budget projections carry only its slice. “By unit count” keeps the allocation pro-rata as unit counts change. Add or remove sites in the Properties dropdown above.'));
     const seg=el('div',{class:'seg-ctl sm',style:'margin-bottom:10px'},
       el('button',{class:p.split.mode!=='custom'?'on':'',onclick:()=>{p.split.mode='units';drawSplit();}},'By unit count'),
       el('button',{class:p.split.mode==='custom'?'on':'',onclick:()=>{p.split.mode='custom';drawSplit();}},'Custom %'));
     splitBody.append(seg);
-    const row=el('div',{class:'bubbles',style:'margin-bottom:10px'}, el('span',{class:'bub-lab'},'Properties'));
-    propsByRegion().forEach(pr=>{
-      const on2=p.split.list.some(a=>a.property===pr.code);
-      row.append(el('button',{class:'bub'+(on2?' on':''),style:on2?`background:${pcolor(pr.code)};border-color:${pcolor(pr.code)};color:#fff`:'',
-        title:pr.code===p.property?'Lead property (change it in the Property dropdown above)':'',
-        onclick:()=>{
-          if(on2){ if(pr.code===p.property){toast('The lead property stays in the split — change it in the Property dropdown.');return;}
-            p.split.list=p.split.list.filter(a=>a.property!==pr.code); }
-          else { p.split.list.push({property:pr.code,pct:0}); }
-          drawSplit();
-        }}, el('span',{class:'bub-dot',style:'background:'+pcolor(pr.code)}), pr.code));
-    });
-    splitBody.append(row);
     const total=projOutflow(p);
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},tr(th('Property'),th('Units','r'),th('Share %','r'),th('$ share','r'))));
@@ -1774,18 +1826,48 @@ function openProject(id,preset){
   const genBody=el('div',{class:'pad'});
   genPanel.append(genBody);
   function genChecks(){
-    const prop=PROP(p.property)||{};
     const approved=p.bids.find(b2=>b2.approved);
     const bidFile=p.bids.some(bd=>(bd.files&&bd.files.length)||bd.fileKey);
     const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?approved.amount:p.anticipatedCost);
     const contractor=((approved&&approved.contractor)||p.contractor||'').trim();
+    const multi=isSplitP(p);
+    // Multi-entity: EVERY ticked property must carry an owner entity or the
+    // server refuses to generate (400) — so it's required, not advisory.
+    const noEntity=selCodes().filter(c=>!((PROP(c)||{}).ownerEntity||'').trim());
     return [
       {ok:bidFile, label:'Bid document attached', hint:'attach the winning bid in Bids above — it embeds as the contract scope (Word/Excel converts to PDF automatically)', required:true},
       {ok:total!=null&&Number(total)>0, label:'Contract total', hint:'enter a cost or bid amount', required:true},
       {ok:!!contractor, label:'Contractor named', hint:'approve a bid or fill the contractor field', required:true},
       {ok:!!p.bids.some(b2=>b2.approved), label:'Winning bid approved', hint:'approve the winner so its amount & contractor flow in', required:false},
-      {ok:!!(prop.ownerEntity||'').trim(), label:'Owner entity on file', hint:'fill it in the generate dialog once — remembered per property', required:false},
+      multi
+        ? {ok:!noEntity.length, label:'Owner entity on every property', hint:'missing for '+noEntity.join(', ')+' — add it in Settings ▸ Properties (it prints verbatim on the contract)', required:true}
+        : {ok:!!((PROP(p.property)||{}).ownerEntity||'').trim(), label:'Owner entity on file', hint:'fill it in the generate dialog once — remembered per property', required:false},
     ];
+  }
+  /* A project spanning several properties needs the multi-entity Agreement
+     (27 sections, Exhibits A–E) — those sites are owned by different LLCs, so
+     the single-property SP template can't name the Owner correctly. Prefill the
+     multi builder from the project rather than making the admin retype it. */
+  function openMultiFromProject(){
+    const approved=p.bids.find(b2=>b2.approved)||{};
+    const total=projOutflow(p);
+    const per={};
+    allocsOf(p).forEach(a=>{ const amt=Math.round(total*(Number(a.pct)||0))/100;
+      per[a.property]={sum:amt?String(amt):'',upfront:'',ongoing:''}; });
+    const f0=(approved.files&&approved.files[0])||{};
+    MULTI_DRAFT=Object.assign(multiDraftDefaults(),{
+      properties:selCodes().slice(),
+      perProperty:per,
+      contractorName:(approved.contractor||p.contractor||'').trim(),
+      contractSum:total?String(total):'',
+      billing:'one-time',                       // a project is billed once, not recurring
+      scope:p.plan||p.name||'',
+      effectiveDate:today(),
+      workCompletionDate:p.plannedEnd||'',
+      bidFileKey:f0.fileKey||'', bidFileName:f0.fileName||'',
+    });
+    close();                                    // the editor would sit under the builder
+    openMultiContract();
   }
   function refreshGenPanel(){
     if(p.inHouse||p.noContract){ genPanel.style.display='none'; return; }
@@ -1796,9 +1878,15 @@ function openProject(id,preset){
     const ready=!missingReq.length;
     genStatusChip.className='chip '+(p.contractFileKey?'done':(ready?'good':'hold'));
     genStatusChip.textContent=p.contractFileKey?'generated ✓':(ready?'ready to generate':`${missingReq.length} item${missingReq.length>1?'s':''} needed`);
+    const multi=isSplitP(p);
+    if(multi)genBody.append(el('div',{class:'bs-hint',style:'margin:0 0 10px'},
+      `⇄ ${selCodes().length} properties ticked — this generates the multi-entity Agreement (Contract Sum, 27 sections, Exhibits A–E) with every owner entity named, not the single-property SP contract. `+
+      (IS_ADMIN?'The builder opens prefilled from this project.':'Generating it is limited to top-level admins.')));
     const row=el('div',{style:'display:flex;gap:10px;align-items:center;flex-wrap:wrap'});
-    const btn=el('button',{class:'btn accent',onclick:()=>openContractDialog()},'📄 Generate contract');
+    const btn=el('button',{class:'btn accent',onclick:()=>multi?openMultiFromProject():openContractDialog()},
+      multi?'📄 Generate multi-entity contract':'📄 Generate contract');
     if(isNew){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Save the project first, then generate.')); }
+    else if(multi&&!IS_ADMIN){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Multi-entity contracts are admin-only.')); }
     else if(!ready){ btn.disabled=true; btn.style.opacity='.5'; row.append(btn, el('span',{class:'bs-meta'},'Needs: '+missingReq.map(c=>c.label.toLowerCase()).join(', ')+'.')); }
     else row.append(btn);
     genBody.append(row);
@@ -2177,7 +2265,9 @@ function openProject(id,preset){
       ownerEntity:prop.ownerEntity||'', contractorName:initCtrName,
       propertyName:prop.name||'', propertyAddr:prop.address||'',
       ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:(initCtr&&initCtr.address)||'',
-      contractTotal:usd(total), unit:'', scope:p.name||''
+      contractTotal:usd(total), unit:'', scope:p.name||'',
+      // Optional one-time / recurring breakdown — blank leaves the wording as-is.
+      oneTimeAmount:'', ongoingAmount:'', ongoingPeriod:'monthly'
     };
     const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
     const sheet=el('div',{class:'sheet'});
@@ -2199,6 +2289,22 @@ function openProject(id,preset){
     bb.append(el('div',{class:'frow'}, dateFld('Start date','effectiveDate',today()), dateFld('End date','termEndDate',plusDaysIso(60))));
     bb.append(el('div',{class:'frow'}, f('Contract total','contractTotal'), f('Unit # (optional)','unit',{ph:'e.g. 201'})));
     bb.append(f('Scope of work','scope',{ph:'e.g. HVAC replacement — Unit 316'}));
+    /* One-time vs recurring split. Both blank = a plain single-figure contract
+       (unchanged wording). Amounts print VERBATIM under the Contract Total and
+       in the payment clause — nothing is totalled, so the split never contradicts
+       the total on signed paper. */
+    const perSel=el('select',{onchange:e=>data.ongoingPeriod=e.target.value});
+    [['monthly','Monthly'],['quarterly','Quarterly'],['annual','Annual']].forEach(([v2,l])=>
+      perSel.append(el('option',{value:v2,...(data.ongoingPeriod===v2?{selected:true}:{})},l)));
+    const splitHint=el('p',{class:'bs-hint',style:'margin:0 0 8px'},
+      'Optional — leave both blank for a single lump-sum contract. Fill one or both to break the Contract Price into a one-time charge (mobilization, setup, the job itself) and a recurring charge. They print exactly as typed beneath the Contract Total; the total is never recalculated from them.');
+    bb.append(el('div',{style:'margin-top:14px'},
+      el('div',{style:'font-size:11px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin-bottom:5px'},'One-time / recurring split'),
+      splitHint,
+      el('div',{class:'frow3'},
+        f('One-time amount','oneTimeAmount',{ph:'e.g. $12,000.00'}),
+        f('Recurring amount','ongoingAmount',{ph:'e.g. $450.00'}),
+        el('div',{class:'field'},el('label',{},'Billed'),perSel))));
     // --- Contractor ---
     sect('Contractor');
     const ctrDl=el('datalist',{id:'contract-gen-dl'});(S.contractors||[]).forEach(c=>ctrDl.append(el('option',{value:c.name})));document.body.append(ctrDl);
@@ -2390,10 +2496,10 @@ function openProject(id,preset){
   }
   applyMode();
 
-  // notes
-  const np=el('div',{class:'panel pad',style:'margin-top:16px'});
-  np.append(el('div',{class:'field'}, el('label',{},'Notes'), el('textarea',{oninput:e=>p.notes=e.target.value},p.notes||'')));
-  b.append(np);
+  /* The old free-text "Notes" textarea is gone — "Notes & activity" below covers
+     it with attribution, timestamps and attachments. Existing projects.notes
+     values are left untouched in the DB (still carried on save, still shown in
+     the property view and update emails); nothing is migrated or wiped. */
 
   // --- Notes & activity: timestamped + attributed notes with attachments (all projects) ---
   const actPanel=el('div',{class:'panel',style:'margin-top:16px'});
@@ -2401,7 +2507,7 @@ function openProject(id,preset){
   actPanel.append(el('div',{class:'ph'}, el('h3',{},'Notes & activity'), el('div',{class:'sp'}), actChip));
   const actBody=el('div',{class:'pad'});
   const pendingFiles=[];   // attachments staged for the next posted note
-  const noteInp=el('textarea',{placeholder:'Post a note — decisions, calls, site updates… (saved with the project)',style:'min-height:52px;width:100%'});
+  const noteInp=el('textarea',{placeholder:'Post a note — decisions, calls, site updates… (posts immediately)',style:'min-height:52px;width:100%'});
   const stagedWrap=el('div',{style:'display:flex;gap:6px;flex-wrap:wrap;margin:6px 0 0'});
   function drawStaged(){
     stagedWrap.innerHTML='';
@@ -2419,16 +2525,43 @@ function openProject(id,preset){
   }
   const attachRow=el('div',{style:'display:flex;gap:8px;align-items:center;margin-top:8px'});
   const attInp=addDrop(attachRow,'.pdf,.png,.jpg,.jpeg,.xlsx,.xls,.docx,.zip,.msg,.eml',f=>attachNoteFile(f),{multiple:true});
-  function postNote(){
+  /* Posting writes the note on its own (POST /projects/:id/notes) instead of
+     waiting for the project save. Two people can comment at once without
+     overwriting each other, and the note survives closing the editor without
+     saving. We also pull the server's copy of the thread back in, so a note
+     someone else added while this editor was open appears immediately. */
+  const postBtn=el('button',{class:'btn accent sm'},'Post note');
+  async function refreshNotesFromServer(){
+    try{
+      const fresh=await API.get('/state');
+      const srv=(fresh.projects||[]).find(x=>x.id===p.id);
+      if(srv){ p.progressNotes=srv.progressNotes||[]; S=fresh; }
+    }catch(e){ /* keep what we have — the post itself already succeeded */ }
+    drawNotes();
+  }
+  async function postNote(){
     const txt=noteInp.value.trim();
     if(!txt&&!pendingFiles.length){ toast('Write a note or attach a file first.'); return; }
-    p.progressNotes.push({id:uid('n'),date:today(),ts:new Date().toISOString(),username:USER,note:txt,files:pendingFiles.splice(0)});
-    noteInp.value=''; drawStaged(); drawNotes();
+    if(isNew){   // no row on the server yet — these ride along with the create
+      p.progressNotes.push({id:uid('n'),date:today(),ts:new Date().toISOString(),username:USER,note:txt,files:pendingFiles.splice(0)});
+      noteInp.value=''; drawStaged(); drawNotes();
+      toast('Note will post when you save the new project');
+      return;
+    }
+    postBtn.disabled=true;
+    try{
+      await API.send('POST','/projects/'+p.id+'/notes',{note:txt,files:pendingFiles.slice()});
+      pendingFiles.splice(0); noteInp.value=''; drawStaged();
+      await refreshNotesFromServer();
+      toast('Note posted');
+    }catch(e){ toast('Could not post the note: '+e.message); }
+    finally{ postBtn.disabled=false; }
   }
+  postBtn.addEventListener('click',postNote);
   attachRow.append(
     el('button',{class:'btn ghost sm',title:'Attach files to the note (or drop them anywhere on this row)',onclick:()=>attInp.click()},'📎 Attach'),
     el('div',{style:'flex:1'}),
-    el('button',{class:'btn accent sm',onclick:postNote},'Post note'));
+    postBtn);
   const noteList=el('div',{class:'pn-list',style:'margin-top:12px'});
   const fmtNoteWhen=n=>{
     if(n.ts){ const d=new Date(n.ts); if(!isNaN(d)) return d.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})+' '+d.toLocaleTimeString('en-US',{hour:'numeric',minute:'2-digit'}); }
@@ -2447,14 +2580,25 @@ function openProject(id,preset){
         const fw=el('div',{style:'display:flex;gap:10px;flex-wrap:wrap;margin-top:4px'});
         n.files.forEach(fl=>fw.append(el('span',{style:'display:inline-flex;align-items:center;gap:3px'},
           el('a',{href:'/api/files/'+fl.fileKey+'?name='+encodeURIComponent(fl.fileName||'attachment'),style:'font-size:12px;color:var(--blue)'},'📎 '+(fl.fileName||'attachment')),
-          el('button',{class:'btn ghost sm',style:'padding:0 4px;font-size:10px',title:'Remove this attachment — logged on save; the file stays in storage',
-            onclick:()=>{if(confirm('Remove attachment “'+(fl.fileName||'file')+'” from this note? Recorded in the change log when you save.')){n.files=n.files.filter(x=>x!==fl);drawNotes();}}},'✕'))));
+          el('button',{class:'btn ghost sm',style:'padding:0 4px;font-size:10px',title:'Remove this attachment — takes effect immediately; the file stays in storage',
+            onclick:async()=>{
+              if(!confirm('Remove attachment “'+(fl.fileName||'file')+'” from this note?\n\nTakes effect immediately and is recorded in the change log. The file stays in storage.'))return;
+              const keep=(n.files||[]).filter(x=>x!==fl);
+              if(isNew){ n.files=keep; drawNotes(); return; }
+              try{ await API.send('PATCH','/projects/'+p.id+'/notes/'+n.id,{files:keep}); await refreshNotesFromServer(); }
+              catch(e){ toast('Could not remove the attachment: '+e.message); }
+            }},'✕'))));
         body2.append(fw);
       }
       noteList.append(el('div',{class:'pn-item',style:'align-items:flex-start'}, body2,
-        el('button',{class:'btn ghost sm',title:'Remove note',onclick:()=>{if(confirm('Remove this note?')){p.progressNotes=p.progressNotes.filter(x=>x.id!==n.id);drawNotes();}}},'✕')));
+        el('button',{class:'btn ghost sm',title:'Remove note',onclick:async()=>{
+          if(!confirm('Remove this note?\n\nTakes effect immediately and is recorded in the change log.'))return;
+          if(isNew){ p.progressNotes=p.progressNotes.filter(x=>x.id!==n.id); drawNotes(); return; }
+          try{ await API.send('DELETE','/projects/'+p.id+'/notes/'+n.id); await refreshNotesFromServer(); }
+          catch(e){ toast('Could not remove the note: '+e.message); }
+        }},'✕')));
     });
-    if(!p.progressNotes.length) noteList.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'No notes yet. Notes are stamped with your name and the time, and save with the project.'));
+    if(!p.progressNotes.length) noteList.append(el('div',{style:'font-size:12px;color:var(--ink-3)'},'No notes yet. Notes are stamped with your name and the time, and post immediately — no need to save the project.'));
   }
   actBody.append(noteInp, stagedWrap, attachRow, noteList);
   actPanel.append(actBody); b.append(actPanel);
@@ -3676,8 +3820,14 @@ function viewProperty(){
   const right=el('div',{class:'grid',style:'gap:16px;align-content:start'});
   const projsAll=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
   const atlProjs=projsAll.filter(isATL);            // operational-cashflow work: own group, hidden by default
-  const projs=projsAll.filter(p2=>!isATL(p2));
+  /* Projects allocated across several properties get their own group, hidden by
+     default — this site usually cares about its own work. Unlike ATL this is
+     DISPLAY ONLY: the share is real money here, so it stays in the financial
+     summary, the cash projection and the GL tie-out whether shown or not. */
+  const sharedProjs=projsAll.filter(p2=>!isATL(p2)&&isSplitP(p2));
+  const projs=projsAll.filter(p2=>!isATL(p2)&&!isSplitP(p2));
   if(PFILT.hide.atl===undefined)PFILT.hide.atl=true;
+  if(PFILT.hide.shared===undefined)PFILT.hide.shared=true;
   const pj=el('div',{class:'panel'});
   const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
   // phase filter chips — click to hide/show a completion group
@@ -3686,6 +3836,12 @@ function viewProperty(){
     filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[ph.key]=!PFILT.hide[ph.key];render();}},
       el('span',{},ph.label), el('span',{class:'pf-n'},String(counts[ph.key]))));
   });
+  if(sharedProjs.length){ const hidden=!!PFILT.hide.shared;
+    filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),
+      title:(hidden?'Show':'Hide')+' — projects allocated across several properties. '+code+'’s share is counted in the financial summary either way.',
+      onclick:()=>{PFILT.hide.shared=!PFILT.hide.shared;render();}},
+      el('span',{},'⇄ Shared'), el('span',{class:'pf-n'},String(sharedProjs.length))));
+  }
   if(atlProjs.length){ const hidden=!!PFILT.hide.atl;
     filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:(hidden?'Show':'Hide')+' — operationally funded, excluded from SP projections',
       onclick:()=>{PFILT.hide.atl=!PFILT.hide.atl;render();}},
@@ -3694,12 +3850,17 @@ function viewProperty(){
   // Header + filters stay together in one sticky unit so they're visible while
   // scrolling the projects list (until the whole section scrolls past).
   const stick=el('div',{class:'pj-stick'},
-    el('div',{class:'ph'}, el('h3',{},'Projects'), el('div',{class:'sp'}), el('span',{class:'chip'},`${projs.length} total`)),
+    el('div',{class:'ph'}, el('h3',{},'Projects'), el('div',{class:'sp'}),
+      el('span',{class:'chip'},`${projs.length} total`+(sharedProjs.length?` · ${sharedProjs.length} shared`:''))),
     el('div',{class:'pad pj-filters',style:'padding-bottom:8px'},dateFilterGroup(PFILT),el('div',{class:'pj-gap'}),filt,
       el('div',{class:'pj-hint',style:'font-size:11px;color:var(--ink-3);margin-top:8px'},'Auto-grouped by completion. Click a group to hide it; 📌 pins a project to the top.')));
   pj.append(stick);
   const pb=el('div',{class:'proj-list'});
-  if(!projs.length)pb.append(el('div',{class:'empty'},'No projects yet for this property.'));
+  // Don't claim "no projects" when the only ones here are shared and collapsed.
+  if(!projs.length&&!(sharedProjs.length&&!PFILT.hide.shared))
+    pb.append(el('div',{class:'empty'}, sharedProjs.length
+      ? `No ${code}-only projects — ${sharedProjs.length} shared project${sharedProjs.length>1?'s':''} hidden. Click “⇄ Shared” above to show ${sharedProjs.length>1?'them':'it'}.`
+      : 'No projects yet for this property.'));
   function projRow(pr){
     const ih=isInHouse(pr);
     const split=isSplitP(pr);
@@ -3728,6 +3889,11 @@ function viewProperty(){
     pb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
     list.forEach(pr=>pb.append(projRow(pr)));
   });
+  if(sharedProjs.length&&!PFILT.hide.shared){
+    pb.append(el('div',{class:'grp-h'},'⇄ Shared across properties · '+code+'’s share',
+      el('span',{class:'grp-n'},String(sharedProjs.length))));
+    sharedProjs.slice().sort((a,b)=>(stage(b)-stage(a))||(b.dateAdded||'').localeCompare(a.dateAdded||'')).forEach(pr=>pb.append(projRow(pr)));
+  }
   if(atlProjs.length&&!PFILT.hide.atl){
     pb.append(el('div',{class:'grp-h'},'Above the Line · operational cashflow', el('span',{class:'grp-n'},String(atlProjs.length))));
     atlProjs.slice().sort((a,b)=>(b.dateAdded||'').localeCompare(a.dateAdded||'')).forEach(pr=>pb.append(projRow(pr)));

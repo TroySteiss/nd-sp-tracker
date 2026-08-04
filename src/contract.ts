@@ -27,6 +27,39 @@ export interface ContractVars {
   ownerNoticeAddr: string;
   contractorAddr: string;
   contractTotal: string;    // e.g. "$30,700.00"
+  /* Optional one-time / recurring breakdown of the Contract Price. Both are
+     free-text amounts printed VERBATIM (same rule as the multi template's
+     Contract Sum): nothing is totalled onto the document, because a derived
+     second figure on signed paper invites the two to disagree. Leave both blank
+     for a plain single-figure contract — the wording then reads as before. */
+  oneTimeAmount?: string;   // e.g. "$12,000.00" — mobilization / the job itself
+  ongoingAmount?: string;   // e.g. "$450.00" — recurring charge
+  ongoingPeriod?: RecurPeriod;
+}
+/** How a recurring SP charge is invoiced. */
+export type RecurPeriod = 'monthly' | 'quarterly' | 'annual';
+const RECUR_ADVERB: Record<RecurPeriod, string> = { monthly: 'monthly', quarterly: 'quarterly', annual: 'annually' };
+const recurPeriod = (v: ContractVars): RecurPeriod =>
+  v.ongoingPeriod === 'annual' ? 'annual' : v.ongoingPeriod === 'quarterly' ? 'quarterly' : 'monthly';
+const oneTimeOf = (v: ContractVars) => String(v.oneTimeAmount || '').trim();
+const ongoingOf = (v: ContractVars) => String(v.ongoingAmount || '').trim();
+export const hasPriceSplit = (v: ContractVars): boolean => !!(oneTimeOf(v) || ongoingOf(v));
+/** The sentence appended to the Contract Price paragraph when a split is given. */
+function priceSplitSentence(v: ContractVars): string {
+  const one = oneTimeOf(v), ong = ongoingOf(v);
+  const adv = RECUR_ADVERB[recurPeriod(v)];
+  if (one && ong) return ` The Contract Price is comprised of a one-time amount of ${one} and a recurring amount of ${ong} billed ${adv} over the term. The recurring amount is billed only for periods in which the Work is actually performed.`;
+  if (ong) return ` The Contract Price is a recurring amount of ${ong} billed ${adv} over the term, and is billed only for periods in which the Work is actually performed.`;
+  if (one) return ` The Contract Price is a one-time amount of ${one}, payable on satisfactory completion of the Work.`;
+  return '';
+}
+/** Exhibit A & B breakdown lines under CONTRACT TOTAL. */
+function priceSplitLines(v: ContractVars): string[] {
+  const one = oneTimeOf(v), ong = ongoingOf(v);
+  const out: string[] = [];
+  if (one) out.push(`One-time: ${one}`);
+  if (ong) out.push(`Recurring (${RECUR_ADVERB[recurPeriod(v)]}): ${ong}`);
+  return out;
 }
 /* The bid/mark plumbing and the signature stamper now live in the shared layout
    module. They stay exported from here so existing callers (routes.ts, pm.ts) keep
@@ -179,6 +212,10 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
   center('EXHIBIT A & B', yy, 13, bold); yy -= 20;
   center('CONTRACT PRICE & SCOPE', yy, 11, bold); yy -= 18;
   center(`CONTRACT TOTAL: ${vars.contractTotal}`, yy, 12, bold); yy -= 16;
+  // One-time / recurring breakdown, printed verbatim beneath the total so a
+  // mobilisation charge can never read as part of the recurring fee.
+  for (const line of priceSplitLines(vars)) { center(line, yy, 10, bold); yy -= 13; }
+  if (priceSplitLines(vars).length) yy -= 4;
 
   // Repeat the elections and exclusions here, on the page the bid is stapled
   // behind. A reader looking at a "Choose One" price table or the contractor's
@@ -239,7 +276,7 @@ function buildSections(v: ContractVars): { title: string; paras: string[] }[] {
     { title: 'Term', paras: [S('This Agreement shall commence on {EFFECTIVE_DATE} and remain in effect until {TERM_END_DATE} unless sooner terminated in accordance with this Agreement.')] },
     { title: 'Payment for Services and Contract Price', paras: [
       '',
-      S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price"). The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),
+      S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price").') + priceSplitSentence(v) + S(' The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),
       S('Progress Invoices and Payments. **All invoices under this Agreement must be itemized and for Work actually completed.** Provided that the Work performed is acceptable to Owner and subject to Section {SEC:contractor-representations-warranties-and-compliance} below, payment of each invoice is due within thirty (30) days of the Owner\'s receipt of a written invoice in accordance with this Section {SEC:payment-for-services-and-contract-price}(b). **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-price}(b).**'),
     ] },
     { title: 'Time of Performance and Completion', paras: [S('Contractor shall perform the Work promptly and diligently. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work may result in the termination of this Agreement by Owner, at Owner\'s sole discretion.')] },

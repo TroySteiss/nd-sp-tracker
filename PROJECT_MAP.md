@@ -57,6 +57,16 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 
 - **Properties, regions, colors, portfolios, managers, app title live in the DB** and are edited in
   the Settings view. Nothing region/property-specific is hardcoded in client or server logic.
+- **Region colour ramps (029)**: a region carries one base `color` and every property in it becomes
+  a shade of it (`shadesOf`/`regionShadeMap` in domain.ts, mirrored in app.js for the Settings
+  preview only). The ramp runs light → dark over the region's properties **ordered by code**, so it
+  is stable. Crucially the ramp is **written to `properties.color`**, never derived at read time —
+  every colour read in the app still goes through `pcolor()`/`properties.color`, so none of those
+  ~30 call sites changed. `reRampRegion()` in routes.ts is the only writer; it no-ops when the
+  region has no base colour, which is why **029 leaves every existing colour exactly as it was**
+  until an admin picks one. Re-ramps fire on: setting a region colour, creating a property, and
+  moving a property between regions. A same-region property save does **not** re-ramp, so a
+  deliberate per-property colour override in the property editor survives.
 - `shared/domain.ts` holds business rules (10-step lifecycle, cascade semantics, $5K no-contract
   threshold, cash/audit models, category list). Changing these changes reconciliation vs Yardi —
   they are unit-tested in `shared/domain.test.ts` (vitest, `npm test`).
@@ -67,8 +77,13 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   (016). Helpers `allocsOf/isSplit/shareFor/involvesProp/projOutflowFor` in domain.ts (mirrored in
   app.js). `projForProp` includes split projects; cashModel/glMatchScore/email amounts are
   share-weighted. Server normalizes via `normalizeSplit` (lead = list[0] = projects.property_code).
-  - **The editor's Properties field IS the control** — a checkbox dropdown (`.cat-dd` pattern,
-    grouped by region). Tick one site for a normal project, tick several to allocate across them.
+  - **The editor's Properties field IS the control** — a dropdown (`.cat-dd` pattern, grouped by
+    region) that is **single-select by default**, with a "⇄ Split across multiple properties" switch
+    at the foot of the list that swaps the rows over to checkboxes (`propSplitMode`, initialised
+    from `isSplitP(p)` so an already-split project opens in checkbox mode). Turning the switch off
+    collapses to the lead alone and confirms first, since that drops the other sites. Both modes
+    share `.cat-item`, so keep the single-select row's inline style at `font-family:inherit` — a
+    `font:inherit` shorthand would override `.cat-item`'s 12.5px and break the match.
     The old "⇄ Split properties" pill is gone. First ticked stays the lead; unticking the lead
     promotes the next; the last one can't be removed. 2+ ticked reveals the **Cost allocation**
     panel (by-unit-count default — pcts recomputed from current units at save; custom % must sum
@@ -132,6 +147,17 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   (`isAdminUser`) — enforced in `POST/PATCH /projects` (403, compares old vs new `steps.approved` +
   set of approved bids) and on contract generation (auto-cascades approval). Mirrored in the editor
   UI (bid Approve, lifecycle switch, Advance, cascade all gated on `IS_ADMIN`).
+- **pdf.js is served from THIS app, not a CDN** — `/vendor/pdfjs` (express.static over
+  `node_modules/pdfjs-dist/build`, pinned `^3.11.174`; `loadPdfJs()` in app.js). It used to load
+  from cdnjs at click time, so wherever that CDN was blocked the countersign modal and the bid-page
+  reviewer never opened at all. `GET /healthz` reports `pdfjs: true/false` so a pruned deploy is
+  visible. The CDN remains only as a last-ditch fallback — don't make it primary again.
+- **The contractor-signed slot must end up a PDF.** `toSignablePdf` in routes.ts takes the upload
+  and returns a PDF or refuses: PDF passes through, Office converts via LibreOffice, JPG/PNG is
+  wrapped onto a page (a phone photo of the signed page is the commonest return), anything else is
+  a 400 naming the problem. The original is kept in `files` when converted. **`accept=".pdf"` on
+  the input is not a gate** — drag-and-drop ignores it, which is how non-PDFs got in and left the
+  countersign modal blank with nothing to navigate.
 - **In-app countersigning**: `signatures` table (018, one PNG per user in files). `stampSignature`
   in contract.ts draws a signature PNG onto a stored PDF at click-placed coords. `POST
   /projects/:id/countersign` (admin-only; `preview:true` returns a data-URL without saving) stamps
@@ -158,7 +184,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | Table | Purpose | Notes |
 |---|---|---|
 | properties | property registry | pk `code`; region/manager/color/portfolio/contract_code/owner_entity/addresses/projection settings; update-email fields incl. `update_enabled` (in bulk download) + `update_include_discussed` (015); `notice_phone`/`notice_email` (027 — the multi-entity Notices block); `plan_end_year` (028 — plan horizon override) |
-| regions | region registry | pk `name`, `sort` — drives nav & dashboard grouping (014) |
+| regions | region registry | pk `name`, `sort` — drives nav & dashboard grouping (014); `color` = base colour for the shade ramp (029, nullable) |
 | projects | SP projects | jsonb `steps`; server re-applies cost rules on write; `plan_years` jsonb + `plan_kind` + `lender_flag` (028 — see Long-range plan below) |
 | bids / progress_notes | per-project children | rewritten wholesale on each project save; notes carry `username`, `ts`, `files` jsonb (015) — server stamps missing author/ts from the session |
 | cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
@@ -537,6 +563,21 @@ as extracted **text** via `scripts/pdf-text.mjs`. Diff those, **never the file b
 output is not byte-deterministic, so identical content differs by a couple of bytes per run and a
 checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
 glyph identical SP output before and after.
+
+## Known open bug — `stampSignature` ignores page /Rotate
+
+`stampSignature` (contract-layout.ts) maps the click's top-left fractions against
+`page.getSize()`, which is the **unrotated** MediaBox, and calls `drawImage` with no `rotate`.
+A viewer shows the page upright, so for a source page carrying `/Rotate 90` or `270` the fractions
+are divided by swapped dimensions and the signature lands in the wrong place and sideways; at
+`180` it lands upside-down. Unrotated pages (the vast majority) are correct, so it presents as
+"sometimes wrong". Demonstrated: a 612x792 page at /Rotate 90 is 792x612 upright, so the same
+fraction resolves to (306,158) instead of (396,122).
+
+`placeItem`/`drawMarks` in the same file already do this properly for bid pages — and their own
+comment says SigAnchor's convention is "fractions of the upright page" — so the stamper is simply
+inconsistent with them. Fixing it means undoing /Rotate the way `placeItem` does (anchor offset +
+`rotate: degrees(...)` per quadrant) and needs visual verification, not just arithmetic.
 
 ## Gotchas
 

@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
 import { conversionAvailable } from './convert.js';
@@ -21,7 +22,12 @@ app.use(sessionMiddleware());
 app.post('/api/login', login);
 app.post('/api/logout', logout);
 app.get('/api/auth/status', status);
-app.get('/healthz', (_req, res) => res.json({ ok: true, docConvert: conversionAvailable() }));
+app.get('/healthz', (_req, res) => res.json({
+  ok: true,
+  docConvert: conversionAvailable(),
+  // false ⇒ the countersign / bid-review PDF viewers can't load (see /vendor/pdfjs below)
+  pdfjs: existsSync(join(process.cwd(), 'node_modules', 'pdfjs-dist', 'build', 'pdf.min.js')),
+}));
 
 // The property-manager surface. Mounted before the main api router so /api/pm/*
 // never falls through to a full-view endpoint. Its own routes re-check the
@@ -38,6 +44,15 @@ app.use('/api', (err: any, _req: express.Request, res: express.Response, _next: 
   if (!res.headersSent) res.status(500).json({ error: err?.message || 'internal error' });
 });
 process.on('unhandledRejection', (e) => console.error('unhandledRejection:', e));
+
+/* pdf.js, served from our OWN origin.
+   The countersign placement modal and the bid-page reviewer both need it. It
+   used to be pulled from cdnjs at click time, so anywhere that CDN is blocked
+   (corporate network, egress rules) the modal simply never opened — the whole
+   signature feature looked broken. Shipping it with the app removes that
+   dependency; /healthz reports whether the files are actually present. */
+const pdfjsDir = join(process.cwd(), 'node_modules', 'pdfjs-dist', 'build');
+app.use('/vendor/pdfjs', express.static(pdfjsDir, { maxAge: '30d', immutable: true }));
 
 // static UI
 app.use(express.static(publicDir));

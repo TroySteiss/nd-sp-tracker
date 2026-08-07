@@ -69,6 +69,38 @@ const pcolor=code=>{
   let h=0; for(const ch of String(code||''))h=(h*31+ch.charCodeAt(0))>>>0;
   return FALLBACK_COLORS[h%FALLBACK_COLORS.length];
 };
+/* Region colour ramps (mirrors shared/domain.ts, migration 029). A region has one
+   base colour and each property in it is a shade of it. Only used to PREVIEW the
+   ramp in Settings — the server writes properties.color, which is what every
+   colour read in the app actually uses. Keep in step with domain.ts. */
+const isHexColor=v=>/^#[0-9a-fA-F]{6}$/.test(String(v||'').trim());
+const clampN=(n,lo,hi)=>Math.min(hi,Math.max(lo,n));
+function hexToHsl(hex){
+  if(!isHexColor(hex))return null;
+  const s=String(hex).trim();
+  const r=parseInt(s.slice(1,3),16)/255,g=parseInt(s.slice(3,5),16)/255,b=parseInt(s.slice(5,7),16)/255;
+  const max=Math.max(r,g,b),min=Math.min(r,g,b),d=max-min,l=(max+min)/2;
+  let h=0,sat=0;
+  if(d!==0){ sat=d/(1-Math.abs(2*l-1));
+    if(max===r)h=((g-b)/d)%6; else if(max===g)h=(b-r)/d+2; else h=(r-g)/d+4;
+    h*=60; if(h<0)h+=360; }
+  return {h,s:sat*100,l:l*100};
+}
+function hslToHex(h,s,l){
+  const S=clampN(s,0,100)/100,L=clampN(l,0,100)/100;
+  const c=(1-Math.abs(2*L-1))*S,hp=((h%360)+360)%360/60,x=c*(1-Math.abs((hp%2)-1));
+  const [r1,g1,b1]=hp<1?[c,x,0]:hp<2?[x,c,0]:hp<3?[0,c,x]:hp<4?[0,x,c]:hp<5?[x,0,c]:[c,0,x];
+  const m=L-c/2, hx=v=>Math.round(clampN((v+m)*255,0,255)).toString(16).padStart(2,'0');
+  return `#${hx(r1)}${hx(g1)}${hx(b1)}`;
+}
+function shadesOf(base,n){
+  const hsl=hexToHsl(base);
+  if(!hsl||n<=0)return [];
+  if(n===1)return [String(base).trim().toLowerCase()];
+  const span=clampN(14+n*5,24,46);
+  const top=clampN(hsl.l+span/2,22,84), bottom=clampN(top-span,12,78), step=(top-bottom)/(n-1);
+  return Array.from({length:n},(_,i)=>hslToHex(hsl.h,clampN(hsl.s+i*2,0,95),top-i*step));
+}
 /* Ordered region names (regions table; falls back to whatever the properties use). */
 const regionNames=()=> (S&&S.regions&&S.regions.length)? S.regions.map(r=>r.name)
   : [...new Set(((S&&S.properties)||[]).map(p=>p.region).filter(Boolean))];
@@ -1466,13 +1498,14 @@ function openProject(id,preset){
       if(typeof drawPlan==='function')drawPlan();   // auto plan amount follows the cost
     });
     return n;};
-  /* Properties — a checkbox dropdown. Tick one for a normal project; tick
-     several to allocate the cost across them (pro-rata by unit count by
-     default). This is the ONLY control for multi-property work: the first
-     ticked site stays the lead (projects.property_code), and 2+ ticked routes
-     contract generation to the multi-entity template, since those sites are
-     owned by different LLCs. */
+  /* Properties dropdown — single-select by default (one project, one site: the
+     common case), with a "Split across multiple properties" switch at the bottom
+     of the list that swaps the rows over to checkboxes. In split mode the first
+     ticked site stays the lead (projects.property_code), the cost is allocated
+     pro-rata by unit count, and contract generation routes to the multi-entity
+     template, since those sites are owned by different LLCs. */
   let propDDOpen=false;
+  let propSplitMode=isSplitP(p);   // an already-split project opens in checkbox mode
   const propDD=el('div',{class:'cat-dd',style:'display:block'});
   const propBtn=el('button',{type:'button',class:'bub dd-btn',style:'width:100%;justify-content:space-between',
     onclick:()=>{propDDOpen=!propDDOpen;drawPropDD();}});
@@ -1516,15 +1549,40 @@ function openProject(id,preset){
       if(pr.region!==lastRegion){ lastRegion=pr.region;
         propPanel.append(el('div',{style:'font-size:10.5px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);margin:7px 0 2px'},pr.region||'—')); }
       const on=sel.includes(pr.code);
-      const cb=el('input',{type:'checkbox',onchange:()=>toggleProp(pr.code)});
-      if(on)cb.checked=true;
-      propPanel.append(el('label',{class:'cat-item'},cb,
-        el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(pr.code)};display:inline-block;flex:none`}),
-        el('span',{style:'flex:1;min-width:0'},`${pr.code} — ${pr.name}`+((Number(pr.units)||0)?` · ${pr.units}u`:'')),
-        (on&&sel.length>1&&pr.code===sel[0])?el('span',{class:'chip'},'lead'):null));
+      const swatch=el('span',{style:`width:9px;height:9px;border-radius:2px;background:${pcolor(pr.code)};display:inline-block;flex:none`});
+      const label=el('span',{style:'flex:1;min-width:0'+(on&&!propSplitMode?';font-weight:600':'')},
+        `${pr.code} — ${pr.name}`+((Number(pr.units)||0)?` · ${pr.units}u`:''));
+      if(propSplitMode){
+        const cb=el('input',{type:'checkbox',onchange:()=>toggleProp(pr.code)});
+        if(on)cb.checked=true;
+        propPanel.append(el('label',{class:'cat-item'},cb,swatch,label,
+          (on&&sel.length>1&&pr.code===sel[0])?el('span',{class:'chip'},'lead'):null));
+      }else{
+        // Single-select: pick one and close. Same row styling, no checkbox.
+        propPanel.append(el('button',{type:'button',class:'cat-item',
+          style:'width:100%;text-align:left;border:none;font-family:inherit;color:inherit;background:'+(on?'var(--panel-2)':'transparent'),
+          onclick:()=>{ setProps([pr.code]); propDDOpen=false; drawPropDD(); }},
+          el('span',{style:'width:15px;flex:none;text-align:center;color:var(--blue)'},on?'✓':''),
+          swatch,label));
+      }
     });
-    if(sel.length>1)propPanel.append(el('div',{style:'font-size:11px;color:var(--ink-3);margin-top:7px;border-top:1px solid var(--line);padding-top:7px'},
-      'Cost is allocated by unit count by default — see the Cost allocation panel below.'));
+    /* The mode switch. Turning it off collapses back to the lead property alone,
+       which clears the split — so warn when that would drop sites. */
+    const modeCb=el('input',{type:'checkbox',onchange:()=>{
+      if(!propSplitMode){ propSplitMode=true; drawPropDD(); return; }
+      if(sel.length>1&&!confirm(`Turn off splitting?\n\n${sel.slice(1).join(', ')} will be removed and the whole cost goes to ${sel[0]}.`)){
+        drawPropDD(); return; }
+      propSplitMode=false;
+      setProps([sel[0]]);   // redraws everything, including the Cost allocation panel
+    }});
+    if(propSplitMode)modeCb.checked=true;
+    propPanel.append(el('div',{style:'margin-top:7px;border-top:1px solid var(--line);padding-top:5px'},
+      el('label',{class:'cat-item',title:'Share one project across several properties — allocated pro-rata by unit count'},
+        modeCb, el('span',{style:'flex:1;min-width:0'},'⇄ Split across multiple properties')),
+      el('div',{style:'font-size:11px;color:var(--ink-3);padding:0 7px 3px'},
+        propSplitMode
+          ? (sel.length>1?'Allocated by unit count — adjust it in the Cost allocation panel below.':'Tick the other sites this project covers.')
+          : 'Turn on to tick several sites and split the cost between them.')));
   }
   drawPropDD();
   const catSel=el('select',{onchange:e=>p.category=e.target.value});
@@ -2098,7 +2156,10 @@ function openProject(id,preset){
     try{
       const pdfjs=await loadPdfJs();
       const buf=await fetch('/api/bids/file/'+p.contractorSignedFileKey).then(r=>{if(!r.ok)throw new Error('could not read the stored file');return r.arrayBuffer();});
-      pdfDoc=await pdfjs.getDocument({data:buf}).promise;
+      // A file that isn't really a PDF used to fail here with pdf.js's bare
+      // "Invalid PDF structure", leaving a blank modal with nothing to navigate.
+      try{ pdfDoc=await pdfjs.getDocument({data:buf}).promise; }
+      catch(e){ throw new Error('The attached contractor-signed file isn’t a readable PDF ('+((e&&e.message)||e)+'). Remove it above and re-upload the signed contract — a photo, scan or Word copy is converted automatically now.'); }
       st.numPages=pdfDoc.numPages;
       // Pre-place on the Owner "By:" line: the anchor captured at generation is
       // exact; older/externally-signed PDFs fall back to a text scan; last
@@ -2154,7 +2215,10 @@ function openProject(id,preset){
       csRow.classList.add('ct-drop');
       const csBtn=el('button',{class:'btn ghost sm',onclick:()=>csInput.click()},'⬆ Upload contractor-signed');
       csRow.append(csBtn, el('span',{class:'bs-meta'},'One-party signed — shows as “Awaiting signature” on the dashboard until countersigned.'));
-      const csInput=addDrop(csRow,'.pdf,application/pdf',async file=>{
+      // Word/Excel and phone photos are converted to PDF server-side — the
+      // countersign viewer can only open a PDF. Drag-and-drop ignores `accept`,
+      // so the server is the real gate; this just widens the picker.
+      const csInput=addDrop(csRow,'.pdf,application/pdf,.doc,.docx,.jpg,.jpeg,.png',async file=>{
         csBtn.disabled=true; csBtn.textContent='Uploading…';
         const fd=new FormData(); fd.append('file',file);
         try{
@@ -2163,7 +2227,7 @@ function openProject(id,preset){
           const out=await r.json();
           p.contractorSignedFileKey=out.fileKey; p.contractorSignedFileName=out.fileName;
           Object.assign(p.steps,out.steps);
-          drawSteps(); refreshGen(); toast('Contractor-signed contract attached — awaiting countersignature');
+          drawSteps(); refreshGen(); toast(out.converted?'Converted to PDF and attached — awaiting countersignature':'Contractor-signed contract attached — awaiting countersignature');
         }catch(e){toast('Upload failed: '+e.message);csBtn.disabled=false;csBtn.textContent='⬆ Upload contractor-signed';}
       });
     }
@@ -3384,14 +3448,24 @@ async function openScopePreviewer(source, state, onSave){
     }},'Use this scope')));
 }
 
-/* Lazy-load pdf.js (CDN) for the countersign click-to-place preview. */
+/* Lazy-load pdf.js for the countersign click-to-place modal and the bid-page
+   reviewer. Served from OUR OWN origin (/vendor/pdfjs, see server.ts): it used to
+   come straight from cdnjs, so anywhere that CDN is blocked the modal never
+   opened and the signature feature looked broken. The CDN stays only as a
+   last-ditch fallback for a deploy whose node_modules got pruned. */
 async function loadPdfJs(){
   if(window.pdfjsLib) return window.pdfjsLib;
-  await new Promise((ok,fail)=>{ const s=document.createElement('script');
-    s.src='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.min.js';
-    s.onload=ok; s.onerror=()=>fail(new Error('could not load the PDF renderer — check your connection'));
-    document.head.append(s); });
-  window.pdfjsLib.GlobalWorkerOptions.workerSrc='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174/pdf.worker.min.js';
+  const load=src=>new Promise((ok,fail)=>{ const s=document.createElement('script');
+    s.src=src; s.onload=ok; s.onerror=()=>fail(new Error('failed to load '+src)); document.head.append(s); });
+  let base='/vendor/pdfjs';
+  try{ await load(base+'/pdf.min.js'); }
+  catch(e){
+    base='https://cdnjs.cloudflare.com/ajax/libs/pdf.js/3.11.174';
+    try{ await load(base+'/pdf.min.js'); }
+    catch(e2){ throw new Error('could not load the PDF renderer — it is served from this app at /vendor/pdfjs; check the deploy'); }
+  }
+  if(!window.pdfjsLib) throw new Error('could not load the PDF renderer');
+  window.pdfjsLib.GlobalWorkerOptions.workerSrc=base+'/pdf.worker.min.js';
   return window.pdfjsLib;
 }
 /* Crop a drawn-signature canvas to its ink (plus padding); null if blank. */
@@ -4779,11 +4853,41 @@ function viewSettings(){
   rp.append(el('div',{class:'ph'}, el('h3',{},'Regions'), el('div',{class:'sp'}), el('span',{class:'chip'},String((S.regions||[]).length))));
   const rpad=el('div',{class:'pad'});
   const regs=(S.regions||[]).slice();
+  rpad.append(el('p',{style:'margin:0 0 10px;color:var(--ink-3);font-size:12.5px'},
+    'Give a region one base colour and every property in it becomes a shade of it — no need to pick colours property by property. A property can still be recoloured individually in its own editor; that sticks until the region colour is set again.'));
   regs.forEach((r,i)=>{
     const row=el('div',{style:'display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)'});
-    const nProps=S.properties.filter(p=>p.region===r.name).length;
+    const inRegion=S.properties.filter(p=>p.region===r.name);
+    const nProps=inRegion.length;
+    /* Base colour → shade ramp. Saving re-shades every property in the region
+       server-side (regionShadeMap); the swatches here preview the same ramp. */
+    const codes=inRegion.map(p=>p.code).sort();
+    const swatches=el('span',{style:'display:inline-flex;gap:2px;align-items:center'});
+    const drawSwatches=(base)=>{
+      swatches.innerHTML='';
+      const ramp=isHexColor(base)?shadesOf(base,codes.length):codes.map(c=>pcolor(c));
+      codes.forEach((c,ix)=>swatches.append(el('span',{title:c+' → '+(ramp[ix]||''),
+        style:`width:13px;height:13px;border-radius:3px;display:inline-block;background:${ramp[ix]||pcolor(c)}`})));
+    };
+    const colorI=el('input',{type:'color',title:'Region base colour — properties become shades of it',
+      style:'width:34px;height:26px;padding:1px;border:1px solid var(--line);border-radius:6px;background:var(--panel)'});
+    colorI.value=isHexColor(r.color)?r.color:(codes.length?pcolor(codes[0]):'#3f7cb8');
+    colorI.addEventListener('input',()=>drawSwatches(colorI.value));
+    drawSwatches(r.color);
     row.append(
       el('span',{style:'flex:1;font-weight:600'},r.name),
+      colorI, swatches,
+      el('button',{class:'btn ghost sm',title:'Apply this colour — re-shades every property in the region',
+        onclick:async()=>{
+          if(!nProps){ toast('Add properties to this region first.'); return; }
+          if(!confirm(`Re-shade all ${nProps} propert${nProps===1?'y':'ies'} in ${r.name} as shades of ${colorI.value}?\n\nThis overwrites their individual colours.`))return;
+          try{ const res=await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{color:colorI.value});
+               await afterWrite(`${r.name} re-shaded — ${(res.recoloured||[]).length} propert${(res.recoloured||[]).length===1?'y':'ies'} updated`); }
+          catch(e){ toast('Failed: '+e.message); }
+        }},'Apply'),
+      isHexColor(r.color)?el('button',{class:'btn ghost sm',title:'Clear the region colour — property colours are kept as they are',
+        onclick:async()=>{ try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{color:''}); await afterWrite('Region colour cleared'); }
+          catch(e){ toast('Failed: '+e.message); } }},'⟲'):null,
       el('span',{class:'chip'},`${nProps} propert${nProps===1?'y':'ies'}`),
       el('button',{class:'btn ghost sm',title:'Move up',disabled:i===0?'':null,onclick:async()=>{ if(i===0)return;
         try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{sort:regs[i-1].sort});

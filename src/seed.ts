@@ -65,6 +65,9 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
   for (const r of regionRows) {
     await client.query('insert into regions(name,sort) values($1,$2) on conflict (name) do update set sort=excluded.sort', [r.name, r.sort])
       .catch(() => { /* pre-migration DB */ });
+    // region base colour (029) — property colours are stored, so this is just the ramp's input
+    await client.query('update regions set color=$1 where name=$2', [(r as any).color || null, r.name])
+      .catch(() => { /* pre-migration DB */ });
   }
 
   // projects + bids + progress notes

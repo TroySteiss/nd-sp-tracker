@@ -1,0 +1,11 @@
+-- 029: region base colour
+--
+-- A region carries one base colour and every property in it becomes a shade of
+-- it (see shadesOf in shared/domain.ts), so colours are assigned once per region
+-- instead of one property at a time.
+--
+-- Deliberately NULL for existing regions: properties.color stays the runtime
+-- source of truth for every colour read in the app, and nothing is re-shaded
+-- until an admin picks a region colour in Settings. That keeps this deploy
+-- visually identical to the one before it.
+alter table regions add column if not exists color text;

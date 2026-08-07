@@ -169,7 +169,7 @@ export async function assembleState(): Promise<AppState> {
                     cashTileMode: m.cash_tile_mode === 'afterDist' ? 'afterDist' : 'current' };
 
   const contractors = ctrs.rows.map((r: any) => ({ id: r.id, name: r.name, address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '', category: r.category ?? '', notes: r.notes ?? '' }));
-  const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0 }));
+  const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0, color: r.color ?? '' }));
 
   return { meta: metaObj, properties, regions: regionList, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors };
 }

@@ -209,7 +209,71 @@ export interface GLLine {
   partial?: boolean;
 }
 
-export interface Region { name: string; sort: number; }
+export interface Region { name: string; sort: number; color?: string; }
+
+/* ---------- Region colour ramps (029) ----------
+   A region carries one base colour; each property in it gets a shade of it, so
+   colours are set once per region instead of property by property. The ramp runs
+   light → dark across the region's properties (ordered by code), which is how
+   the original hand-picked palette read: Minot in blues, Williston in warm
+   oranges. `properties.color` remains the stored value every colour read in the
+   app uses — a ramp is applied by writing those rows, never by deriving at read
+   time, so nothing changes colour until an admin sets a region colour. */
+export const isHexColor = (v: any): boolean => /^#[0-9a-fA-F]{6}$/.test(String(v || '').trim());
+const clamp = (n: number, lo: number, hi: number) => Math.min(hi, Math.max(lo, n));
+
+export function hexToHsl(hex: string): { h: number; s: number; l: number } | null {
+  if (!isHexColor(hex)) return null;
+  const s = String(hex).trim();
+  const r = parseInt(s.slice(1, 3), 16) / 255, g = parseInt(s.slice(3, 5), 16) / 255, b = parseInt(s.slice(5, 7), 16) / 255;
+  const max = Math.max(r, g, b), min = Math.min(r, g, b), d = max - min;
+  const l = (max + min) / 2;
+  let h = 0, sat = 0;
+  if (d !== 0) {
+    sat = d / (1 - Math.abs(2 * l - 1));
+    if (max === r) h = ((g - b) / d) % 6;
+    else if (max === g) h = (b - r) / d + 2;
+    else h = (r - g) / d + 4;
+    h *= 60; if (h < 0) h += 360;
+  }
+  return { h, s: sat * 100, l: l * 100 };
+}
+export function hslToHex(h: number, s: number, l: number): string {
+  const S = clamp(s, 0, 100) / 100, L = clamp(l, 0, 100) / 100;
+  const c = (1 - Math.abs(2 * L - 1)) * S, hp = ((h % 360) + 360) % 360 / 60;
+  const x = c * (1 - Math.abs((hp % 2) - 1));
+  const [r1, g1, b1] = hp < 1 ? [c, x, 0] : hp < 2 ? [x, c, 0] : hp < 3 ? [0, c, x]
+    : hp < 4 ? [0, x, c] : hp < 5 ? [x, 0, c] : [c, 0, x];
+  const m = L - c / 2;
+  const hx = (v: number) => Math.round(clamp((v + m) * 255, 0, 255)).toString(16).padStart(2, '0');
+  return `#${hx(r1)}${hx(g1)}${hx(b1)}`;
+}
+/**
+ * `n` distinct shades of `base`, light → dark. Lightness is spread around the
+ * base and saturation deepens slightly as it darkens, so the ramp reads as one
+ * family rather than a gradient wash. Returns [] for a bad colour, and the base
+ * itself when n === 1 (a one-property region shouldn't get shifted).
+ */
+export function shadesOf(base: string, n: number): string[] {
+  const hsl = hexToHsl(base);
+  if (!hsl || n <= 0) return [];
+  const norm = String(base).trim().toLowerCase();
+  if (n === 1) return [norm];
+  const span = clamp(14 + n * 5, 24, 46);          // more properties ⇒ wider ramp
+  const top = clamp(hsl.l + span / 2, 22, 84);
+  const bottom = clamp(top - span, 12, 78);
+  const step = (top - bottom) / (n - 1);
+  return Array.from({ length: n }, (_, i) =>
+    hslToHex(hsl.h, clamp(hsl.s + i * 2, 0, 95), top - i * step));
+}
+/** The ramp as a code → colour map, ordered by property code for stability. */
+export function regionShadeMap(base: string, codes: string[]): Record<string, string> {
+  const ordered = [...codes].sort((a, b) => String(a).localeCompare(String(b)));
+  const ramp = shadesOf(base, ordered.length);
+  const out: Record<string, string> = {};
+  ordered.forEach((c, i) => { if (ramp[i]) out[c] = ramp[i]; });
+  return out;
+}
 
 export interface AppState {
   meta: Record<string, any>;

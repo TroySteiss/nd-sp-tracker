@@ -7,7 +7,7 @@ import {
   toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
   allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
-  lenderFlagged, planHorizonEnd, planYearCols,
+  lenderFlagged, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
 } from './domain.js';
 
@@ -375,5 +375,51 @@ describe('auto layer — the live pipeline is the plan\'s first year', () => {
     const p = proj({ anticipatedCost: 100000, split: { mode: 'custom', list: [{ property: 'CLND', pct: 60 }, { property: 'SPND', pct: 40 }] } });
     expect(effPlanForProp(p, 'SPND', '2026', 2026)).toBe(40000);
     expect(effPlanTotalForProp(p, 'CLND', 2026)).toBe(60000);
+  });
+});
+
+describe('region colour ramps (migration 029)', () => {
+  it('isHexColor accepts #rrggbb only', () => {
+    expect(isHexColor('#3f7cb8')).toBe(true);
+    expect(isHexColor('#ABCDEF')).toBe(true);
+    expect(isHexColor('3f7cb8')).toBe(false);
+    expect(isHexColor('#abc')).toBe(false);
+    expect(isHexColor('')).toBe(false);
+    expect(isHexColor(null)).toBe(false);
+  });
+  it('hex → hsl → hex round-trips', () => {
+    for (const hex of ['#3f7cb8', '#d2731f', '#4f9d69', '#808080', '#000000', '#ffffff']) {
+      const h = hexToHsl(hex)!;
+      expect(hslToHex(h.h, h.s, h.l)).toBe(hex);
+    }
+  });
+  it('shadesOf returns n distinct shades, light → dark, same hue family', () => {
+    const base = '#3f7cb8';
+    const ramp = shadesOf(base, 5);
+    expect(ramp.length).toBe(5);
+    expect(new Set(ramp).size).toBe(5);                       // all distinct
+    const ls = ramp.map((c) => hexToHsl(c)!.l);
+    for (let i = 1; i < ls.length; i++) expect(ls[i]).toBeLessThan(ls[i - 1]);   // monotonically darker
+    // One hue family: 8-bit hex quantization drifts the recovered hue by a
+    // degree or so, so assert closeness to the base rather than exact equality.
+    const baseHue = hexToHsl(base)!.h;
+    ramp.forEach((c) => expect(Math.abs(hexToHsl(c)!.h - baseHue)).toBeLessThan(3));
+  });
+  it('a one-property region keeps the base colour untouched', () => {
+    expect(shadesOf('#3f7cb8', 1)).toEqual(['#3f7cb8']);
+  });
+  it('degenerates safely', () => {
+    expect(shadesOf('nope', 4)).toEqual([]);
+    expect(shadesOf('#3f7cb8', 0)).toEqual([]);
+    expect(shadesOf('#ffffff', 3).length).toBe(3);            // extremes still produce a ramp
+    expect(shadesOf('#000000', 3).length).toBe(3);
+  });
+  it('regionShadeMap keys by code in sorted order so shades are stable', () => {
+    const m = regionShadeMap('#3f7cb8', ['TPND', 'CLND', 'SPND']);
+    expect(Object.keys(m).sort()).toEqual(['CLND', 'SPND', 'TPND']);
+    // CLND sorts first ⇒ lightest; TPND last ⇒ darkest
+    expect(hexToHsl(m.CLND)!.l).toBeGreaterThan(hexToHsl(m.TPND)!.l);
+    // re-running with the same inputs gives the same colours
+    expect(regionShadeMap('#3f7cb8', ['SPND', 'CLND', 'TPND'])).toEqual(m);
   });
 });

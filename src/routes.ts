@@ -12,7 +12,7 @@ import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
-import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planTotal, type Project, type AppState } from '../shared/domain.js';
+import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planTotal, isHexColor, regionShadeMap, type Project, type AppState } from '../shared/domain.js';
 import { buildPlanWorkbook } from './plan-export.js';
 
 export const api = Router();
@@ -1119,6 +1119,40 @@ api.post('/projects/:id/contract-file', memUpload.single('file'), async (req, re
   res.json({ fileKey: key, fileName: f.originalname, steps });
 });
 
+/**
+ * Anything a contractor sends back → a PDF the countersign viewer and the
+ * stamper can actually open.
+ *
+ * This slot used to store the upload verbatim. The file input's accept=".pdf"
+ * is only a hint for the picker dialog — a drag-and-drop bypasses it — so a
+ * photo of the signed page, a scan, or a Word copy went straight into the slot.
+ * pdf.js then threw on it and the countersign modal came up blank with no
+ * pages to navigate, which read as "the signature feature is broken".
+ * Bid uploads already convert-or-refuse; this does the same.
+ */
+async function toSignablePdf(buf: Buffer, name: string): Promise<{ pdf: Buffer; converted: boolean } | null> {
+  if (buf.subarray(0, 5).toString('latin1') === '%PDF-') return { pdf: buf, converted: false };
+  if (isOfficeDoc(name)) {
+    const out = await officeToPdf(buf, name);
+    return out ? { pdf: out, converted: true } : null;
+  }
+  const isJpg = buf[0] === 0xff && buf[1] === 0xd8;
+  const isPng = buf.subarray(0, 8).toString('latin1') === '\x89PNG\r\n\x1a\n';
+  if (isJpg || isPng) {
+    // A phone photo of the signed page is the commonest return format.
+    const doc = await PDFDocument.create();
+    const img = isJpg ? await doc.embedJpg(buf) : await doc.embedPng(buf);
+    const landscape = img.width > img.height;
+    const pw = landscape ? 792 : 612, ph = landscape ? 612 : 792;
+    const page = doc.addPage([pw, ph]);
+    const s = Math.min(pw / img.width, ph / img.height);
+    const w = img.width * s, h = img.height * s;
+    page.drawImage(img, { x: (pw - w) / 2, y: (ph - h) / 2, width: w, height: h });
+    return { pdf: Buffer.from(await doc.save()), converted: true };
+  }
+  return null;
+}
+
 /* ---------- Contractor-signed contract upload (one-party signed; the project
    counts as "awaiting signature" until the executed contract is attached) ---------- */
 api.post('/projects/:id/contractor-signed', memUpload.single('file'), async (req, res) => {
@@ -1127,7 +1161,21 @@ api.post('/projects/:id/contractor-signed', memUpload.single('file'), async (req
   const projRow = await query('select * from projects where id=$1', [req.params.id]);
   if (!projRow.rowCount) return res.status(404).json({ error: 'not found' });
   const proj = projRow.rows[0];
-  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  // Must end up as a PDF or the countersign viewer can't open it (see above).
+  const conv = await toSignablePdf(f.buffer, f.originalname);
+  if (!conv) {
+    return res.status(400).json({ error: `"${f.originalname}" isn't a PDF, a Word/Excel document or a JPG/PNG image, so the countersign viewer can't open it. Save or scan the signed contract as a PDF and upload that.` });
+  }
+  let key: string;
+  let storedName = f.originalname;
+  if (conv.converted) {
+    storedName = f.originalname.replace(/\.[^.]+$/, '') + '.pdf';
+    await storeFile(f.originalname, f.mimetype, f.buffer);   // keep the original for the record
+    key = await storeFile(storedName, 'application/pdf', conv.pdf);
+  } else {
+    key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  }
+  const f2 = { originalname: storedName };
   // A contractor-signed contract implies the contract was generated & sent —
   // same cascade as the generated-contract upload (but NOT "signed": that
   // stays tied to the countersigned/executed document).
@@ -1138,10 +1186,10 @@ api.post('/projects/:id/contractor-signed', memUpload.single('file'), async (req
   });
   await query(
     'update projects set contractor_signed_file_key=$1, contractor_signed_file_name=$2, steps=$3, updated_at=now() where id=$4',
-    [key, f.originalname, JSON.stringify(steps), proj.id]
+    [key, f2.originalname, JSON.stringify(steps), proj.id]
   );
-  logChange(req, { action: 'contract.contractorSigned', entityType: 'project', entityId: proj.id, property: proj.property_code, summary: `Contractor-signed contract "${f.originalname}" attached to "${proj.name}" — awaiting countersignature` });
-  res.json({ fileKey: key, fileName: f.originalname, steps });
+  logChange(req, { action: 'contract.contractorSigned', entityType: 'project', entityId: proj.id, property: proj.property_code, summary: `Contractor-signed contract "${f2.originalname}" attached to "${proj.name}"${conv.converted ? ` (converted to PDF from "${f.originalname}"; original kept)` : ''} — awaiting countersignature` });
+  res.json({ fileKey: key, fileName: f2.originalname, steps, converted: conv.converted });
 });
 
 /* ---------- Executed contract upload ---------- */
@@ -1388,13 +1436,34 @@ async function ensureRegion(name: string, client?: pg.PoolClient): Promise<void>
   await q('insert into regions(name,sort) select $1, coalesce(max(sort),0)+1 from regions on conflict (name) do nothing', [name]);
 }
 
+/**
+ * Re-shade every property in a region from its base colour (029).
+ *
+ * The ramp is WRITTEN to properties.color rather than derived at read time, so
+ * the ~30 places that read a property colour stay untouched and a region with no
+ * base colour keeps whatever was set by hand. Returns the codes it recoloured.
+ */
+async function reRampRegion(region: string, client?: pg.PoolClient): Promise<string[]> {
+  const q: any = client ? client.query.bind(client) : pool.query.bind(pool);
+  const reg = (await q('select color from regions where name=$1', [region])).rows[0];
+  const base = String(reg?.color || '').trim();
+  if (!isHexColor(base)) return [];                       // no base colour ⇒ leave hand-set colours alone
+  const codes = (await q('select code from properties where region=$1', [region])).rows.map((r: any) => r.code);
+  if (!codes.length) return [];
+  const map = regionShadeMap(base, codes);
+  for (const code of Object.keys(map)) await q('update properties set color=$1 where code=$2', [map[code], code]);
+  return Object.keys(map);
+}
+
 api.post('/regions', requireAdmin, async (req, res) => {
   const name = String(req.body?.name || '').trim();
   if (!name) return res.status(400).json({ error: 'region name required' });
   const exists = await query('select 1 from regions where name=$1', [name]);
   if (exists.rowCount) return res.status(400).json({ error: 'region already exists' });
+  const color = String(req.body?.color || '').trim();
   await ensureRegion(name);
-  logChange(req, { action: 'region.create', entityType: 'region', entityId: name, summary: `Region "${name}" added` });
+  if (isHexColor(color)) await query('update regions set color=$1 where name=$2', [color.toLowerCase(), name]);
+  logChange(req, { action: 'region.create', entityType: 'region', entityId: name, summary: `Region "${name}" added${isHexColor(color) ? ` (base colour ${color})` : ''}` });
   res.json({ ok: true, name });
 });
 
@@ -1405,15 +1474,28 @@ api.patch('/regions/:name', requireAdmin, async (req, res) => {
   if (!exists.rowCount) return res.status(404).json({ error: 'region not found' });
   const newName = b.name != null ? String(b.name).trim() : oldName;
   if (!newName) return res.status(400).json({ error: 'region name required' });
+  // Base colour (029): setting it re-shades every property in the region.
+  const wantColor = b.color !== undefined;
+  const color = String(b.color || '').trim().toLowerCase();
+  if (wantColor && color && !isHexColor(color)) return res.status(400).json({ error: 'color must be a #rrggbb hex value' });
+  let recoloured: string[] = [];
   await tx(async (c) => {
     if (newName !== oldName) {
       await c.query('update regions set name=$1 where name=$2', [newName, oldName]);
       await c.query('update properties set region=$1 where region=$2', [newName, oldName]);
     }
     if (b.sort != null && !isNaN(Number(b.sort))) await c.query('update regions set sort=$1 where name=$2', [Number(b.sort), newName]);
+    if (wantColor) {
+      await c.query('update regions set color=$1 where name=$2', [color || null, newName]);
+      if (color) recoloured = await reRampRegion(newName, c);
+    }
   });
   if (newName !== oldName) logChange(req, { action: 'region.rename', entityType: 'region', entityId: newName, summary: `Region "${oldName}" renamed to "${newName}"` });
-  res.json({ ok: true });
+  if (wantColor) logChange(req, { action: 'region.color', entityType: 'region', entityId: newName,
+    summary: color
+      ? `Region "${newName}" base colour set to ${color}${recoloured.length ? ` — ${recoloured.length} propert${recoloured.length === 1 ? 'y' : 'ies'} re-shaded (${recoloured.sort().join(', ')})` : ''}`
+      : `Region "${newName}" base colour cleared — existing property colours kept` });
+  res.json({ ok: true, recoloured });
 });
 
 api.delete('/regions/:name', requireAdmin, async (req, res) => {
@@ -1462,8 +1544,11 @@ api.post('/properties', requireAdmin, async (req, res) => {
       [code, v.name, v.region, v.manager, v.color, v.portfolio, v.sp_budget ?? 0, v.units ?? 0, v.owner_entity, v.address, v.owner_notice_addr, v.contract_code || code, v.plan_end_year]
     );
   });
-  logChange(req, { action: 'property.create', entityType: 'property', entityId: code, property: code, summary: `Property ${code} — "${v.name}" added to ${v.region}${glCount ? ` (${glCount} previously imported GL lines now visible)` : ''}${snap ? ' (cushion snapshot already on file)' : ''}` });
-  res.json({ ok: true, code, existingGlLines: glCount, hadSnapshot: !!snap });
+  // If the region carries a base colour, slot the new property into its ramp
+  // (and re-space the existing shades) instead of leaving the palette default.
+  const ramped = await reRampRegion(v.region);
+  logChange(req, { action: 'property.create', entityType: 'property', entityId: code, property: code, summary: `Property ${code} — "${v.name}" added to ${v.region}${glCount ? ` (${glCount} previously imported GL lines now visible)` : ''}${snap ? ' (cushion snapshot already on file)' : ''}${ramped.length ? ` · shaded from the ${v.region} region colour` : ''}` });
+  res.json({ ok: true, code, existingGlLines: glCount, hadSnapshot: !!snap, reshaded: ramped });
 });
 
 api.patch('/properties/:code', requireAdmin, async (req, res) => {
@@ -1488,6 +1573,10 @@ api.patch('/properties/:code', requireAdmin, async (req, res) => {
       [v.name, v.region, v.manager, v.color, v.portfolio, v.contract_code || code, v.owner_entity, v.address, v.owner_notice_addr, v.sp_budget ?? 0, v.units ?? 0, v.plan_end_year, code]
     );
   });
+  /* Moving a property between regions re-shades both ramps so each stays evenly
+     spread. A same-region save is NOT re-ramped — that would instantly overwrite
+     a deliberate per-property colour override from the editor. */
+  if (old.region !== v.region) { await reRampRegion(old.region); await reRampRegion(v.region); }
   const diffs: string[] = [];
   const cmp = (label: string, a: any, bv: any) => { if (String(a ?? '') !== String(bv ?? '')) diffs.push(`${label} "${a ?? ''}" → "${bv ?? ''}"`); };
   cmp('name', old.name, v.name); cmp('region', old.region, v.region); cmp('manager', old.manager, v.manager);

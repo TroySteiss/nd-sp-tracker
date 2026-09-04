@@ -2034,8 +2034,23 @@ function openProject(id,preset){
     // left: PDF page with click-to-place
     const canvasWrap=el('div',{style:'position:relative;border:1px solid var(--line);border-radius:8px;overflow:auto;max-height:52vh;background:var(--surface-2)'});
     const pdfCanvas=el('canvas',{style:'display:block;cursor:crosshair'});
-    const marker=el('div',{style:'position:absolute;display:none;pointer-events:none;width:110px;height:30px;border-left:2px solid #1fa356;border-bottom:2px solid #1fa356;transform:translateY(-100%)'});
+    // The marker is the stamp's real footprint — width from widthPct, height at
+    // the server's cap — with the solid rule at the "By:" line and a fifth of the
+    // box hanging below it (descenders). Mirrors SIG_MAX_H_PCT / SIG_BASELINE_DROP
+    // in src/contract-layout.ts — keep the two in step.
+    const SIG_MAX_H_PCT=0.032, SIG_BASELINE_DROP=0.2;
+    const marker=el('div',{style:'position:absolute;display:none;pointer-events:none;box-sizing:border-box;border:1.5px dashed #1fa356;border-radius:3px;background:rgba(31,163,86,.08)'});
+    const markerLine=el('div',{style:'position:absolute;left:-1.5px;right:-1.5px;height:0;border-top:2px solid #1fa356'});
+    marker.append(markerLine);
     canvasWrap.append(pdfCanvas,marker);
+    const placeMarker=()=>{
+      const show=st.xPct!=null&&st.markPage===st.page;
+      marker.style.display=show?'':'none'; if(!show)return;
+      const W=pdfCanvas.width,H=pdfCanvas.height, w=(st.widthPct||0.2)*W, h=SIG_MAX_H_PCT*H;
+      marker.style.width=w+'px'; marker.style.height=h+'px';
+      marker.style.left=(st.xPct*W)+'px'; marker.style.top=(st.yPct*H+h*SIG_BASELINE_DROP-h)+'px';
+      markerLine.style.top=(h*(1-SIG_BASELINE_DROP)-1.5)+'px';
+    };
     const pageLbl=el('span',{class:'mono',style:'font-size:12px'},'…');
     const nav=(d)=>async()=>{ st.page=Math.min(Math.max(1,st.page+d),st.numPages); await renderPage(); };
     let pdfDoc=null;
@@ -2049,12 +2064,14 @@ function openProject(id,preset){
       // so it also completes in backgrounded tabs.
       await page.render({canvasContext:pdfCanvas.getContext('2d'),viewport:v2,intent:'print'}).promise;
       pageLbl.textContent=st.page+' / '+st.numPages;
-      marker.style.display=(st.xPct!=null&&st.markPage===st.page)?'':'none';
-      if(st.xPct!=null&&st.markPage===st.page){ marker.style.left=(st.xPct*pdfCanvas.width)+'px'; marker.style.top=(st.yPct*pdfCanvas.height)+'px'; }
+      placeMarker();
     }
+    // Fractions of the canvas = fractions of the page AS DISPLAYED (pdf.js has
+    // already applied the CropBox and /Rotate) — the convention SigAnchor and the
+    // server's stamper share, so the stamp lands exactly where this marker sits.
     pdfCanvas.addEventListener('click',e=>{
       st.xPct=e.offsetX/pdfCanvas.width; st.yPct=e.offsetY/pdfCanvas.height; st.markPage=st.page;
-      marker.style.left=e.offsetX+'px'; marker.style.top=e.offsetY+'px'; marker.style.display='';
+      placeMarker();
       err.textContent='';
     });
 
@@ -2857,8 +2874,14 @@ async function findSignSpot(pdfDoc){
     const it=tc.items.find(i=>/as Agent for and on behalf of Owner/i.test(i.str||''))
           ||tc.items.find(i=>/IN WITNESS WHEREOF/i.test(i.str||''));
     if(it&&it.transform){
-      const e=it.transform[4], f=it.transform[5];   // PDF-space x,y (from bottom-left) of the text
-      return { page:pn, xPct:Math.max(0.05,(e+24)/vp.width), yPct:(vp.height-(f+14))/vp.height, widthPct:0.22 };
+      // The text origin is in page user space; run it through the viewport
+      // transform so the fractions are of the page AS DISPLAYED (CropBox, /Rotate,
+      // top-left origin) — the convention the marker, SigAnchor and the server's
+      // stamper share. Measured against raw page space, a return carrying /Rotate
+      // got a spot on the wrong axes.
+      const U=window.pdfjsLib&&window.pdfjsLib.Util;
+      const [px,py]=U?U.applyTransform([it.transform[4],it.transform[5]],vp.transform):[it.transform[4],vp.height-it.transform[5]];
+      return { page:pn, xPct:Math.max(0.05,(px+24)/vp.width), yPct:(py-14)/vp.height, widthPct:0.22 };
     }
   }
   return null;

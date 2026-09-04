@@ -486,13 +486,85 @@ export function exhibitText(doc: PDFDocument, roman: PDFFont, bold: PDFFont, bod
 
 /* ---------- In-app countersign: stamp a signature PNG onto an existing PDF ----------
    (page/xPct/yPct come from a click in the UI, measured from the page's top-left;
-   optionally fills the Name/Title/Date lines using the Monarch template spacing.) */
+   optionally fills the Name/Title/Date lines using the Monarch template spacing.)
+
+   COORDINATE CONVENTION — the click is a fraction of the page AS THE VIEWER SHOWS
+   IT: the CropBox, turned upright by /Rotate, origin top-left. That is what pdf.js
+   renders in the countersign modal and what SigAnchor records. The stamper used to
+   map those fractions straight onto page.getSize() — the UNROTATED MediaBox — and
+   drew with no rotation, so on a scanned return carrying /Rotate 90 or 270 the
+   signature landed off the line and sideways (upside-down at 180), and a CropBox
+   or a MediaBox that doesn't start at 0,0 shifted it. Everything below goes
+   through pageView()/visualToPage() so the stamp lands where the marker was, on
+   any page a scanner or phone can produce. placeItem/drawMarks already followed
+   this convention for bid pages; this brings the stamper in step with them. */
 export interface StampOpts {
   page: number;              // 1-based page number
-  xPct: number; yPct: number;  // click point (signature bottom-left), fraction of page size from TOP-left
-  widthPct?: number;         // signature width as fraction of page width (default 0.20)
+  xPct: number; yPct: number;  // click point (signature bottom-left), fraction of the DISPLAYED page from its TOP-left
+  widthPct?: number;         // signature width as fraction of the displayed page width (default 0.20)
+  maxHeightPct?: number;     // cap on signature height, fraction of the displayed page height (default SIG_MAX_H_PCT)
   name?: string; title?: string; dateText?: string;
   fillLines?: boolean;       // also print Name/Title/Date at template offsets below the signature
+}
+
+/* Signature footprint. The signature block puts the Owner line 22pt above the
+   "By:" baseline and the Name line 30pt below it, so an uncapped scrawl (a full
+   pad drawing is ~0.3 tall for its width, i.e. 40-60pt at 135pt wide) ran up
+   through the entity name. Cap the height at ~25pt on Letter — four fifths of
+   that (20pt) clears the Owner line's baseline — and let the remaining fifth hang
+   below the line the way a pen signature's descenders do, so the ink sits ON the
+   line rather than floating above it. Mirrored by the marker in app.js
+   (openCountersign) — keep the two in step. */
+export const SIG_MAX_H_PCT = 0.032;
+export const SIG_BASELINE_DROP = 0.2;
+
+/** How a viewer shows a page: its CropBox (clipped to the MediaBox) turned upright by /Rotate. */
+export interface PageView {
+  cb: { x: number; y: number; width: number; height: number };  // visible box in unrotated user space
+  rot: 0 | 90 | 180 | 270;                                       // /Rotate, normalised
+  vw: number; vh: number;                                        // displayed (upright) size
+}
+
+export function pageView(pg: PDFPage): PageView {
+  const mb = pg.getMediaBox();
+  const c = pg.getCropBox();   // pdf-lib falls back to the MediaBox when there is none
+  // Viewers use the intersection of the two; a stray CropBox outside the MediaBox shows nothing.
+  const x0 = Math.max(mb.x, c.x), y0 = Math.max(mb.y, c.y);
+  const x1 = Math.min(mb.x + mb.width, c.x + c.width), y1 = Math.min(mb.y + mb.height, c.y + c.height);
+  const cb = x1 > x0 && y1 > y0 ? { x: x0, y: y0, width: x1 - x0, height: y1 - y0 } : { x: mb.x, y: mb.y, width: mb.width, height: mb.height };
+  const raw = pg.getRotation().angle;
+  const rot = ((Math.round(raw / 90) * 90) % 360 + 360) % 360 as 0 | 90 | 180 | 270;
+  const landscape = rot === 90 || rot === 270;
+  return { cb, rot, vw: landscape ? cb.height : cb.width, vh: landscape ? cb.width : cb.height };
+}
+
+/**
+ * A point on the DISPLAYED page (fractions from the top-left, as the browser
+ * measures a click) → the same point in the page's unrotated user space, where
+ * drawImage/drawText coordinates live. Inverse of what a viewer does when it
+ * applies the CropBox origin and then /Rotate clockwise.
+ */
+export function visualToPage(v: PageView, xPct: number, yPct: number): { x: number; y: number } {
+  const vx = Math.max(0, Math.min(1, xPct)) * v.vw;
+  const vy = Math.max(0, Math.min(1, yPct)) * v.vh;
+  const { cb } = v;
+  switch (v.rot) {
+    case 90:  return { x: cb.x + vy, y: cb.y + vx };
+    case 180: return { x: cb.x + (v.vw - vx), y: cb.y + vy };
+    case 270: return { x: cb.x + (v.vh - vy), y: cb.y + (v.vw - vx) };
+    default:  return { x: cb.x + vx, y: cb.y + (v.vh - vy) };
+  }
+}
+
+/** Where the signature goes, in displayed-page points: size (aspect kept, height capped) and bottom-left. */
+export function stampFootprint(v: PageView, imgW: number, imgH: number, o: Pick<StampOpts, 'xPct' | 'yPct' | 'widthPct' | 'maxHeightPct'>) {
+  let w = v.vw * (o.widthPct && o.widthPct > 0.05 && o.widthPct < 0.8 ? o.widthPct : 0.2);
+  let h = w * (imgH / imgW);
+  const maxH = v.vh * (o.maxHeightPct && o.maxHeightPct > 0.01 && o.maxHeightPct < 0.5 ? o.maxHeightPct : SIG_MAX_H_PCT);
+  if (h > maxH) { w *= maxH / h; h = maxH; }
+  const left = Math.max(0, Math.min(1, o.xPct)) * v.vw;
+  const line = Math.max(0, Math.min(1, o.yPct)) * v.vh;   // the clicked "By:" line
+  return { w, h, left, bottom: line + h * SIG_BASELINE_DROP, line };
 }
 
 export async function stampSignature(pdfBytes: Buffer, sigPng: Buffer, o: StampOpts): Promise<Uint8Array> {
@@ -500,19 +572,27 @@ export async function stampSignature(pdfBytes: Buffer, sigPng: Buffer, o: StampO
   const pages = doc.getPages();
   const idx = Math.min(Math.max(1, Math.round(o.page)), pages.length) - 1;
   const pg = pages[idx];
-  const { width: pw, height: ph } = pg.getSize();
+  const view = pageView(pg);
   const img = await doc.embedPng(sigPng);
-  const sigW = pw * (o.widthPct && o.widthPct > 0.05 && o.widthPct < 0.8 ? o.widthPct : 0.2);
-  const sigH = sigW * (img.height / img.width);
-  const x = Math.max(0, Math.min(1, o.xPct)) * pw;
-  const yTop = Math.max(0, Math.min(1, o.yPct)) * ph;
-  const y = ph - yTop;                       // convert top-left fraction → PDF bottom-left coords
-  pg.drawImage(img, { x, y, width: sigW, height: sigH });
-  const roman = await doc.embedFont(StandardFonts.TimesRoman);
+  const fp = stampFootprint(view, img.width, img.height, o);
+  // Content drawn into unrotated space gets turned clockwise by /Rotate on
+  // display, so pre-turn it counter-clockwise by the same angle. pdf-lib rotates
+  // about the item's own origin (bottom-left of the image, baseline start of
+  // text), which is exactly the point visualToPage() locates — so every item
+  // is positioned by its own anchor and rotated in place.
+  const turn = degrees(view.rot);
+  const at = (vx: number, vy: number) => visualToPage(view, vx / view.vw, vy / view.vh);
+  const sigAt = at(fp.left, fp.bottom);
+  pg.drawImage(img, { x: sigAt.x, y: sigAt.y, width: fp.w, height: fp.h, rotate: turn });
   if (o.fillLines !== false) {
-    // Template spacing under the "By:" line: Name (-30), Title (-48), Date (-66).
+    const roman = await doc.embedFont(StandardFonts.TimesRoman);
+    // Template spacing under the "By:" line: Name (-30), Title (-48), Date (-66),
+    // starting just past each label — measured from the line itself, not from
+    // wherever the signature's bottom edge fell.
     const put = (v: string | undefined, dy: number) => {
-      if (v && v.trim()) pg.drawText(v.trim(), { x: x + 38, y: y - dy, size: 10, font: roman, color: rgb(0, 0, 0) });
+      if (!v || !v.trim()) return;
+      const p = at(fp.left + 38, fp.line + dy);
+      pg.drawText(v.trim(), { x: p.x, y: p.y, size: 10, font: roman, color: rgb(0, 0, 0), rotate: turn });
     };
     put(o.name, 30);
     put(o.title, 48);

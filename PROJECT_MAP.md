@@ -564,20 +564,30 @@ output is not byte-deterministic, so identical content differs by a couple of by
 checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
 glyph identical SP output before and after.
 
-## Known open bug — `stampSignature` ignores page /Rotate
+## Countersign stamp geometry (fixed 2026-09-04 — was "signature not on the line")
 
-`stampSignature` (contract-layout.ts) maps the click's top-left fractions against
-`page.getSize()`, which is the **unrotated** MediaBox, and calls `drawImage` with no `rotate`.
-A viewer shows the page upright, so for a source page carrying `/Rotate 90` or `270` the fractions
-are divided by swapped dimensions and the signature lands in the wrong place and sideways; at
-`180` it lands upside-down. Unrotated pages (the vast majority) are correct, so it presents as
-"sometimes wrong". Demonstrated: a 612x792 page at /Rotate 90 is 792x612 upright, so the same
-fraction resolves to (306,158) instead of (396,122).
+A countersign click is a fraction of the page **as the viewer shows it**: CropBox ∩ MediaBox,
+turned upright by `/Rotate`, origin top-left. That is what pdf.js renders in the modal, what
+`SigAnchor` records at generation, and what `findSignSpot` (app.js) now returns (it runs the
+text origin through `viewport.transform` instead of dividing raw page coords by the rotated
+viewport). `stampSignature` used to map those fractions straight onto `page.getSize()` — the
+**unrotated MediaBox** — with no `rotate`, so a scanned or phone-photo return carrying `/Rotate
+90/270` put the signature off the line and sideways (upside-down at 180), and a CropBox or a
+MediaBox not at 0,0 shifted it. Generated PDFs are unrotated, so it presented as "sometimes wrong".
 
-`placeItem`/`drawMarks` in the same file already do this properly for bid pages — and their own
-comment says SigAnchor's convention is "fractions of the upright page" — so the stamper is simply
-inconsistent with them. Fixing it means undoing /Rotate the way `placeItem` does (anchor offset +
-`rotate: degrees(...)` per quadrant) and needs visual verification, not just arithmetic.
+Now (`contract-layout.ts`): `pageView(page)` → `{cb, rot, vw, vh}`; `visualToPage(view, xPct,
+yPct)` inverts the viewer's CropBox-then-rotate; `stampFootprint` sizes the stamp against the
+*displayed* page. Every item (image and the Name/Title/Date lines) is positioned by its own
+origin through `visualToPage` and drawn with `rotate: degrees(rot)` — pdf-lib rotates about the
+item's origin, so nothing else moves. `src/contract-layout.test.ts` pins the corner mapping for
+all four rotations with an offset CropBox.
+
+Footprint rules (`SIG_MAX_H_PCT = 0.032`, `SIG_BASELINE_DROP = 0.2`, **mirrored by hand in the
+marker in `openCountersign`** — keep them in step): the signature keeps its aspect but is capped
+at ~25pt tall on Letter (a full-pad scrawl is ~0.35 tall for its width and ran up through the
+"Owner:" entity line 22pt above; 4/5 of 25pt clears that baseline), and a fifth of it hangs below
+the clicked line like a pen signature's descenders, so the ink sits *on* the line. The Name/Title/Date lines are measured
+from the line itself (-30/-48/-66, +38 across), not from the image's bottom edge.
 
 ## Gotchas
 

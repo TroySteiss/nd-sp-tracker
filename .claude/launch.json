@@ -6,6 +6,42 @@
       "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
       "runtimeArgs": ["--import", "tsx", "src/server.ts"],
       "port": 3000
+    },
+    {
+      "name": "budget",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "--prefix", "C:\\Users\\TroySteiss\\nd-budget-tool"],
+      "port": 3100
+    },
+    {
+      "name": "mmr",
+      "runtimeExecutable": "C:\\Users\\TroySteiss\\MMR Dashboard\\.venv\\Scripts\\python.exe",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8600", "--app-dir", "C:\\Users\\TroySteiss\\MMR Dashboard"],
+      "port": 8600
+    },
+    {
+      "name": "turnboard",
+      "runtimeExecutable": "C:\\Program Files\\nodejs\\node.exe",
+      "runtimeArgs": ["C:\\Users\\TroySteiss\\Turn Board\\scripts\\dev-here.mjs"],
+      "port": 3210
+    },
+    {
+      "name": "giveaway",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8642", "-d", "C:\\Users\\TroySteiss\\giveaway-survey\\public"],
+      "port": 8642
+    },
+    {
+      "name": "accruals",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "uvicorn", "app.main:app", "--port", "8650", "--app-dir", "C:\\Users\\TroySteiss\\Accrual Tool"],
+      "port": 8650
+    },
+    {
+      "name": "om-preview",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["-m", "http.server", "8641", "-d", "C:\\Users\\TroySteiss\\MIMG\\Monarch General - Concession Stand\\UW"],
+      "port": 8641
     }
   ]
 }

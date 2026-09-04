@@ -720,6 +720,21 @@ small laptops. Each canvas now reserves its shape with CSS `aspect-ratio` and is
 re-renders only pages already drawn. Marks measure against the wrap, so a box placed on an
 undrawn page is still right.
 
+## Phone layout (≤820px) — 2026-09-04 pass
+
+All in the last `@media(max-width:820px)` block of styles.css plus three `isMobile` branches in
+app.js. Dashboard property/category filters and the Projects filter panel sit behind a
+`mobileFold('Filters', <active-filter hint>)` (`details.sec-fold`, closed by default) so the
+first screen is content, not controls. Sheet headers wrap and the autosave status
+(`.save-stat`) drops to its own line so `Save & close` stays on-screen. Any element directly
+containing a `table.tbl` scrolls horizontally on its own (`:has(> table.tbl)`), never the page;
+the Contracts list (`table.ct-list`) instead turns into stacked cards (thead hidden, #/dates
+dropped, chips inline) because nine columns can't fit; `table.ct-byprop` keeps a 150px name
+column. Change-order two-up rows (`.co-half`) stack. KPI tiles go two-up below 480px. `body`
+gets `overflow-x:hidden` as a backstop. Check phone changes with the mock backend + the Browser
+pane's mobile preset — measure `document.documentElement.scrollWidth` against `innerWidth` on
+each view; anything over is a page-wide sideways scroll.
+
 ## Gotchas
 
 - Dates arriving as MM/DD/YYYY must go through `dnull()` before hitting date columns.

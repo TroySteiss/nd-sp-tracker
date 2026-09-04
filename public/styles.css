@@ -623,4 +623,51 @@ details.coll[open]>summary .chev{transform:rotate(90deg)}
   .recon,.bid{grid-template-columns:1fr}
 }
 
+/* ============================================================
+   Mobile refinements (2026-09-04). After the autosave, change-order and
+   budget-notes additions the phone view had: sheet headers pushing their
+   primary button off-screen, tables running past the viewport, the
+   dashboard/projects filter stacks filling the first screen, one-per-row
+   KPI tiles, and two-column form rows squeezed to ~150px each.
+   ============================================================ */
+@media(max-width:820px){
+  body{overflow-x:hidden}                       /* nothing may scroll the page sideways */
+  /* Sheet headers wrap; the autosave status drops to its own line under the title. */
+  .sheet .sh{flex-wrap:wrap;gap:8px 10px}
+  .sheet .sh h2{min-width:0;flex:1 1 120px}
+  .sheet .sh .save-stat{order:10;flex-basis:100%;font-size:11px;white-space:normal}
+  /* Any table scrolls inside its own box, never the page. */
+  .content :has(> table.tbl),.sheet :has(> table.tbl){overflow-x:auto;-webkit-overflow-scrolling:touch;max-width:100%}
+  /* Contracts list: nine columns can't fit a phone, so each row becomes a card —
+     project + file name on top, then property, contractor, total, status and the
+     file link inline. Row number and the two dates are dropped. */
+  table.ct-list thead{display:none}
+  table.ct-list,table.ct-list tbody,table.ct-list tr{display:block;width:auto}
+  table.ct-list tr{padding:10px 12px;border-bottom:1px solid var(--line-2)}
+  table.ct-list td{display:block;padding:2px 0;border:0;text-align:left;overflow-wrap:anywhere}
+  table.ct-list td:nth-child(3),table.ct-list td:nth-child(4),table.ct-list td:nth-child(5),
+  table.ct-list td:nth-child(6),table.ct-list td:nth-child(9){display:inline-block;margin:4px 10px 0 0;vertical-align:middle}
+  table.ct-list td:nth-child(1),table.ct-list td:nth-child(7),table.ct-list td:nth-child(8){display:none}
+  /* Property header actions wrap onto a second line instead of past the edge. */
+  .prop-head .ph-actions{flex-wrap:wrap;justify-content:flex-start}
+  /* Topbar controls — dashboard actions, contracts filters — fit the width. */
+  .topbar .tb-actions{gap:6px}
+  .topbar .tb-actions .btn{padding:6px 10px;font-size:12.5px}
+  .topbar>input[type=search]{flex:1 1 100%;min-width:0!important}
+  .topbar>select{flex:1 1 45%;min-width:0;font-size:14px}
+  /* Contracts-by-property: the name column was wrapping to four lines. */
+  table.ct-byprop td:first-child,table.ct-byprop th:first-child{min-width:150px}
+  /* Filter folds (dashboard property/category bar, projects filter panel). */
+  .sec-fold .filter-panel{margin-top:8px;margin-bottom:0}
+  .dash-filterbar .sec-fold>summary.sec-sum{padding:4px 2px}
+  .dash-filterbar .sec-fold .dash-filter{margin-top:8px}
+  /* Two-up form rows in the change-order sheet stack. */
+  .sheet .co-half{flex-direction:column;gap:0!important}
+}
+@media(max-width:480px){
+  /* Two small tiles per row read better than one tall tile per row. */
+  .kpis{grid-template-columns:repeat(2,minmax(0,1fr))!important}
+  .kpi .val{font-size:17px}
+}
+
 @media(prefers-reduced-motion:reduce){*{animation:none!important;transition:none!important}}

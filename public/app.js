@@ -741,7 +741,7 @@ function viewContracts(){
   allPlanned.forEach(p=>{const k=p.property;if(!byProp[k])byProp[k]={exe:0,gen:0,plan:0,t:0};byProp[k].plan++;});
   const bpPanel=el('div',{class:'panel'});
   bpPanel.append(el('div',{class:'ph'}, el('h3',{},'Contracts by property')));
-  const bpt=el('table',{class:'tbl'});
+  const bpt=el('table',{class:'tbl ct-byprop'});
   bpt.append(el('thead',{},tr(th('Property'),th('Executed','r'),th('Generated','r'),th('Planned','r'),th('Total value','r'))));
   const bptb=el('tbody');
   Object.keys(byProp).sort((a,b)=>byProp[b].t-byProp[a].t).forEach(code=>{
@@ -764,7 +764,7 @@ function viewContracts(){
   if(!totalShown){
     panel.append(el('div',{class:'empty'}, el('div',{class:'big'},showPlanned?'No projects awaiting a contract.':'No contracts yet'), showPlanned?'All approved projects have contracts generated.':'Generate a contract from a project\'s Bids panel.'));
   } else {
-    const t=el('table',{class:'tbl'});
+    const t=el('table',{class:'tbl ct-list'});   // ct-list: phones hide #, Eff. date, Term end (styles.css)
     t.append(el('thead',{},tr(th('#'),th('Project'),th('Property'),th('Contractor'),th('Total','r'),th('Status'),th('Eff. date'),th('Term end'),th('File'))));
     const tb=el('tbody');
     let i=0;
@@ -901,7 +901,7 @@ function openChangeOrders(contractId){
     if(hint) f.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},hint));
     f.append(ctrl); return f;
   };
-  const half=(a,b)=>el('div',{style:'display:flex;gap:12px'},el('div',{style:'flex:1;min-width:0'},a),el('div',{style:'flex:1;min-width:0'},b));
+  const half=(a,b)=>el('div',{class:'co-half',style:'display:flex;gap:12px'},el('div',{style:'flex:1;min-width:0'},a),el('div',{style:'flex:1;min-width:0'},b));   // .co-half stacks on phones
 
   const dateI=el('input',{type:'date',value:today()});
   // el() sets value via setAttribute, which does not work for <textarea> — assign after.
@@ -1019,7 +1019,14 @@ function viewDashboard(){
   const filterBar=el('div',{class:'dash-filter'}, pbWrap, catRow);
   // On mobile the filters live inside the sticky header so they stay locked at
   // the top and drive every section below; on desktop they sit in the body.
-  if(isMobile){ bar.append(el('div',{class:'dash-filterbar'}, filterBar)); } else { body.append(filterBar); }
+  if(isMobile){
+    // On a phone the property chips + category picker ate a third of the first
+    // screen and sat inside the sticky header. Tuck them behind a fold whose
+    // hint says what is active, so the header is one line until you need them.
+    const nP=DASH.props.length, nC=DASH.cats.length;
+    const hint=(nP||nC)?[nP?`${nP} propert${nP>1?'ies':'y'}`:null, nC?`${nC} categor${nC>1?'ies':'y'}`:null].filter(Boolean).join(' · '):'All properties';
+    bar.append(el('div',{class:'dash-filterbar'}, mobileFold('Filters', hint, filterBar)));
+  } else { body.append(filterBar); }
 
   const all=S.projects.filter(p=>inReg(p.property)&&catOk(p)&&!isATL(p));   // Above-the-Line hidden from the dashboard
   const notesCount=all.filter(p=>phase(p)==='note').length;
@@ -1429,7 +1436,15 @@ function viewProjects(){
   if(!allC) FILT.cats.slice().sort().forEach(cat=>catRow.append(el('button',{class:'bub on accent sm',title:'Remove',onclick:()=>toggle(FILT.cats,cat)},cat,' ✕')));
   fbar.append(catRow);
   fbar.append(dateFilterGroup(FILT));
-  body.append(fbar);
+  // Phones: the filter panel (property, status, category, dates) filled the whole
+  // first screen. Fold it, with the active filters summarised in the hint.
+  if(window.matchMedia('(max-width:820px)').matches){
+    const nS=FILT.statuses.length;
+    const hint=[FILT.props.length<visProps.length?`${FILT.props.length}/${visProps.length} properties`:null,
+      FILT.cats.length<ALLCATS.length?`${FILT.cats.length} categories`:null,
+      `${nS} status${nS===1?'':'es'}`, (FILT.dateFrom||FILT.dateTo)?'date range':null].filter(Boolean).join(' · ');
+    body.append(mobileFold('Filters', hint, fbar));
+  } else body.append(fbar);
 
   // ---- apply filters (statuses are mutually exclusive via projStatus) ----
   let list=preStatus.filter(p=>FILT.statuses.includes(projStatus(p)));
@@ -1618,7 +1633,7 @@ function openProject(id,preset){
      project still needs Save — that is the moment it comes into being, and a
      half-typed name must not create a row. */
   const meaningfulBid=bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||(Array.isArray(bd.files)&&bd.files.length)||bd.approved;
-  const saveStat=el('span',{style:'font-size:12px;color:var(--ink-3);white-space:nowrap'}, isNew?'':'Autosaves as you edit');
+  const saveStat=el('span',{class:'save-stat',style:'font-size:12px;color:var(--ink-3);white-space:nowrap'}, isNew?'':'Autosaves as you edit');
   const snapshot=()=>{
     const q={...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)};
     if(q.split&&(!q.split.list||q.split.list.length<2))q.split=null;

@@ -26,7 +26,7 @@ import { query, tx } from './db.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { requestContractRevision } from './revision.js';
 import { getUserRecord, roleOf, normUser } from './auth.js';
-import { LIFECYCLE, CATEGORIES, STEP_KEYS, CONTRACT_STEPS } from '../shared/domain.js';
+import { LIFECYCLE, CATEGORIES, STEP_KEYS, CONTRACT_STEPS, syncDateDerivedSteps } from '../shared/domain.js';
 
 const memUpload = multer({ storage: multer.memoryStorage(), limits: { fileSize: 40 * 1024 * 1024 } });
 const uid = (p: string) => p + Math.random().toString(36).slice(2, 9);
@@ -34,6 +34,11 @@ const uid = (p: string) => p + Math.random().toString(36).slice(2, 9);
 /* pg returns `date` columns as JS Date objects, so String(v).slice(0,10) yields
    "Mon Apr 13" rather than an ISO date. Same helper as db.ts. */
 const isoDate = (v: any): string => (v instanceof Date ? v.toISOString().slice(0, 10) : v == null ? '' : String(v).slice(0, 10));
+/** Today as yyyy-mm-dd in server-local time (toISOString() is UTC — early by an evening). */
+const localToday = (): string => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+};
 
 export const pmApi = Router();
 
@@ -138,7 +143,13 @@ pmApi.get('/state', async (req, res) => {
       dateAdded: isoDate(p.date_added),
       plannedStart: isoDate(p.planned_start),
       plannedEnd: isoDate(p.planned_end),
-      steps: p.steps || {}, notes: p.notes || '', onHold: !!p.on_hold, inHouse: !!p.in_house,
+      // Same date-derived Work Started as the main view (rowToProject), so the
+      // PM's read-only lifecycle row matches what the office sees.
+      steps: syncDateDerivedSteps({
+        steps: { ...(p.steps || {}) }, inHouse: !!p.in_house, onHold: !!p.on_hold,
+        plannedStart: isoDate(p.planned_start),
+      } as any, localToday()).steps,
+      notes: p.notes || '', onHold: !!p.on_hold, inHouse: !!p.in_house,
       contractFileKey: p.contract_file_key, contractFileName: p.contract_file_name,
       contractorSignedFileKey: p.contractor_signed_file_key, contractorSignedFileName: p.contractor_signed_file_name,
       executedFileKey: p.executed_contract_file_key, executedFileName: p.executed_contract_file_name,

@@ -1,0 +1,11 @@
+-- Change orders — 2026-08-25
+--
+-- A change order amends an already-generated contract (either kind): it prints
+-- the previous and revised Contract Sums and the change itself, and both parties
+-- sign it. Generated ones are kept on the contract row they amend, in order —
+-- the array index + 1 IS the change order number, and the latest entry's
+-- revisedSum is the contract's current value.
+--
+-- Each entry: { no, date, fileKey, fileName, previousSum, revisedSum,
+--               additionalDays, description, username, createdAt }
+alter table contracts add column if not exists change_orders jsonb not null default '[]'::jsonb;

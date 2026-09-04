@@ -285,6 +285,27 @@ export interface AppState {
   projects: Project[];
   contracts?: ContractRecord[];
   contractors?: Contractor[];
+  budgetItems?: BudgetItem[];
+}
+
+/* ---------- Non-SP budget notes (migration 031) ----------
+   Above-the-line recurring costs with month-level timing, per property.
+   PURELY INFORMATIONAL: nothing in cashModel/auditModel/the plan reads these —
+   the same exclusion principle as ATL projects. An item is active in year Y
+   when (firstYear ?? -∞) <= Y <= (lastYear ?? +∞). */
+export interface BudgetItem {
+  id: string;
+  property: string;
+  name: string;
+  vendor: string;
+  amount: number | null;
+  month: number;              // 1–12, the month the cost lands each year
+  firstYear: number | null;   // null = already ongoing
+  lastYear: number | null;    // null = ongoing indefinitely
+  notes: string;
+  fileKey: string | null;     // optional attachment (e.g. the signed contract)
+  fileName: string | null;
+  createdBy: string;
 }
 
 /* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
@@ -364,6 +385,37 @@ export const projOutflow = (p: Project): number => p.actualCost != null ? Number
 export function isComplete(p: Project): boolean {
   if (p.inHouse) { const t = Number(p.totalToComplete) || 0, d = Number(p.amountCompleted) || 0; return t > 0 && d >= t; }
   return !!(p.steps && p.steps.completed);
+}
+
+/* ---------- Date-derived lifecycle (2026-08-26) ----------
+   Work Started ticks ITSELF once the planned start date arrives (inclusive:
+   ON the date counts). Work Completed never does — a passed end date only
+   FLAGS the project for human confirmation (needsCompletionReview, shown on
+   the dashboard), because "the calendar says it should be done" is not the
+   same fact as "the contractor finished".
+
+   Both rules apply only to projects genuinely in the pipeline: approved,
+   contracted (not in-house — its progress is $ completed, not steps), and not
+   on hold. Dates are ISO yyyy-mm-dd strings, so <= / < compare correctly. */
+
+/** One-way: sets steps.workStarted when the planned start has arrived. Never
+    clears it — a manual tick (work started early, partial payment) survives. */
+export function syncDateDerivedSteps(p: Project, todayIso: string): Project {
+  if (p.inHouse || p.onHold || !isApproved(p)) return p;
+  if (p.plannedStart && p.plannedStart <= todayIso) {
+    if (!p.steps) p.steps = {};
+    p.steps.workStarted = true;
+  }
+  return p;
+}
+
+/** The planned end has PASSED (strictly — finishing on the end date is on
+    time) and Work Completed is still unticked. Surfaced on the dashboard for
+    confirmation; deliberately not auto-ticked. */
+export function needsCompletionReview(p: Project, todayIso: string): boolean {
+  if (p.inHouse || p.onHold || !isApproved(p) || isComplete(p)) return false;
+  if (p.steps && p.steps.workCompleted) return false;
+  return !!(p.plannedEnd && p.plannedEnd < todayIso);
 }
 
 /* ---------- In-house (own-crew) helpers (spec §6) ---------- */

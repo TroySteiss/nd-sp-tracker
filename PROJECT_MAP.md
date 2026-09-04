@@ -2,7 +2,14 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-07-31 (long-range plan — loan-term horizon per property,
+> Last updated: 2026-09-01 (date-derived lifecycle — Work Started auto-ticks on
+> the planned start date; a passed planned end flags "confirm work completed" on
+> the dashboard, never auto-ticks).
+> Previously: 2026-08-26 (non-SP budget notes — per-property above-the-line
+> items with month-level timing, informational only; panel on the property view).
+> Previously: 2026-08-25 (change orders — filled change-order PDF generator on
+> every contract record, admin-only, auto-numbered, previous/revised sums verbatim).
+> Previously: 2026-07-31 (long-range plan — loan-term horizon per property,
 > per-year $ on projects + Post-Refi bucket, Plan tab, TRMO-layout Excel export).
 > Previously: 2026-07-30 (multi-entity contract generator — separate 27-section
 > template, Exhibits A–E, shared PDF layout engine extracted from contract.ts).
@@ -34,6 +41,8 @@ Express (src/server.ts) ── static: public/
    │     │                      (no placeholder scope, ever)
    │     ├── src/contract-multi.ts   multi-entity Agreement ("Contract Sum", 27 sections,
    │     │                      Exhibits A–E) — a SEPARATE template, not a variant
+   │     ├── src/change-order.ts    filled change-order PDF amending an existing contract
+   │     │                      (either kind) — the standalone version of Exhibit E
    │     ├── src/contract-layout.ts  shared PDF engine both templates render through:
    │     │                      Layout (page cursor + rich text), bid embedding, page
    │     │                      marks, exhibit text, form boxes, stampSignature
@@ -193,8 +202,9 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
 | cash_adjustments | mid-month deltas | FK to properties; survives imports |
 | gl_lines | SP general ledger | **no FK** (014) — keeps lines for unknown codes; `linked_project_id` ties to projects |
-| contracts | generated-contract records | Contracts view. `kind` 'sp'\|'multi' + `details` jsonb (027). `project_id` is nullable and is **always null for 'multi'** — those aren't Special Projects. A multi row's `property_code` is only the lead property; `details.entities` is the authoritative list |
+| contracts | generated-contract records | Contracts view. `kind` 'sp'\|'multi' + `details` jsonb (027). `project_id` is nullable and is **always null for 'multi'** — those aren't Special Projects. A multi row's `property_code` is only the lead property; `details.entities` is the authoritative list. `change_orders` jsonb (030) — issued change orders in order; index+1 IS the CO number, latest `revisedSum` = current value |
 | contractors | vendor directory | unique name |
+| budget_items | non-SP budget notes (031) | per-property ABOVE-THE-LINE recurring costs with month-level timing (annual fire inspection, landscaping/snow contracts): amount lands in `month` every year `first_year`→`last_year` (NULL = open-ended); optional attachment in files. **Informational only — nothing reads it** (see below). on delete cascade with the property |
 | files | uploaded/generated files as bytea | survive Railway redeploys (no volume) |
 | imports | import history (014) | kind gl/cushion, raw workbook file_key, label, counts, username |
 | change_log | who/what/when audit (014) | username, action, summary, details jsonb |
@@ -232,6 +242,11 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
 - Multi-entity contracts (all **admin-only**): `GET /contracts/multi/sections` (the 27 sections,
   for the omit checkboxes), `POST /contracts/multi/bid` (upload the Exhibit A bid; same
   Office→PDF conversion as project bids), `POST /contracts/multi` (generate).
+- `POST /contracts/:id/change-order` (admin-only) — generate a change order amending an existing
+  contract of either kind. See "Change orders" below.
+- Budget notes (any signed-in user): `POST /budget-items`, `PATCH/DELETE /budget-items/:id`,
+  `POST/DELETE /budget-items/:id/file` (attachment stored as-is — it is downloaded, never
+  embedded, so no Office→PDF rule). See "Non-SP budget notes" below.
 - Change log: `GET /changelog?limit&before&user&property`.
 - Contractors: `GET/POST/DELETE /contractors`, `POST /contractors/import`.
 - Backup: `GET /export/backup.json`, `GET /export/projects.csv`, `POST /restore`, `POST /reset`.
@@ -281,8 +296,8 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 - `npm run migrate` / `seed` — CLI; but server also migrates + seeds-if-empty on every boot.
 - `npm test` (vitest, shared/domain.test.ts) · `npm run typecheck` · `npm run build` (esbuild;
   build:server lists every src/*.ts entry explicitly — add new files there! pm.ts, revision.ts,
-  contract-layout.ts and contract-multi.ts are in the list. Forgetting one fails at *runtime* with
-  ERR_MODULE_NOT_FOUND, not at build time).
+  contract-layout.ts, contract-multi.ts and change-order.ts are in the list. Forgetting one fails
+  at *runtime* with ERR_MODULE_NOT_FOUND, not at build time).
 - Deploy: Railway, `railway.json` + `nixpacks.toml` (installs LibreOffice + Liberation fonts for
   Office→PDF conversion — makes the image big and the first such build slow); DB env `DATABASE_URL`,
   auth env `APP_PASSWORD`, `SESSION_SECRET`, optional `ADMIN_USERS`, `SOFFICE_PATH`.
@@ -566,6 +581,93 @@ as extracted **text** via `scripts/pdf-text.mjs`. Diff those, **never the file b
 output is not byte-deterministic, so identical content differs by a couple of bytes per run and a
 checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
 glyph identical SP output before and after.
+
+## Date-derived lifecycle (2026-09-01)
+
+Two rules in `shared/domain.ts` (unit-tested), asymmetric on purpose:
+
+- **`syncDateDerivedSteps(p, todayIso)`** — Work Started ticks ITSELF once
+  `plannedStart <= today` (inclusive: ON the date counts). Applies only to
+  pipeline projects: approved, not on hold, not in-house. **One-way** — never
+  cleared, so a manual early tick (partial payment, work started ahead of
+  schedule) survives; delaying a project means moving its planned start.
+  Derived at READ time in three places that must stay in step: `rowToProject`
+  (db.ts — /state and everything built from it), the PM state mapping (pm.ts),
+  and the client mirror in app.js `syncDerivedSteps` (same function that mirrors
+  signed/lienWaiver). The DB row is untouched until the next project save
+  persists it — the signed/lienWaiver pattern. Safe because **nothing in the
+  money math reads workStarted** (cashModel keys on approved/paid); it moves the
+  funnel segment, the status word and the update-email "future work" list only.
+- **`needsCompletionReview(p, todayIso)`** — a planned end that has STRICTLY
+  passed (finishing on the date is on time) with Work Completed still unticked.
+  Surfaced as the dashboard panel "Planned end passed · confirm work completed"
+  (most-overdue first, 'ended <date>' chip), and **deliberately never
+  auto-ticked**: the calendar saying it should be done is not the contractor
+  having finished — Troy wants a human confirmation.
+
+Both compare ISO date strings. `today()` in app.js and `localToday()` in
+db.ts/pm.ts are LOCAL dates — `toISOString()` is UTC and flips to tomorrow in
+the evening, which would tick steps early.
+
+## Non-SP budget notes (031, 2026-08-26)
+
+A per-property planning ledger for ABOVE-THE-LINE (operationally funded) costs with
+month-level timing — annual fire inspections, landscaping and snow-removal contracts —
+so budget season is a read-off, not a reconstruction.
+
+- **Deliberately NOT projects**: the bid/approval/contract lifecycle is noise for "fire
+  inspection every March, $10K". `budget_items` rows carry name, vendor, amount, the
+  **month** the cost lands, first/last year (NULL = open-ended), notes and one optional
+  attachment (e.g. the signed contract, stored in `files`).
+- **Timing model is annual-on-a-month** (Troy's chosen scope). A seasonal contract is
+  recorded as one annual entry with the terms in notes ("billed $4K/mo Nov–Apr") — there
+  is no month-range shape.
+- **PURELY INFORMATIONAL — the ATL exclusion principle.** Nothing reads `budget_items`:
+  not cashModel/auditModel (domain.ts is untouched apart from the `BudgetItem` type),
+  not the plan, not update emails, not the dashboards. The type lives in domain.ts only
+  so `AppState` stays honest.
+- **UI**: property view, left column, "Non-SP budget notes" collapsible panel (open on
+  desktop when items exist) — year pager (`BFILT.year`), a 12-month strip showing where
+  the selected year's dollars land, and the items table (rows inactive in the selected
+  year are dimmed, not hidden). ＋ Add / ✎ Edit open a small modal; 📎 attaches a file
+  straight from the row. All signed-in users can edit; not surfaced in `/pm`.
+
+## Change orders — amend a generated contract (030, 2026-08-25)
+
+A filled, standalone version of the change-order form both templates carry as a blank exhibit
+(the multi template's Exhibit E). It amends an EXISTING contract record of either kind, so it
+lives on the contract, not the project.
+
+- **`src/change-order.ts`** — `buildChangeOrder(vars)` renders the one-page form via the shared
+  layout engine's `drawFormBox` grid. Same wording as the executed form / blank Exhibit E, plus a
+  reference line under the title naming the agreement it amends (built server-side from the
+  contract row — contractor, effective date, output filename). **The blank `exhibitE` in
+  contract-multi.ts is deliberately untouched** — it is snapshot-verified against the executed
+  Legend Lawn contract; keep the two forms' wording in step. **One page, always**: a description
+  that won't fit above the signature block is refused (`TOO_LONG` → 400), never truncated.
+- **`POST /contracts/:id/change-order`** (admin-only). The SERVER numbers the CO —
+  `change_orders` array length + 1 — so two admins can't both issue "No. 2". Every printed field
+  arrives from the caller verbatim (previous/revised sums included — nothing is totalled, same
+  rule as both contract templates); blanks in operative text are refused. The PDF is stored in
+  `files` and the entry appended to `contracts.change_orders`
+  (`{no,date,fileKey,fileName,previousSum,revisedSum,additionalDays,description,username,createdAt}`).
+  Filename: `<contract code(s)>_<Contractor>_ChangeOrder<n>_<MMDDYYYY>.pdf`.
+- **UI — `openChangeOrders(contractId)`** (app.js): one modal per contract — the issued list on
+  top (view/download each), the new-CO form below, PRE-FILLED from the record: previous sum =
+  latest CO's revised sum else the contract total; contractor name+address from the record + the
+  vendor directory; owner block from `ownerEntity` + property notice address (SP) or
+  `details.entities` (multi); date = today; days = "NONE". A "Change amount" field is a client-side
+  helper that fills Revised = Previous + change — it is not sent and not printed. Entered via the
+  **± CO button on every Contracts-view row** (admins always; non-admins only once COs exist —
+  read-only list) and **± Change order on the project editor's Generated-contract row** (needs a
+  contract RECORD, so an uploaded-but-never-generated contract shows no button there).
+- **The Contracts view shows the CURRENT value**: `effTotal()` = latest CO's revised sum when
+  parseable, else `contracts.total` — used in the row (tooltip carries the original), the KPIs,
+  by-property totals and the total sort. A `CO ×N` chip marks amended rows. Display-only:
+  `contracts.total` itself is never rewritten, and nothing outside this view reads it.
+- **Verify wording/layout changes** with `npx tsx scripts/change-order-snapshot.mjs <out.txt>
+  [out.pdf]` — text-dumps two filled samples (diff those, not bytes) and asserts the over-long
+  description refuses.
 
 ## Countersign stamp geometry (fixed 2026-09-04 — was "signature not on the line")
 

@@ -1,6 +1,7 @@
 import pg from 'pg';
 import 'dotenv/config';
 import type { AppState, Project, Bid, ProgressNote, CashSnapshot, CashAdjustment, GLLine } from '../shared/domain.js';
+import { syncDateDerivedSteps } from '../shared/domain.js';
 
 // Numerics come back from pg as strings by default; coerce numeric (1700) to JS number.
 pg.types.setTypeParser(1700, (v) => (v == null ? null : parseFloat(v)));
@@ -57,7 +58,10 @@ export async function propLookup(): Promise<PropLookup> {
 
 export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [], props?: PropLookup): Project {
   const pr = props?.get(r.property_code);
-  return {
+  // Work Started ticks itself once the planned start date arrives (date-derived,
+  // like signed/lienWaiver mirror their attachments). Derived at READ time on
+  // every server mapping, persisted whenever the project is next saved.
+  const proj: Project = {
     id: r.id,
     property: r.property_code,
     region: pr?.region || '',
@@ -107,7 +111,15 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     bids,
     progressNotes: notes,
   };
+  return syncDateDerivedSteps(proj, localToday());
 }
+
+/** Today as yyyy-mm-dd in SERVER-LOCAL time — toISOString() is UTC and would
+ *  tick date-derived steps a few hours early in the evening. */
+const localToday = (): string => {
+  const n = new Date();
+  return `${n.getFullYear()}-${String(n.getMonth() + 1).padStart(2, '0')}-${String(n.getDate()).padStart(2, '0')}`;
+};
 
 export function rowToCash(r: any): CashSnapshot {
   return {
@@ -123,7 +135,7 @@ export function rowToCash(r: any): CashSnapshot {
 
 /* ---------- Assemble the full state blob (GET /api/state) ---------- */
 export async function assembleState(): Promise<AppState> {
-  const [props, projs, bids, notes, cash, adj, gl, meta, contracts, ctrs, regions] = await Promise.all([
+  const [props, projs, bids, notes, cash, adj, gl, meta, contracts, ctrs, regions, budg] = await Promise.all([
     query('select * from properties order by code'),
     query('select * from projects order by id'),
     query('select * from bids order by project_id, slot'),
@@ -135,6 +147,7 @@ export async function assembleState(): Promise<AppState> {
     query('select * from contracts order by effective_date, created_at'),
     query('select * from contractors order by name').catch(() => ({ rows: [] })),
     query('select * from regions order by sort, name').catch(() => ({ rows: [] })),
+    query('select * from budget_items order by month, name').catch(() => ({ rows: [] })),
   ]);
 
   const bidsByProject = new Map<string, Bid[]>();
@@ -154,7 +167,7 @@ export async function assembleState(): Promise<AppState> {
   const properties = props.rows.map((r) => ({ code: r.code, name: r.name, region: r.region, manager: r.manager, color: r.color ?? '', portfolio: r.portfolio ?? '', spBudget: r.sp_budget ?? 0, units: r.units ?? 0, ownerEntity: r.owner_entity ?? '', address: r.address ?? '', ownerNoticeAddr: r.owner_notice_addr ?? '', noticePhone: r.notice_phone ?? '', noticeEmail: r.notice_email ?? '', contractCode: r.contract_code ?? r.code, planEndYear: r.plan_end_year, accretionPct: r.accretion_pct, avgMonthlyInterest: r.avg_monthly_interest ?? 0, includeAccretionInProj: r.include_accretion_in_proj !== false, includeReturnsInProj: r.include_returns_in_proj !== false, distributionQuarters: r.distribution_quarters || {}, updateTo: r.update_to ?? '', updateCc: r.update_cc ?? '', updateGreeting: r.update_greeting ?? '', updateEnabled: r.update_enabled !== false, updateIncludeDiscussed: r.update_include_discussed === true }));
   const propMap: PropLookup = new Map(props.rows.map((r) => [r.code, { region: r.region || '', manager: r.manager || '' }]));
 
-  const contractRecords = contracts.rows.map((r) => ({ id: r.id, projectId: r.project_id, property: r.property_code, outputFilename: r.output_filename, ownerEntity: r.owner_entity ?? '', contractor: r.contractor ?? '', total: r.total, effectiveDate: r.effective_date ? d(r.effective_date) : '', termEnd: r.term_end ? d(r.term_end) : '', scope: r.scope ?? '', fileKey: r.file_key, kind: r.kind ?? 'sp', details: r.details ?? {}, createdAt: r.created_at ? new Date(r.created_at).toISOString() : '' }));
+  const contractRecords = contracts.rows.map((r) => ({ id: r.id, projectId: r.project_id, property: r.property_code, outputFilename: r.output_filename, ownerEntity: r.owner_entity ?? '', contractor: r.contractor ?? '', total: r.total, effectiveDate: r.effective_date ? d(r.effective_date) : '', termEnd: r.term_end ? d(r.term_end) : '', scope: r.scope ?? '', fileKey: r.file_key, kind: r.kind ?? 'sp', details: r.details ?? {}, changeOrders: Array.isArray(r.change_orders) ? r.change_orders : [], createdAt: r.created_at ? new Date(r.created_at).toISOString() : '' }));
   const projects: Project[] = projs.rows.map((r) => rowToProject(r, bidsByProject.get(r.id) || [], notesByProject.get(r.id) || [], propMap));
 
   const cashMap: Record<string, CashSnapshot> = {};
@@ -169,7 +182,15 @@ export async function assembleState(): Promise<AppState> {
                     cashTileMode: m.cash_tile_mode === 'afterDist' ? 'afterDist' : 'current' };
 
   const contractors = ctrs.rows.map((r: any) => ({ id: r.id, name: r.name, address: r.address ?? '', phone: r.phone ?? '', email: r.email ?? '', category: r.category ?? '', notes: r.notes ?? '' }));
+  const budgetItems = budg.rows.map((r: any) => ({
+    id: r.id, property: r.property_code, name: r.name, vendor: r.vendor ?? '',
+    amount: r.amount == null ? null : Number(r.amount), month: Number(r.month),
+    firstYear: r.first_year == null ? null : Number(r.first_year),
+    lastYear: r.last_year == null ? null : Number(r.last_year),
+    notes: r.notes ?? '', fileKey: r.file_key ?? null, fileName: r.file_name ?? null,
+    createdBy: r.created_by ?? '',
+  }));
   const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0, color: r.color ?? '' }));
 
-  return { meta: metaObj, properties, regions: regionList, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors };
+  return { meta: metaObj, properties, regions: regionList, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors, budgetItems };
 }

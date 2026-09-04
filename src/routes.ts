@@ -12,6 +12,7 @@ import { parseGL, parseCushion } from './importers.js';
 import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
+import { buildChangeOrder, type ChangeOrderVars } from './change-order.js';
 import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planTotal, isHexColor, regionShadeMap, type Project, type AppState } from '../shared/domain.js';
 import { buildPlanWorkbook } from './plan-export.js';
 
@@ -898,6 +899,176 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
   res.json({ id, contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
 });
 
+/* =============================================================================
+   Change orders (migration 030)
+
+   A change order amends an already-generated contract of either kind. The client
+   pre-fills the form from the contract record; everything here prints VERBATIM —
+   the previous and revised Contract Sums are what the admin typed, never a
+   derived total. The server owns the numbering: array index + 1 in the row's
+   change_orders jsonb, so two admins can't both issue "Change Order No. 2".
+   ============================================================================= */
+api.post('/contracts/:id/change-order', requireAdmin, async (req, res) => {
+  const row = (await query<any>('select * from contracts where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'contract not found' });
+  const b = req.body || {};
+
+  const prior: any[] = Array.isArray(row.change_orders) ? row.change_orders : [];
+  const no = prior.length + 1;
+
+  // Which agreement this amends — printed under the title. Built server-side
+  // from the contract record so it always names the real document. pg hands
+  // date columns back as local-midnight Dates — format by local parts, never
+  // toISOString(), which can shift the printed date a day.
+  const effIso = row.effective_date instanceof Date
+    ? `${row.effective_date.getFullYear()}-${String(row.effective_date.getMonth() + 1).padStart(2, '0')}-${String(row.effective_date.getDate()).padStart(2, '0')}`
+    : String(row.effective_date || '').slice(0, 10);
+  const effDate = effIso ? slashDate(effIso) : '';
+  const agreementRef = `Independent Contractor Agreement${effDate ? ` dated ${effDate}` : ''}` +
+    `${row.contractor ? ` — ${row.contractor}` : ''}${row.output_filename ? ` (${row.output_filename})` : ''}`;
+
+  const vars: ChangeOrderVars = {
+    changeOrderNo: String(no),
+    dateText: slashDate(String(b.date || '').trim()),
+    agreementRef,
+    contractorBlock: String(b.contractorBlock ?? '').trim() || String(row.contractor || ''),
+    ownerBlock: String(b.ownerBlock ?? '').trim(),
+    description: String(b.description ?? '').trim(),
+    additionalDays: String(b.additionalDays ?? '').trim() || 'NONE',
+    previousSum: String(b.previousSum ?? '').trim(),
+    revisedSum: String(b.revisedSum ?? '').trim(),
+  };
+
+  // Every one of these appears in the operative text of a document both parties
+  // sign — refuse a blank rather than emit a hole.
+  const required: [keyof ChangeOrderVars, string][] = [
+    ['dateText', 'Date'], ['contractorBlock', "Contractor's name"], ['ownerBlock', "Owner's name and address"],
+    ['description', 'Description of the change'], ['previousSum', 'Previous Contract Sum'], ['revisedSum', 'Revised Contract Sum'],
+  ];
+  const blank = required.filter(([k]) => !String(vars[k]).trim()).map(([, label]) => label);
+  if (blank.length) return res.status(400).json({ error: `Missing: ${blank.join(', ')}.` });
+
+  let pdf: Uint8Array;
+  try { pdf = await buildChangeOrder(vars); }
+  catch (e: any) {
+    if (e?.code === 'TOO_LONG') return res.status(400).json({ error: e.message });
+    return res.status(500).json({ error: 'change order build failed: ' + (e?.message || e) });
+  }
+
+  // Filename mirrors the contract conventions: contract code(s), contractor,
+  // CO number, date. Multi rows use their full property list (capped at four).
+  const details = row.details || {};
+  const mCodes: string[] = row.kind === 'multi' && Array.isArray(details.properties) && details.properties.length
+    ? details.properties : [row.property_code];
+  const codeRows = (await query<any>('select code, contract_code from properties where code = any($1::text[])', [mCodes])).rows;
+  const codeList = mCodes.map((c) => codeRows.find((r) => r.code === c)?.contract_code || c);
+  const codePart = codeList.length > 4 ? `${codeList.slice(0, 4).join('-')}+${codeList.length - 4}` : codeList.join('-');
+  const fileName = `${codePart}_${camel(row.contractor || 'Contractor')}_ChangeOrder${no}_${mmddyyyy(String(b.date || ''))}.pdf`;
+  const fileKey = await storeFile(fileName, 'application/pdf', Buffer.from(pdf));
+
+  const entry = {
+    no, date: String(b.date || '').trim(), fileKey, fileName,
+    previousSum: vars.previousSum, revisedSum: vars.revisedSum,
+    additionalDays: vars.additionalDays, description: vars.description,
+    username: (req.session as any)?.username || '', createdAt: new Date().toISOString(),
+  };
+  await query(`update contracts set change_orders = change_orders || $1::jsonb where id=$2`,
+    [JSON.stringify([entry]), row.id]);
+
+  logChange(req, {
+    action: 'contract.changeOrder', entityType: 'contract', entityId: row.id, property: row.property_code,
+    summary: `Change Order No. ${no} generated for ${row.contractor || 'contract'} (${row.output_filename || row.id}) — ` +
+      `previous ${vars.previousSum}, revised ${vars.revisedSum}${vars.additionalDays !== 'NONE' ? `, +${vars.additionalDays} days` : ''} (${fileName})`,
+    details: { no, previousSum: vars.previousSum, revisedSum: vars.revisedSum, additionalDays: vars.additionalDays },
+  });
+  res.json({ no, fileKey, fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });
+});
+
+/* =============================================================================
+   Non-SP budget notes (migration 031)
+
+   Per-property above-the-line recurring costs with month-level timing (annual
+   fire inspections, landscaping/snow contracts). PURELY INFORMATIONAL — nothing
+   in cashModel/auditModel/the plan reads budget_items, the same exclusion
+   principle as ATL projects. Open to every signed-in user, like projects.
+   ============================================================================= */
+const normBudgetItem = (b: any) => {
+  const intOrNull = (v: any) => { const n = Number(v); return v === '' || v == null || !Number.isFinite(n) ? null : Math.trunc(n); };
+  const month = Math.min(12, Math.max(1, Math.trunc(Number(b.month) || 1)));
+  let firstYear = intOrNull(b.firstYear), lastYear = intOrNull(b.lastYear);
+  if (firstYear != null && lastYear != null && lastYear < firstYear) [firstYear, lastYear] = [lastYear, firstYear];
+  return {
+    name: String(b.name || '').trim(),
+    vendor: String(b.vendor || '').trim(),
+    amount: nnull(String(b.amount ?? '').replace(/[^0-9.\-]/g, '')),
+    month, firstYear, lastYear,
+    notes: String(b.notes || '').trim(),
+  };
+};
+const MONTHS_ABBR = ['Jan', 'Feb', 'Mar', 'Apr', 'May', 'Jun', 'Jul', 'Aug', 'Sep', 'Oct', 'Nov', 'Dec'];
+
+api.post('/budget-items', async (req, res) => {
+  const b = req.body || {};
+  const code = String(b.property || '').toUpperCase().trim();
+  const prop = (await query('select code from properties where code=$1', [code])).rows[0];
+  if (!prop) return res.status(400).json({ error: 'unknown property' });
+  const v = normBudgetItem(b);
+  if (!v.name) return res.status(400).json({ error: 'name is required' });
+  const id = uid('BI');
+  await query(
+    `insert into budget_items(id,property_code,name,vendor,amount,month,first_year,last_year,notes,created_by)
+     values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+    [id, code, v.name, v.vendor, v.amount, v.month, v.firstYear, v.lastYear, v.notes, (req.session as any)?.username || '']);
+  logChange(req, { action: 'budgetitem.create', entityType: 'budgetItem', entityId: id, property: code,
+    summary: `Budget note added at ${code} — "${v.name}" ${fmtMoney(v.amount)} in ${MONTHS_ABBR[v.month - 1]}` });
+  res.json({ id });
+});
+
+api.patch('/budget-items/:id', async (req, res) => {
+  const row = (await query<any>('select * from budget_items where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const v = normBudgetItem(req.body || {});
+  if (!v.name) return res.status(400).json({ error: 'name is required' });
+  await query(
+    `update budget_items set name=$1,vendor=$2,amount=$3,month=$4,first_year=$5,last_year=$6,notes=$7,updated_at=now() where id=$8`,
+    [v.name, v.vendor, v.amount, v.month, v.firstYear, v.lastYear, v.notes, row.id]);
+  logChange(req, { action: 'budgetitem.edit', entityType: 'budgetItem', entityId: row.id, property: row.property_code,
+    summary: `Budget note edited at ${row.property_code} — "${v.name}" ${fmtMoney(v.amount)} in ${MONTHS_ABBR[v.month - 1]}` });
+  res.json({ ok: true });
+});
+
+api.delete('/budget-items/:id', async (req, res) => {
+  const row = (await query<any>('select * from budget_items where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  await query('delete from budget_items where id=$1', [row.id]);
+  logChange(req, { action: 'budgetitem.delete', entityType: 'budgetItem', entityId: row.id, property: row.property_code,
+    summary: `Budget note deleted at ${row.property_code} — "${row.name}"` });
+  res.json({ ok: true });
+});
+
+/** Attach one file (e.g. the signed landscaping contract). Stored as-is — it is
+ *  a reference document to download, never embedded anywhere, so no PDF rule. */
+api.post('/budget-items/:id/file', memUpload.single('file'), async (req, res) => {
+  const row = (await query<any>('select * from budget_items where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  const f = req.file;
+  if (!f) return res.status(400).json({ error: 'no file' });
+  const key = await storeFile(f.originalname, f.mimetype, f.buffer);
+  await query('update budget_items set file_key=$1, file_name=$2, updated_at=now() where id=$3', [key, f.originalname, row.id]);
+  logChange(req, { action: 'budgetitem.file', entityType: 'budgetItem', entityId: row.id, property: row.property_code,
+    summary: `File attached to budget note "${row.name}" at ${row.property_code} (${f.originalname})` });
+  res.json({ fileKey: key, fileName: f.originalname });
+});
+
+api.delete('/budget-items/:id/file', async (req, res) => {
+  const row = (await query<any>('select * from budget_items where id=$1', [req.params.id])).rows[0];
+  if (!row) return res.status(404).json({ error: 'not found' });
+  await query('update budget_items set file_key=null, file_name=null, updated_at=now() where id=$1', [row.id]);
+  logChange(req, { action: 'budgetitem.file.remove', entityType: 'budgetItem', entityId: row.id, property: row.property_code,
+    summary: `File removed from budget note "${row.name}" at ${row.property_code}` });
+  res.json({ ok: true });
+});
+
 /* ---------- cash snapshot (mid-month edit) ---------- */
 api.patch('/cash/:code', async (req, res) => {
   const code = req.params.code.toUpperCase();
@@ -1320,7 +1491,6 @@ api.post('/projects/:id/countersign', requireAdmin, async (req, res) => {
     PREVIEWS.set(token, { bytes: Buffer.from(out), timer: setTimeout(() => PREVIEWS.delete(token), PREVIEW_TTL_MS) });
     return res.json({ preview: `/api/countersign-preview/${token}` });
   }
-
 
   const base = String(proj.contractor_signed_file_name || 'contract.pdf').replace(/\.pdf$/i, '');
   const fileName = base + '_Executed.pdf';

@@ -9,6 +9,7 @@ import {
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
+  syncDateDerivedSteps, needsCompletionReview,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -421,5 +422,48 @@ describe('region colour ramps (migration 029)', () => {
     expect(hexToHsl(m.CLND)!.l).toBeGreaterThan(hexToHsl(m.TPND)!.l);
     // re-running with the same inputs gives the same colours
     expect(regionShadeMap('#3f7cb8', ['SPND', 'CLND', 'TPND'])).toEqual(m);
+  });
+});
+
+describe('date-derived lifecycle (Work Started auto-tick + completion review flag)', () => {
+  const T = '2026-08-26';
+  const base = { steps: { approved: true }, plannedStart: '2026-08-01' };
+
+  it('ticks workStarted once the planned start arrives — inclusive of the date itself', () => {
+    expect(syncDateDerivedSteps(proj({ steps: { approved: true }, plannedStart: '2026-08-25' }), T).steps!.workStarted).toBe(true);
+    expect(syncDateDerivedSteps(proj({ steps: { approved: true }, plannedStart: T }), T).steps!.workStarted).toBe(true);
+    expect(syncDateDerivedSteps(proj({ steps: { approved: true }, plannedStart: '2026-08-27' }), T).steps!.workStarted).toBeUndefined();
+  });
+  it('only for pipeline projects: unapproved, on-hold and in-house never auto-start', () => {
+    expect(syncDateDerivedSteps(proj({ plannedStart: '2026-08-01' }), T).steps!.workStarted).toBeUndefined();
+    expect(syncDateDerivedSteps(proj({ ...base, onHold: true }), T).steps!.workStarted).toBeUndefined();
+    expect(syncDateDerivedSteps(proj({ ...base, inHouse: true }), T).steps!.workStarted).toBeUndefined();
+  });
+  it('one-way: a manual tick survives a future planned start', () => {
+    const p = proj({ steps: { approved: true, workStarted: true }, plannedStart: '2027-01-01' });
+    expect(syncDateDerivedSteps(p, T).steps!.workStarted).toBe(true);
+  });
+  it('no planned start ⇒ untouched', () => {
+    expect(syncDateDerivedSteps(proj({ steps: { approved: true } }), T).steps!.workStarted).toBeUndefined();
+  });
+
+  it('flags for completion review only when the planned end has strictly passed', () => {
+    expect(needsCompletionReview(proj({ steps: { approved: true }, plannedEnd: '2026-08-25' }), T)).toBe(true);
+    expect(needsCompletionReview(proj({ steps: { approved: true }, plannedEnd: T }), T)).toBe(false);       // on the date = on time
+    expect(needsCompletionReview(proj({ steps: { approved: true }, plannedEnd: '2026-09-01' }), T)).toBe(false);
+  });
+  it('never flags: workCompleted ticked, complete, unapproved, on hold, in-house, or no end date', () => {
+    expect(needsCompletionReview(proj({ steps: { approved: true, workCompleted: true }, plannedEnd: '2026-01-01' }), T)).toBe(false);
+    expect(needsCompletionReview(proj({ steps: { approved: true, completed: true }, plannedEnd: '2026-01-01' }), T)).toBe(false);
+    expect(needsCompletionReview(proj({ plannedEnd: '2026-01-01' }), T)).toBe(false);
+    expect(needsCompletionReview(proj({ steps: { approved: true }, plannedEnd: '2026-01-01', onHold: true }), T)).toBe(false);
+    expect(needsCompletionReview(proj({ steps: { approved: true }, plannedEnd: '2026-01-01', inHouse: true }), T)).toBe(false);
+    expect(needsCompletionReview(proj({ steps: { approved: true } }), T)).toBe(false);
+  });
+  it('workCompleted is NEVER auto-ticked by a passed end date', () => {
+    const p = proj({ steps: { approved: true }, plannedStart: '2026-01-01', plannedEnd: '2026-02-01' });
+    syncDateDerivedSteps(p, T);
+    expect(p.steps!.workStarted).toBe(true);
+    expect(p.steps!.workCompleted).toBeUndefined();
   });
 });

@@ -34,7 +34,9 @@ const fmt1=(n)=>{if(n==null||isNaN(n))return '—';return '$'+Number(n).toLocale
 const pct = (n)=>n==null||isNaN(n)?'—':(Number(n)*100).toFixed(n<0.1?1:0)+'%';
 const pctWhole = (n)=>n==null||isNaN(n)?'—':Number(n).toFixed(1).replace(/\.0$/,'')+'%';
 const esc = s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
-const today=()=>new Date().toISOString().slice(0,10);
+/* LOCAL date, not toISOString() (UTC) — that flips to tomorrow in the evening,
+   which would tick date-derived steps early and misdate date-input defaults. */
+const today=()=>{const n=new Date();return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;};
 const fmtDate=(d)=>{ if(!d)return '—'; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); const dt=new Date(+m[0],+m[1]-1,+m[2]); if(isNaN(dt))return String(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
 const fmtDateShort=(d)=>{ if(!d)return ''; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); return `${+m[1]}/${+m[2]}/${m[0].slice(2)}`; };
 const inDateRange=(p,state)=>{ const d=(p.dateAdded||'').slice(0,10); if(state.dateFrom&&(!d||d<state.dateFrom))return false; if(state.dateTo&&(!d||d>state.dateTo))return false; return true; };
@@ -46,13 +48,14 @@ const API={
   async get(path){ const r=await fetch('/api'+path,{headers:{'Accept':'application/json'}}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok)throw new Error(await r.text()); return r.json(); },
   async send(method,path,body){ const r=await fetch('/api'+path,{method,headers:{'Content-Type':'application/json'},body:body!=null?JSON.stringify(body):undefined}); if(r.status===401){showLogin();throw new Error('unauthorized');} if(!r.ok){ let msg; try{msg=(await r.json()).error;}catch(e){ msg='request failed'; } throw new Error(msg||'request failed'); } return r.json(); }
 };
-async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.cashAdjustments||[]; S.gl=S.gl||[]; S.projects=S.projects||[]; S.cash=S.cash||{}; S.meta=S.meta||{}; S.projects.forEach(p=>{ if(typeof syncDerivedSteps==='function') syncDerivedSteps(p); }); }
+async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.cashAdjustments||[]; S.gl=S.gl||[]; S.projects=S.projects||[]; S.cash=S.cash||{}; S.meta=S.meta||{}; S.budgetItems=S.budgetItems||[]; S.projects.forEach(p=>{ if(typeof syncDerivedSteps==='function') syncDerivedSteps(p); }); }
 
 /* ---------- App state ---------- */
 let S=null;            // working state
 let VIEW={tab:'dashboard',prop:null};
 let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
+let BFILT={year:null};   // property view: selected year for the non-SP budget notes panel
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts view filters + sort
 let IHF={region:''};   // in-house view region toggle
@@ -268,6 +271,12 @@ function syncDerivedSteps(p){
   if(!p||p.inHouse)return; p.steps=p.steps||{};
   p.steps.signed=!!p.executedContractFileKey;
   p.steps.lienWaiver=!!p.lienWaiverFileKey;
+  // Work Started ticks itself once the planned start date arrives (inclusive —
+  // ON the date counts). One-way: never cleared, so an early manual tick
+  // survives. Mirrors syncDateDerivedSteps in domain.ts (the server derives the
+  // same way in rowToProject); Work Completed is deliberately NOT derived —
+  // a passed end date only flags the project on the dashboard for confirmation.
+  if(!p.onHold&&p.steps.approved&&p.plannedStart&&p.plannedStart<=today()) p.steps.workStarted=true;
 }
 const appKeys=p=>{ const na=naKeys(p); return STEP_KEYS.filter(k=>!na.includes(k)); };
 const appLifecycle=p=>{ const na=naKeys(p); return LIFECYCLE.filter(s=>!na.includes(s.key)); };
@@ -625,6 +634,18 @@ function viewContracts(){
   // are separate documents, not regenerations of one project's contract, and
   // keying them all on null would collapse them into a single row.
   const isMulti=c=>c.kind==='multi';
+  // A contract's current value: the latest change order's revised sum when one
+  // has been issued, else the original total. Display/KPI only — nothing else
+  // reads contracts here.
+  const effTotal=c=>{
+    const cos=Array.isArray(c.changeOrders)?c.changeOrders:[];
+    if(cos.length){
+      const s=String(cos[cos.length-1].revisedSum||'');
+      const n=Number(s.replace(/[^0-9.\-]/g,''));
+      if(s.match(/\d/)&&isFinite(n)) return n;
+    }
+    return c.total;
+  };
   const latestByProj=new Map();
   (S.contracts||[]).forEach(c=>{
     const key=isMulti(c)?'multi:'+c.id:c.projectId;
@@ -671,12 +692,12 @@ function viewContracts(){
   const sorters={
     date_desc:(a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')),
     date_asc:(a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||'')),
-    total_desc:(a,b)=>(Number(b.total)||0)-(Number(a.total)||0),
+    total_desc:(a,b)=>(Number(effTotal(b))||0)-(Number(effTotal(a))||0),
     contractor:(a,b)=>String(a.contractor||'').localeCompare(String(b.contractor||'')),
     property:(a,b)=>String(a.property).localeCompare(String(b.property)),
   };
   list.sort(sorters[CFILT.sort]||sorters.date_desc);
-  const total=list.reduce((a,c)=>a+(Number(c.total)||0),0);
+  const total=list.reduce((a,c)=>a+(Number(effTotal(c))||0),0);
 
   // Controls
   const searchInp=el('input',{type:'search',placeholder:'Search contractor, scope, file…',value:CFILT.q||'',style:'min-width:200px',onchange:e=>{CFILT.q=e.target.value;render();}});
@@ -704,7 +725,7 @@ function viewContracts(){
   const kpis=el('div',{class:'grid kpis',style:'grid-template-columns:repeat(4,1fr)'});
   kpis.append(
     kpiBox('Active contracts',String(allDeduped.length),`${exeCt} executed · ${genCt} generated`),
-    kpiBox('Total value',usd(allDeduped.reduce((a,c)=>a+(Number(c.total)||0),0))),
+    kpiBox('Total value',usd(allDeduped.reduce((a,c)=>a+(Number(effTotal(c))||0),0))),
     kpiBox('Properties',String(new Set(allDeduped.map(c=>c.property)).size)),
     kpiBox('Awaiting contract',String(allPlanned.length),'approved, no contract yet'));
   body.append(kpis);
@@ -714,7 +735,7 @@ function viewContracts(){
   allDeduped.forEach(c=>{
     const k=c.property,st=statusOf(c);
     if(!byProp[k]) byProp[k]={exe:0,gen:0,plan:0,t:0};
-    byProp[k].t+=Number(c.total)||0;
+    byProp[k].t+=Number(effTotal(c))||0;
     if(st==='executed') byProp[k].exe++; else byProp[k].gen++;
   });
   allPlanned.forEach(p=>{const k=p.property;if(!byProp[k])byProp[k]={exe:0,gen:0,plan:0,t:0};byProp[k].plan++;});
@@ -751,6 +772,7 @@ function viewContracts(){
       i++;
       const proj=projById.get(c.projectId);
       const st=statusOf(c);
+      const cos=Array.isArray(c.changeOrders)?c.changeOrders:[];
       // Prefer the executed contract's file when it exists; else the generated one.
       const fKey=(proj&&proj.executedContractFileKey)||c.fileKey||(proj&&proj.contractFileKey)||null;
       const fName=(proj&&proj.executedContractFileKey)?(proj.executedContractFileName||'executed.pdf'):(c.outputFilename||(proj&&proj.contractFileName)||'contract.pdf');
@@ -770,13 +792,23 @@ function viewContracts(){
           ? td(el('span',{style:'display:inline-flex;gap:3px;flex-wrap:wrap'},...(mProps.length?mProps:[c.property]).map(code=>propChip(code))))
           : td(propChip(c.property)),
         td(c.contractor||'—'),
-        el('td',{class:'num r'},usd(c.total)),
-        td(el('span',{class:'chip '+(ST_CHIP[st]||'')},ST_LABEL[st]||st)),
+        el('td',{class:'num r',...(cos.length?{title:`Original ${usd(c.total)} — revised by Change Order No. ${cos[cos.length-1].no}`}:{})},usd(effTotal(c))),
+        td(el('div',{},
+          el('span',{class:'chip '+(ST_CHIP[st]||'')},ST_LABEL[st]||st),
+          cos.length?el('div',{style:'margin-top:3px'},el('span',{class:'chip',title:'Change orders issued — Total shows the latest revised sum'},`CO ×${cos.length}`)):'')),
         td(fmtDate(c.effectiveDate)),
         td(fmtDate(c.termEnd)),
-        td(fKey?el('span',{style:'display:inline-flex;gap:4px'},
-          el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:e=>{e.stopPropagation();window.open('/api/bids/file/'+fKey,'_blank');}},'👁'),
-          dlBtn(fKey,fName)):'—')));
+        (()=>{
+          const acts=el('span',{style:'display:inline-flex;gap:4px'});
+          if(fKey) acts.append(
+            el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:e=>{e.stopPropagation();window.open('/api/bids/file/'+fKey,'_blank');}},'👁'),
+            dlBtn(fKey,fName));
+          // Change orders: admins can issue one; anyone can open the list once issued.
+          if(IS_ADMIN||cos.length) acts.append(
+            el('button',{class:'btn ghost sm',title:cos.length?`${cos.length} change order${cos.length>1?'s':''} issued — view or add`:'Generate a change order amending this contract',
+              onclick:e=>{e.stopPropagation();openChangeOrders(c.id);}},'± CO'));
+          return td(acts.childElementCount?acts:'—');
+        })()));
     });
     planned.forEach(pr=>{
       i++;
@@ -795,6 +827,130 @@ function viewContracts(){
   }
   body.append(panel);
   return {bar,body};
+}
+
+/* =========================================================
+   CHANGE ORDERS — amend a generated contract (either kind).
+   One modal per contract: the issued list on top, then the new-CO form,
+   pre-filled from the contract record. The server numbers them and prints
+   every field verbatim — the sums are typed, never derived.
+========================================================= */
+function openChangeOrders(contractId){
+  const c=(S.contracts||[]).find(x=>x.id===contractId);
+  if(!c){ toast('Contract not found'); return; }
+  const usd=n=>(n==null||n==='')?'—':'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
+  const money=s=>{const t=String(s||'').trim();if(!t)return null;const n=Number(t.replace(/[^0-9.\-]/g,''));return isFinite(n)&&t.match(/\d/)?n:NaN;};
+  const cos=Array.isArray(c.changeOrders)?c.changeOrders:[];
+  const no=cos.length+1;
+
+  const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  const sheet=el('div',{class:'sheet sheet-editor'});
+  const head=el('div',{class:'sh'}, el('h2',{style:'flex:1'},'Change orders — '+(c.contractor||'contract')),
+    el('button',{class:'btn',onclick:()=>scrim.remove()},'Close'));
+  const body=el('div',{class:'sb'});
+  sheet.append(head,body); scrim.append(sheet); document.body.append(scrim);
+  body.append(el('p',{class:'bs-hint',style:'margin:0 0 12px'},
+    `Amends ${c.outputFilename||'this contract'}. A change order prints exactly what you type — only the previous and revised sums appear on the form, never a computed figure.`));
+
+  if(cos.length){
+    const t=el('table',{class:'tbl'});
+    t.append(el('thead',{},tr(th('#'),th('Date'),th('Previous sum'),th('Revised sum'),th('Days'),th('By'),th('File'))));
+    const tb=el('tbody');
+    cos.forEach(co=>{
+      tb.append(el('tr',{},
+        el('td',{class:'num'},String(co.no)),
+        td(fmtDate(co.date)),
+        td(co.previousSum||'—'),
+        td(co.revisedSum||'—'),
+        td(co.additionalDays||'NONE'),
+        td(co.username||'—'),
+        td(co.fileKey?el('span',{style:'display:inline-flex;gap:4px'},
+          el('button',{class:'btn ghost sm',title:'View in a new tab',onclick:()=>window.open('/api/bids/file/'+co.fileKey,'_blank')},'👁'),
+          dlBtn(co.fileKey,co.fileName||'change-order.pdf')):'—')));
+    });
+    t.append(tb);
+    const done=el('div',{class:'panel',style:'margin-bottom:14px'});
+    done.append(el('div',{class:'ph'},el('h3',{},'Issued change orders')),el('div',{style:'overflow:auto'},t));
+    body.append(done);
+  }
+  if(!IS_ADMIN){
+    if(!cos.length) body.append(el('div',{class:'empty'},'No change orders yet.'));
+    return;
+  }
+
+  /* ---- new change order, pre-filled from the contract record ---- */
+  // Previous sum = the latest revised sum, else the contract's own total.
+  const prevDefault=cos.length?(cos[cos.length-1].revisedSum||''):(c.total!=null?usd(c.total):'');
+  const dir=(S.contractors||[]).find(x=>x.name===c.contractor);
+  const contractorDefault=[c.contractor||'',dir&&dir.address?dir.address:''].filter(Boolean).join('\n');
+  let ownerDefault='';
+  if(c.kind==='multi'){
+    const ents=(c.details&&Array.isArray(c.details.entities))?c.details.entities:[];
+    ownerDefault=ents.map(e=>[e.entity,e.noticeAddr].filter(Boolean).join('\n')).join('\n\n');
+  } else {
+    const pr=PROP(c.property)||{};
+    ownerDefault=[(c.ownerEntity||pr.ownerEntity||''),(pr.ownerNoticeAddr||pr.address||'')].filter(Boolean).join('\n');
+  }
+
+  const panel=el('div',{class:'panel'});
+  panel.append(el('div',{class:'ph'},el('h3',{},`New change order — No. ${no}`)));
+  const pad=el('div',{class:'pad'});
+  panel.append(pad);
+  const field=(label,ctrl,hint)=>{
+    const f=el('div',{class:'field'},el('label',{},label));
+    if(hint) f.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},hint));
+    f.append(ctrl); return f;
+  };
+  const half=(a,b)=>el('div',{style:'display:flex;gap:12px'},el('div',{style:'flex:1;min-width:0'},a),el('div',{style:'flex:1;min-width:0'},b));
+
+  const dateI=el('input',{type:'date',value:today()});
+  // el() sets value via setAttribute, which does not work for <textarea> — assign after.
+  const ctrTA=el('textarea',{rows:3}); ctrTA.value=contractorDefault;
+  const ownTA=el('textarea',{rows:3}); ownTA.value=ownerDefault;
+  const descTA=el('textarea',{rows:6,placeholder:'Describe the change to the work and/or terms…'});
+  const daysI=el('input',{value:'NONE'});
+  const prevI=el('input',{value:prevDefault,placeholder:'e.g. $330,000.00'});
+  const revI=el('input',{value:prevDefault,placeholder:'e.g. $335,000.00'});
+  const deltaI=el('input',{placeholder:'e.g. $2,500.00 or -$1,000.00'});
+  // The change-amount helper fills Revised = Previous + change. A convenience
+  // only — the revised field stays editable and is what actually prints.
+  const applyDelta=()=>{
+    const p=money(prevI.value),dl=money(deltaI.value);
+    if(p!=null&&!isNaN(p)&&dl!=null&&!isNaN(dl)) revI.value=usd(p+dl);
+  };
+  deltaI.addEventListener('input',applyDelta);
+  prevI.addEventListener('input',()=>{if(deltaI.value.trim())applyDelta();});
+
+  pad.append(
+    half(field('Date',dateI),field('Additional contract days',daysI,'Leave "NONE" when the schedule is unchanged.')),
+    half(field("Contractor's name and address",ctrTA),field("Owner's name and address",ownTA)),
+    field('The Independent Contractor Agreement is hereby changed as follows',descTA),
+    half(field('Previous contract sum',prevI,'Pre-filled from the latest change order, else the contract.'),
+         field('Change amount (+/-)',deltaI,'Helper only — fills Revised below; it is not printed.')),
+    field('Revised contract sum',revI));
+
+  const status=el('span',{style:'flex:1;font-size:12.5px;color:var(--ink-3)'});
+  const genBtn=el('button',{class:'btn pri',onclick:async()=>{
+    const missing=[];
+    if(!descTA.value.trim()) missing.push('the change description');
+    if(!ownTA.value.trim()) missing.push("owner's name and address");
+    if(!prevI.value.trim()) missing.push('previous contract sum');
+    if(!revI.value.trim()) missing.push('revised contract sum');
+    if(missing.length){ status.textContent='Still needed: '+missing.join(', ')+'.'; return; }
+    genBtn.disabled=true; status.textContent='Generating…';
+    try{
+      const r=await API.send('POST','/contracts/'+c.id+'/change-order',{
+        date:dateI.value, contractorBlock:ctrTA.value, ownerBlock:ownTA.value,
+        description:descTA.value, additionalDays:daysI.value,
+        previousSum:prevI.value, revisedSum:revI.value,
+      });
+      window.open(r.downloadUrl,'_blank');
+      scrim.remove();
+      await afterWrite('Change Order No. '+r.no+' generated — '+r.fileName);
+    }catch(err){ status.textContent=err.message; genBtn.disabled=false; }
+  }},'Generate change order');
+  pad.append(el('div',{style:'display:flex;gap:10px;align-items:center;margin-top:8px'},status,genBtn));
+  body.append(panel);
 }
 
 /* =========================================================
@@ -891,6 +1047,14 @@ function viewDashboard(){
   /* Awaiting signature — contractor returned a signed contract, no countersigned copy yet. */
   const awaitingSig=all.filter(p=>p.contractorSignedFileKey&&!p.executedContractFileKey&&!isComplete(p));
   body.append(attentionPanel('Awaiting signature · contractor signed, not countersigned',awaitingSig));
+
+  /* Planned end passed, Work Completed still unticked — flagged for a HUMAN to
+     confirm, deliberately never auto-ticked ("the calendar says done" is not
+     "the contractor finished"). Work Started, by contrast, does tick itself on
+     the planned start date — see syncDerivedSteps. */
+  const overdue=active.filter(p=>!isInHouse(p)&&!p.onHold&&p.steps.approved&&!p.steps.workCompleted&&p.plannedEnd&&p.plannedEnd<today())
+    .sort((a,b)=>String(a.plannedEnd).localeCompare(String(b.plannedEnd)));
+  body.append(attentionPanel('Planned end passed · confirm work completed',overdue,{sub:p=>'ended '+fmtDate(p.plannedEnd)}));
 
   /* Pipeline funnel — contractor lifecycle, stacked one colour per property (in-house excluded) */
   let hold=0; active.forEach(p=>{ if(p.onHold)hold++; });
@@ -1091,9 +1255,9 @@ function discussedPanel(list){
   });
   p.append(b); return p;
 }
-function attentionPanel(title,list){
+function attentionPanel(title,list,opts={}){
   const p=el('div',{class:'panel'});
-  p.append(el('div',{class:'ph'}, el('h3',{},title), el('div',{class:'sp'}), el('span',{class:'chip'},String(list.length))));
+  p.append(el('div',{class:'ph'}, el('h3',{},title), el('div',{class:'sp'}), el('span',{class:'chip'+(list.length&&opts.sub?' hold':'')},String(list.length))));
   const b=el('div',{style:'max-height:280px;overflow:auto'});
   if(!list.length) b.append(el('div',{class:'empty'},'Nothing here — all clear.'));
   list.slice(0,40).forEach(p2=>{
@@ -1101,6 +1265,7 @@ function attentionPanel(title,list){
     r.append(propChip(p2.property),
       el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name),
         el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category)),
+      opts.sub?el('span',{class:'chip hold',style:'white-space:nowrap'},opts.sub(p2)):null,
       el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(p2.anticipatedCost||p2.actualCost,false)));
     b.append(r);
   });
@@ -1454,8 +1619,19 @@ function openProject(id,preset){
      half-typed name must not create a row. */
   const meaningfulBid=bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||(Array.isArray(bd.files)&&bd.files.length)||bd.approved;
   const saveStat=el('span',{style:'font-size:12px;color:var(--ink-3);white-space:nowrap'}, isNew?'':'Autosaves as you edit');
-  let lastSaved=isNew?null:JSON.stringify(projectPayload({...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)},false));
+  const snapshot=()=>{
+    const q={...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)};
+    if(q.split&&(!q.split.list||q.split.list.length<2))q.split=null;
+    const payload=projectPayload(q,false);
+    return {payload,snap:JSON.stringify(payload)};
+  };
+  let lastSaved=isNew?null:snapshot().snap;
   let autoT=null, savedAny=false, flushOnClose=!isNew, closed=false, chain=Promise.resolve();
+  // Building the editor normalises p (plan-year map, bid file lists, cost rules),
+  // so re-baseline once construction has finished: opening a project and clicking
+  // around must not write a PATCH nobody asked for. The normalised shape still
+  // goes out with the first real edit, exactly as Save used to send it.
+  if(!isNew) setTimeout(()=>{ if(!closed&&!autoT) lastSaved=snapshot().snap; },0);
   const invalidWhy=()=>{
     if(!p.name.trim()) return 'Give the project a name to save.';
     if(p.split&&p.split.list&&p.split.list.length>1&&p.split.mode==='custom'){
@@ -1466,9 +1642,7 @@ function openProject(id,preset){
   };
   async function doAutosave(){
     if(isNew||closed) return;
-    const q={...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)};
-    if(q.split&&(!q.split.list||q.split.list.length<2))q.split=null;
-    const payload=projectPayload(q,false), snap=JSON.stringify(payload);
+    const {payload,snap}=snapshot();
     if(snap===lastSaved) return;
     const why=invalidWhy();
     if(why){ saveStat.style.color='var(--rust)'; saveStat.textContent='Not saved — '+why; return; }
@@ -2270,6 +2444,16 @@ function openProject(id,preset){
     });
     if(p.contractFileKey) gRow.append(el('span',{class:'ct-ok'},'✓ Generated'), fileLink(p.contractFileKey,p.contractFileName||'contract.pdf'), rmBtn('contract','generated contract'));
     gRow.append(el('button',{class:'btn ghost sm',title:'Attach a contract generated outside the tracker',onclick:()=>extInp.click()},'⬆ Upload existing'));
+    // Change orders hang off the CONTRACT RECORD (the Contracts view row), so an
+    // uploaded-but-never-generated contract has nothing to amend here.
+    {
+      const cRec=(S.contracts||[]).filter(x=>x.projectId&&x.projectId===p.id)
+        .sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||''))).pop();
+      const coCt=cRec&&Array.isArray(cRec.changeOrders)?cRec.changeOrders.length:0;
+      if(cRec&&(IS_ADMIN||coCt)) gRow.append(el('button',{class:'btn ghost sm',
+        title:coCt?`${coCt} change order${coCt>1?'s':''} issued — view or add`:'Generate a change order amending this contract',
+        onclick:()=>openChangeOrders(cRec.id)},'± Change order'+(coCt?` (${coCt})`:'')));
+    }
     if(!p.contractFileKey) gRow.append(el('span',{class:'bs-meta'},'Use “Generate contract” above — or drop in an existing PDF.'));
     ctBody.append(gRow);
 
@@ -3983,6 +4167,132 @@ function viewProperty(){
     row('Cash / yr of loan', cashPerYr==null?'—':cashPerYr, null, loanYrs!=null&&loanYrs>0?`${loanYrs.toFixed(1)} yrs to ${c.loanDue}`:'no loan maturity'),
   );
   loanPanel.append(sl3); left.append(loanPanel);
+
+  // --- Non-SP budget notes (031): above-the-line recurring costs with a month.
+  //     PURELY INFORMATIONAL — never counted in cashModel, the GL tie-out, the
+  //     plan or update emails, the same exclusion principle as ATL projects.
+  {
+    const items=(S.budgetItems||[]).filter(b=>b.property===code).slice()
+      .sort((a,b)=>(a.month-b.month)||String(a.name).localeCompare(String(b.name)));
+    const thisYear=new Date().getFullYear();
+    const yr=BFILT.year||thisYear;
+    const activeIn=(b,y)=>(b.firstYear==null||b.firstYear<=y)&&(b.lastYear==null||b.lastYear>=y);
+    const act=items.filter(b=>activeIn(b,yr));
+    const yrTotal=act.reduce((a,b)=>a+(Number(b.amount)||0),0);
+    const MO=['Jan','Feb','Mar','Apr','May','Jun','Jul','Aug','Sep','Oct','Nov','Dec'];
+    const compact=n=>!n?'—':(Math.abs(n)>=100000?'$'+Math.round(n/1000)+'K':'$'+Math.round(n).toLocaleString('en-US'));
+
+    const biPanel=el('details',{class:'panel coll'}); biPanel.open=!isMobile&&!!items.length;
+    biPanel.append(el('summary',{class:'ph coll-sum'}, el('span',{class:'chev'},'▸'),
+      el('h3',{},'Non-SP budget notes'), el('div',{class:'sp'}),
+      el('span',{class:'chip',title:'Above-the-line / operational items — informational only, never counted in SP cash, the GL tie-out or the plan'},'above the line'),
+      items.length?el('span',{class:'chip'},fmt(yrTotal)+' · '+yr):null));
+    const bb=el('div',{class:'pad'});
+
+    const yearsOf=b=>b.firstYear==null&&b.lastYear==null?'ongoing'
+      :(b.firstYear!=null&&b.lastYear!=null?(b.firstYear===b.lastYear?String(b.firstYear):b.firstYear+'–'+b.lastYear)
+      :(b.firstYear!=null?b.firstYear+' →':'→ '+b.lastYear));
+
+    function openBudgetItem(bi){
+      const isNew=!bi;
+      const d=bi?Object.assign({},bi):{name:'',vendor:'',amount:'',month:new Date().getMonth()+1,firstYear:'',lastYear:'',notes:''};
+      const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+      const sheet=el('div',{class:'sheet'});
+      const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},(isNew?'New budget note':'Edit budget note')+' · '+code),
+        el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Close'));
+      const b=el('div',{class:'sb'});
+      b.append(el('p',{style:'margin-top:0;color:var(--ink-3);font-size:12.5px'},
+        'Above-the-line item — informational only. The amount lands in the chosen month every year it is active; use the notes for contract terms (e.g. "billed $4K/mo Nov–Apr").'));
+      const nameI=el('input',{value:d.name||'',placeholder:'e.g. Annual fire inspection'});
+      const vendI=el('input',{value:d.vendor||'',placeholder:'e.g. Simplex Grinnell'});
+      const amtI=el('input',{value:d.amount!=null&&d.amount!==''?String(d.amount):'',placeholder:'e.g. 10000'});
+      const moSel=el('select',{},...MO.map((m,i)=>el('option',{value:String(i+1),...(Number(d.month)===i+1?{selected:true}:{})},m)));
+      const fyI=el('input',{type:'number',value:d.firstYear!=null&&d.firstYear!==''?String(d.firstYear):'',placeholder:'ongoing'});
+      const lyI=el('input',{type:'number',value:d.lastYear!=null&&d.lastYear!==''?String(d.lastYear):'',placeholder:'ongoing'});
+      const notesTA=el('textarea',{rows:3,placeholder:'Contract terms, scope, renewal details…'}); notesTA.value=d.notes||'';
+      const fld=(l,c)=>el('div',{class:'field'},el('label',{},l),c);
+      const half2=(a,b2)=>el('div',{style:'display:flex;gap:12px'},el('div',{style:'flex:1;min-width:0'},a),el('div',{style:'flex:1;min-width:0'},b2));
+      b.append(fld('Item',nameI), half2(fld('Vendor',vendI),fld('Amount ($)',amtI)),
+        half2(fld('Month it hits',moSel),half2(fld('First year',fyI),fld('Last year',lyI))),
+        fld('Notes',notesTA));
+      const err=el('div',{style:'color:var(--bad);font-size:12.5px;min-height:16px'});
+      b.append(err, el('div',{style:'display:flex;gap:8px;margin-top:8px'}, el('div',{style:'flex:1'}),
+        el('button',{class:'btn accent',onclick:async()=>{
+          if(!nameI.value.trim()){ err.textContent='Name the item.'; return; }
+          const payload={property:code,name:nameI.value,vendor:vendI.value,amount:amtI.value,
+            month:moSel.value,firstYear:fyI.value,lastYear:lyI.value,notes:notesTA.value};
+          try{
+            if(isNew) await API.send('POST','/budget-items',payload);
+            else await API.send('PATCH','/budget-items/'+bi.id,payload);
+            scrim.remove(); await afterWrite('Budget note saved');
+          }catch(e){ err.textContent=e.message; }
+        }},'Save')));
+      sheet.append(head,b); scrim.append(sheet); document.body.append(scrim);
+    }
+
+    if(items.length){
+      // 12-month strip for the selected year — where the dollars land.
+      const strip=el('div',{style:'display:grid;grid-template-columns:repeat(12,1fr);gap:3px;min-width:520px'});
+      MO.forEach((m,i)=>{
+        const t=act.filter(b=>b.month===i+1).reduce((a,b)=>a+(Number(b.amount)||0),0);
+        strip.append(el('div',{style:'text-align:center;padding:5px 2px;border-radius:6px;font-size:11px;'+(t?'background:var(--accent-soft,rgba(99,102,241,.12));font-weight:600':'color:var(--ink-3)')},
+          el('div',{style:'font-size:10px;text-transform:uppercase;letter-spacing:.04em;color:var(--ink-3)'},m),
+          el('div',{class:'mono'},compact(t))));
+      });
+      const yrNav=el('div',{style:'display:flex;align-items:center;gap:8px;margin-bottom:8px'},
+        el('button',{class:'btn ghost sm',onclick:()=>{BFILT.year=yr-1;render();}},'‹'),
+        el('span',{style:'font-weight:600;font-size:13px;min-width:44px;text-align:center'},String(yr)),
+        el('button',{class:'btn ghost sm',onclick:()=>{BFILT.year=yr+1;render();}},'›'),
+        yr!==thisYear?el('button',{class:'btn ghost sm',onclick:()=>{BFILT.year=null;render();}},'today'):null,
+        el('div',{class:'sp'}),
+        el('button',{class:'btn ghost sm',onclick:()=>openBudgetItem(null)},'＋ Add item'));
+      bb.append(yrNav, el('div',{style:'overflow:auto;margin-bottom:10px'},strip));
+
+      const t=el('table',{class:'tbl'});
+      t.append(el('thead',{},tr(th('Month'),th('Item'),th('Vendor'),th('Amount','r'),th('Years'),th(''))));
+      const tb=el('tbody');
+      items.forEach(b=>{
+        const on=activeIn(b,yr);
+        const fileBtns=el('span',{style:'display:inline-flex;gap:4px'});
+        if(b.fileKey){
+          fileBtns.append(dlBtn(b.fileKey,b.fileName||'attachment'),
+            el('button',{class:'btn ghost sm',title:'Remove the attachment',onclick:async e=>{e.stopPropagation();
+              if(!confirm('Remove the attached file from "'+b.name+'"?'))return;
+              try{ await API.send('DELETE','/budget-items/'+b.id+'/file'); await afterWrite('Attachment removed'); }catch(err){ toast(err.message); }
+            }},'✕'));
+        } else {
+          const fi=el('input',{type:'file',style:'display:none',onchange:async e=>{
+            const f=e.target.files[0]; if(!f)return;
+            const fd=new FormData(); fd.append('file',f);
+            try{ const r=await fetch('/api/budget-items/'+b.id+'/file',{method:'POST',body:fd});
+              if(!r.ok){const x=await r.json().catch(()=>({}));throw new Error(x.error||'upload failed');}
+              await afterWrite('File attached'); }catch(err){ toast('Upload failed: '+err.message); }
+          }});
+          fileBtns.append(fi,el('button',{class:'btn ghost sm',title:'Attach a file (e.g. the signed contract)',onclick:e=>{e.stopPropagation();fi.click();}},'📎'));
+        }
+        tb.append(el('tr',{style:on?'':'opacity:.45',title:on?'':'Not active in '+yr},
+          td(el('span',{class:'chip'},MO[b.month-1])),
+          td(el('div',{style:'font-size:12.5px'},el('div',{style:'font-weight:600'},b.name),
+            b.notes?el('div',{style:'color:var(--ink-3);font-size:11px;max-width:280px'},b.notes):null)),
+          td(el('span',{style:'font-size:12px'},b.vendor||'—')),
+          el('td',{class:'num r'},b.amount!=null?fmt(Number(b.amount)):'—'),
+          td(el('span',{style:'font-size:12px'},yearsOf(b))),
+          td(el('span',{style:'display:inline-flex;gap:4px'},fileBtns,
+            el('button',{class:'btn ghost sm',title:'Edit',onclick:()=>openBudgetItem(b)},'✎'),
+            el('button',{class:'btn ghost sm',title:'Delete',onclick:async()=>{
+              if(!confirm('Delete budget note "'+b.name+'"?'))return;
+              try{ await API.send('DELETE','/budget-items/'+b.id); await afterWrite('Budget note deleted'); }catch(err){ toast(err.message); }
+            }},'✕')))));
+      });
+      t.append(tb);
+      bb.append(el('div',{style:'overflow:auto'},t));
+    } else {
+      bb.append(el('div',{class:'empty',style:'padding:14px'},
+        el('div',{},'Nothing noted yet — record above-the-line items like annual fire inspections, landscaping or snow contracts, with the month the cost hits.'),
+        el('div',{style:'margin-top:8px'},el('button',{class:'btn ghost sm',onclick:()=>openBudgetItem(null)},'＋ Add item'))));
+    }
+    biPanel.append(bb); left.append(biPanel);
+  }
 
   // RIGHT: projects (grouped) + reconciliation + GL
   const right=el('div',{class:'grid',style:'gap:16px;align-content:start'});

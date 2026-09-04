@@ -1265,6 +1265,20 @@ api.put('/signature', async (req, res) => {
 /* ---------- In-app countersign: stamp the admin's signature onto the
    contractor-signed contract and attach the result as the executed contract.
    preview:true returns the stamped PDF without saving anything. ---------- */
+/* Stamped previews wait here for the client to fetch them (see preview:true
+   below). In-memory and per-instance on purpose — a preview is looked at once,
+   seconds after it is made; nothing else should ever find one. */
+const PREVIEW_TTL_MS = 10 * 60 * 1000;
+const PREVIEWS = new Map<string, { bytes: Buffer; timer: NodeJS.Timeout }>();
+api.get('/countersign-preview/:token', requireAdmin, (req, res) => {
+  const pv = PREVIEWS.get(String(req.params.token));
+  if (!pv) return res.status(404).json({ error: 'preview expired — press Preview again' });
+  res.setHeader('Content-Type', 'application/pdf');
+  res.setHeader('Content-Disposition', 'inline; filename="countersigned-preview.pdf"');
+  res.setHeader('Cache-Control', 'no-store');
+  res.send(pv.bytes);
+});
+
 api.post('/projects/:id/countersign', requireAdmin, async (req, res) => {
   const b = req.body || {};
   const proj = (await query('select * from projects where id=$1', [req.params.id])).rows[0];
@@ -1298,7 +1312,15 @@ api.post('/projects/:id/countersign', requireAdmin, async (req, res) => {
     });
   } catch (e: any) { return res.status(400).json({ error: 'could not stamp the signature: ' + (e?.message || e) }); }
 
-  if (b.preview) return res.json({ preview: 'data:application/pdf;base64,' + Buffer.from(out).toString('base64') });
+  if (b.preview) {
+    // A short-lived URL, not the PDF as base64 inside JSON: a 15MB scanned
+    // contract became a 20MB string the browser then decoded into a second copy
+    // before rendering — enough to stall or crash a small laptop.
+    const token = randomUUID();
+    PREVIEWS.set(token, { bytes: Buffer.from(out), timer: setTimeout(() => PREVIEWS.delete(token), PREVIEW_TTL_MS) });
+    return res.json({ preview: `/api/countersign-preview/${token}` });
+  }
+
 
   const base = String(proj.contractor_signed_file_name || 'contract.pdf').replace(/\.pdf$/i, '');
   const fileName = base + '_Executed.pdf';

@@ -160,7 +160,10 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   countersign modal blank with nothing to navigate.
 - **In-app countersigning**: `signatures` table (018, one PNG per user in files). `stampSignature`
   in contract.ts draws a signature PNG onto a stored PDF at click-placed coords. `POST
-  /projects/:id/countersign` (admin-only; `preview:true` returns a data-URL without saving) stamps
+  /projects/:id/countersign` (admin-only; `preview:true` stamps without saving and returns a
+  short-lived `/api/countersign-preview/:token` URL — the bytes sit in an in-memory map for 10
+  minutes; it used to return the whole PDF as a base64 data-URL inside the JSON, which on a large
+  scan meant a 20MB string plus a decoded copy in the browser and stalled small laptops) stamps
   the contractor-signed PDF → attaches as executed + ticks `signed`. Client modal renders the PDF
   with pdf.js (lazy CDN, **render with `intent:'print'`** so it completes in background tabs),
   click to place, draw/reuse signature. `GET/PUT /signature` store the reusable signature. `✉
@@ -588,6 +591,32 @@ at ~25pt tall on Letter (a full-pad scrawl is ~0.35 tall for its width and ran u
 "Owner:" entity line 22pt above; 4/5 of 25pt clears that baseline), and a fifth of it hangs below
 the clicked line like a pen signature's descenders, so the ink sits *on* the line. The Name/Title/Date lines are measured
 from the line itself (-30/-48/-66, +38 across), not from the image's bottom edge.
+
+## Project editor autosave (2026-09-04)
+
+An **existing** project's editor (`openProject` with an id) saves itself: `input`/`change`/`click`
+bubbling up the sheet schedule a debounced (900ms) `PATCH /projects/:id`, sent only when the
+payload differs from the last saved snapshot (so idle clicks cost nothing and the change log stays
+clean — the server already logs only real diffs). Saves are serialised on one promise chain; each
+run recomputes the snapshot, so a stale queued run is a no-op. The header shows `Saving… / Saved ✓ /
+Not saved — <why>` in place of toasts; validation (name required, custom split = 100%) blocks the
+write with that message rather than saving half a state. On the successful PATCH the returned row
+replaces the entry in `S.projects`, so the list behind the editor is current without a refetch;
+`Close` flushes anything pending and then runs `afterWrite()` once if anything was saved.
+**A new project still needs Save** — that is the moment it comes into being, and a half-typed name
+must not create a row; its buttons stay `Cancel`/`Save`, an existing project's read `Close`/`Save &
+close`. `Save & close`, Delete and contract generation set `flushOnClose=false` so their own write
+is the only one. A bid row counts as meaningful (kept on save) if it has a contractor, amount,
+approval **or any files** — previously a file-only bid row was dropped by Save.
+
+## Bid previewer renders on scroll (2026-09-04)
+
+`openScopePreviewer` used to draw every page of every bid before you could scroll — at up to
+1600px wide that is ~8MB of bitmap per page, hundreds of MB for a long bid, which is what stalled
+small laptops. Each canvas now reserves its shape with CSS `aspect-ratio` and is drawn by an
+`IntersectionObserver` (800px margin) the first time it approaches the viewport; a size change
+re-renders only pages already drawn. Marks measure against the wrap, so a box placed on an
+undrawn page is still right.
 
 ## Gotchas
 

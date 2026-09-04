@@ -1443,25 +1443,76 @@ function openProject(id,preset){
 
   const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)close();}});
   const sheet=el('div',{class:'sheet sheet-editor'});
-  function close(){scrim.remove();}
-  function save(){
-    if(!p.name.trim()){toast('Give the project a name first.');return;}
+
+  /* ---- Autosave (existing projects only) ----
+     Every control in this editor mutates `p` directly in its own handler, so
+     instead of wiring each one, watch input/change/click bubbling up the sheet,
+     wait for a pause, and PATCH when the payload actually differs from what was
+     last saved. Saves are serialised on one promise chain, and each run
+     recomputes the snapshot, so a stale queued run is a no-op. A brand-new
+     project still needs Save — that is the moment it comes into being, and a
+     half-typed name must not create a row. */
+  const meaningfulBid=bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||(Array.isArray(bd.files)&&bd.files.length)||bd.approved;
+  const saveStat=el('span',{style:'font-size:12px;color:var(--ink-3);white-space:nowrap'}, isNew?'':'Autosaves as you edit');
+  let lastSaved=isNew?null:JSON.stringify(projectPayload({...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)},false));
+  let autoT=null, savedAny=false, flushOnClose=!isNew, closed=false, chain=Promise.resolve();
+  const invalidWhy=()=>{
+    if(!p.name.trim()) return 'Give the project a name to save.';
     if(p.split&&p.split.list&&p.split.list.length>1&&p.split.mode==='custom'){
       const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
-      if(Math.abs(sum-100)>0.1){toast(`Split percentages total ${Math.round(sum*100)/100}% — they must equal 100%.`);return;}
+      if(Math.abs(sum-100)>0.1) return `Split percentages total ${Math.round(sum*100)/100}% — they must equal 100%.`;
     }
+    return '';
+  };
+  async function doAutosave(){
+    if(isNew||closed) return;
+    const q={...p,region:reg(),manager:(PROP(p.property)||{}).manager||'',bids:p.bids.filter(meaningfulBid)};
+    if(q.split&&(!q.split.list||q.split.list.length<2))q.split=null;
+    const payload=projectPayload(q,false), snap=JSON.stringify(payload);
+    if(snap===lastSaved) return;
+    const why=invalidWhy();
+    if(why){ saveStat.style.color='var(--rust)'; saveStat.textContent='Not saved — '+why; return; }
+    saveStat.style.color='var(--ink-3)'; saveStat.textContent='Saving…';
+    try{
+      const fresh=await API.send('PATCH','/projects/'+p.id,payload);
+      lastSaved=snap; savedAny=true;
+      // Keep the list behind the editor current without a full refetch.
+      if(fresh&&fresh.id){ if(typeof syncDerivedSteps==='function') syncDerivedSteps(fresh); const i=S.projects.findIndex(x=>x.id===p.id); if(i>=0) S.projects[i]=fresh; }
+      saveStat.textContent='Saved ✓';
+    }catch(e){ saveStat.style.color='var(--rust)'; saveStat.textContent='Not saved — '+e.message; }
+  }
+  const runAutosave=()=>{ clearTimeout(autoT); autoT=null; chain=chain.then(doAutosave,doAutosave); return chain; };
+  const scheduleAutosave=()=>{ if(isNew||closed) return; clearTimeout(autoT); autoT=setTimeout(runAutosave,900); };
+  sheet.addEventListener('input',scheduleAutosave);
+  sheet.addEventListener('change',scheduleAutosave);
+  // Step toggles, bid approvals and the like mutate p inside their click
+  // handlers — schedule after those have run.
+  sheet.addEventListener('click',()=>{ if(!isNew) setTimeout(scheduleAutosave,0); });
+
+  async function close(){
+    scrim.remove();
+    const flush=flushOnClose; flushOnClose=false;
+    if(!flush){ closed=true; clearTimeout(autoT); return; }   // Save / Delete do their own write
+    await runAutosave();                 // anything still pending goes out before the view redraws
+    closed=true; clearTimeout(autoT);
+    if(savedAny) await afterWrite();
+  }
+  function save(){
+    const why=invalidWhy(); if(why){toast(why);return;}
     if(p.split&&(!p.split.list||p.split.list.length<2))p.split=null;
     p.region=reg(); p.manager=PROP(p.property).manager;
-    p.bids=p.bids.filter(bd=>bd.contractor||bd.amount!=null||bd.file||bd.fileKey||bd.approved);
+    p.bids=p.bids.filter(meaningfulBid);
+    flushOnClose=false;                  // Save is the explicit write; don't also autosave on the way out
     close(); saveProject(p, isNew?'Project added':'Project saved', isNew);
   }
-  function del(){ close(); deleteProject(p.id); }
+  function del(){ flushOnClose=false; close(); deleteProject(p.id); }
 
   const head=el('div',{class:'sh'},
     propChip(p.property),
     el('h2',{style:'font-size:16px;flex:1'}, isNew?'New project':'Edit project'),
-    el('button',{class:'btn ghost',onclick:close},'Cancel'),
-    el('button',{class:'btn accent',onclick:save},'Save'));
+    saveStat,
+    el('button',{class:'btn ghost',onclick:close}, isNew?'Cancel':'Close'),
+    el('button',{class:'btn accent',onclick:save}, isNew?'Save':'Save & close'));
   const b=el('div',{class:'sb'});
 
   // --- core fields ---
@@ -2135,7 +2186,10 @@ function openProject(id,preset){
           wrap));
         pv.append(ps); document.body.append(pv);
         try{
-          const bytes=Uint8Array.from(atob(out.preview.split(',')[1]),c=>c.charCodeAt(0));
+          // The preview comes down as bytes from a short-lived server URL, not as
+          // base64 inside JSON — a large scanned contract no longer becomes a
+          // giant string plus a decoded copy in a small laptop's memory.
+          const bytes=new Uint8Array(await fetch(out.preview).then(r=>{ if(!r.ok) throw new Error('the preview has expired — press Preview again'); return r.arrayBuffer(); }));
           const pdfjs=await loadPdfJs();
           const doc2=await pdfjs.getDocument({data:bytes}).promise;
           const pg=await doc2.getPage(Math.min(body2.page,doc2.numPages));
@@ -3346,6 +3400,14 @@ async function openScopePreviewer(source, state, onSave){
         relayout(); for(const fn of rerenders) await fn();
       }},n+'▦'); b.dataset.cols=n; return b; };
   const grids=[];
+  /* Render-on-scroll for the page canvases: each wrap is observed once and drawn
+     the first time it comes within ~800px of the viewport (ancestor clipping by
+     the sheet's scroll box is accounted for). Browsers without the API draw
+     everything up front as before. */
+  const lazyIO=('IntersectionObserver' in window)
+    ? new IntersectionObserver(entries=>{ for(const e of entries){ if(!e.isIntersecting) continue; lazyIO.unobserve(e.target); const fn=e.target._lazyDraw; if(fn) fn().catch(()=>{}); } },{rootMargin:'800px 0px'})
+    : null;
+  const lazy={ observe(node,fn){ node._lazyDraw=fn; if(lazyIO) lazyIO.observe(node); else fn().catch(()=>{}); } };
   const colWidth=()=>{
     const avail=Math.max(240,(body.clientWidth||900)-8);
     return Math.floor((avail-(cols-1)*14)/cols);
@@ -3399,20 +3461,29 @@ async function openScopePreviewer(source, state, onSave){
 
       const page=await doc.getPage(pno);
       const base=page.getViewport({scale:1});
-      const cvs=el('canvas',{style:'width:100%;display:block'});
+      // Reserve the page's shape before anything is drawn, so the grid doesn't
+      // jump as pages come in and a mark placed on a not-yet-drawn page still
+      // measures against the right box.
+      const cvs=el('canvas',{style:`width:100%;display:block;aspect-ratio:${base.width}/${base.height};background:#fff`});
       canvasWrap.append(cvs);
       // Render at the displayed width times the device pixel ratio so the small
       // print is legible, capped so a long bid doesn't exhaust memory (a page at
       // 1600px wide is already ~8MB of bitmap).
+      let drawn=false;
       const draw=async()=>{
         const target=Math.min(1600,Math.max(240,colWidth())*Math.min(2,window.devicePixelRatio||1));
         const vp=page.getViewport({scale:target/base.width});
         cvs.width=Math.floor(vp.width); cvs.height=Math.floor(vp.height);
         // intent:'print' — rAF-scheduled rendering stalls in a background tab.
         await page.render({canvasContext:cvs.getContext('2d'),viewport:vp,intent:'print'}).promise;
+        drawn=true;
       };
-      rerenders.push(draw);
-      await draw();
+      // Pages render only as they scroll into view. Drawing every page of every
+      // bid up front (a 30-page bid at 1600px is hundreds of MB of bitmaps) is
+      // what stalled small laptops. A size change re-renders only what has been
+      // drawn; the rest pick up the new size when they first appear.
+      rerenders.push(async()=>{ if(drawn) await draw(); });
+      lazy.observe(canvasWrap,draw);
 
       const overlay=el('div',{style:'position:absolute;inset:0'});
       canvasWrap.append(overlay);

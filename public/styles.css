@@ -473,6 +473,18 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 /* ---- phased-program chip on project rows/cards ---- */
 .chip.phase{background:var(--panel-2);border:1px solid var(--line);color:var(--ink-2);font-family:var(--mono);font-size:10px}
 
+/* ---- editor: compact phased-program strip inside the core pane ---- */
+.phase-strip{display:flex;align-items:center;gap:8px;flex-wrap:wrap;margin-top:12px;padding:7px 10px;border:1px solid var(--line-2);border-radius:8px;background:var(--panel-2)}
+.ps-lab{font-size:12px;font-weight:700;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:220px}
+.ps-dots{display:inline-flex;gap:3px;flex-wrap:wrap}
+.ps-dot{width:20px;height:20px;border-radius:4px;border:1px solid var(--line);background:var(--panel);color:var(--ink-2);font-family:var(--mono);font-size:10px;font-weight:700;display:grid;place-items:center;cursor:pointer;padding:0}
+.ps-dot:hover{border-color:#8b93a1}
+.ps-dot.done{background:var(--green);border-color:var(--green);color:#fff}
+.ps-dot.hold{background:var(--amber-soft);border-color:var(--amber);color:var(--amber)}
+.ps-dot.discussed{background:var(--panel-2)}
+.ps-dot.me{outline:2px solid var(--ink);outline-offset:1px;cursor:default}
+.phase-strip .btn.ghost.sm{padding:3px 8px}
+
 /* ---- Future Projects panel (property view): visibly a different surface
    than the main Projects panel — amber accent (the "hold" hue) on a dimmer
    ground, in both themes. ---- */

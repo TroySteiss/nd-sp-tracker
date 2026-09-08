@@ -637,16 +637,19 @@ as all-or-nothing; seed.ts restore carries them; CSV export gained
 phaseOf/phaseSeq columns.
 
 - **Wizard** `openPhasedWizard({property}|{fromProject})` (app.js) — "⧉ Phased
-  project" on the property topbar, and "Start a phased program from this
-  project" in the editor's Phased program panel (converts it to phase 1).
-  Program name, count, start date, interval + duration (months), optional
-  per-phase cost/contractor, `{program}/{n}` name pattern, live date preview;
-  Create = one POST /projects per phase.
-- **Editor panel** (between Cost allocation and In-house): sibling table
-  (click to switch — closes this editor first, so autosave flushes), program
-  total, ✎ Rename (group-wide endpoint), ＋ Add phase (cadence inferred from
-  the last two phases' starts), ✕ Remove from program (nulls the fields on
-  this row only).
+  project" on the property topbar, and "⧉ Phase this project…" in the editor's
+  strip (converts it to phase 1). Program name, count, start date, interval +
+  duration (months), optional per-phase cost/contractor, `{program}/{n}` name
+  pattern — and **every preview row's name is directly editable**: an edited
+  name sticks in `nameOverrides` while untouched ones keep following the
+  pattern (the sheet-level input listener SKIPS `data-ph-name` inputs, or the
+  rebuild would steal focus mid-word). Create = one POST /projects per phase.
+- **Editor strip** (`.phase-strip`, appended to the CORE pane under the option
+  pills — deliberately compact, no table/prose): program name, numbered phase
+  dots colored by status (current outlined; click closes this editor — flushing
+  autosave — and opens that phase), then icon actions ✎ rename (group-wide
+  endpoint) · ＋ add phase (cadence inferred from the last two phases' starts)
+  · ✕ remove from program (nulls the fields on this row only).
 - **Plan tie-in needs no plan wiring**: each phase's cost flows into its own
   planned-end year via the auto layer, so the cadence spreads across the plan
   columns by itself. The per-property **plan grid rolls a program into ONE

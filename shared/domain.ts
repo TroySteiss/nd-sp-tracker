@@ -53,6 +53,15 @@ export interface Project {
   planYears?: Record<string, number> | null;
   planKind?: PlanKind | null;
   lenderFlag?: string | null;
+  /* Phased program (migration 032): siblings share phaseGroup (uid); phaseSeq
+     is the 1-based order; phaseOf the program's display name (denormalized on
+     every row, renamed group-wide via PATCH /api/programs/:group). Each phase
+     is a full ordinary project — its own bids/contract/contractor/dates — so
+     the whole existing chain (countersign, GL links, plan auto-layer) applies
+     per phase. All three null = a normal project. */
+  phaseGroup?: string | null;
+  phaseSeq?: number | null;
+  phaseOf?: string | null;
   bids?: Bid[];
   /* Contract revision (migration 024). Set when a bad contract is sent back to
      pre-approval: approval is withdrawn, the contract chain cleared, and the

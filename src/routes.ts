@@ -274,6 +274,10 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
   p.planYears = normalizePlanYears(p.planYears);
   p.planKind = p.planKind === 'recurring' ? 'recurring' : p.planKind === 'completion' ? 'completion' : null;
   p.lenderFlag = String(p.lenderFlag || '').trim().slice(0, 60);
+  // Phased program (032): a phase carries all three or none of them.
+  p.phaseGroup = String(p.phaseGroup || '').trim() || null;
+  p.phaseSeq = p.phaseGroup ? Math.max(1, Math.round(Number(p.phaseSeq) || 1)) : null;
+  p.phaseOf = p.phaseGroup ? String(p.phaseOf || '').trim().slice(0, 120) : null;
   const cols = [
     p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '', p.actionItem || '',
     p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost), dnull(p.dateAdded), dnull(p.plannedStart), dnull(p.plannedEnd),
@@ -281,13 +285,14 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
     nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet, !!p.commitCash,
     p.split ? JSON.stringify(p.split) : null,
     p.planYears ? JSON.stringify(p.planYears) : null, p.planKind, p.lenderFlag,
+    p.phaseGroup, p.phaseSeq, p.phaseOf,
   ];
   if (isNew) {
     await client.query(
       `insert into projects(property_code,category,name,description,plan,action_item,contractor,anticipated_cost,actual_cost,
          date_added,planned_start,planned_end,steps,notes,on_hold,pinned,in_house,ih_unit,total_to_complete,amount_completed,
-         no_contract,no_contract_set,commit_cash,split,plan_years,plan_kind,lender_flag,id)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28)`,
+         no_contract,no_contract_set,commit_cash,split,plan_years,plan_kind,lender_flag,phase_group,phase_seq,phase_of,id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
       [...cols, p.id]
     );
   } else {
@@ -295,7 +300,7 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
       `update projects set property_code=$1,category=$2,name=$3,description=$4,plan=$5,action_item=$6,contractor=$7,
          anticipated_cost=$8,actual_cost=$9,date_added=$10,planned_start=$11,planned_end=$12,steps=$13,notes=$14,on_hold=$15,
          pinned=$16,in_house=$17,ih_unit=$18,total_to_complete=$19,amount_completed=$20,no_contract=$21,no_contract_set=$22,commit_cash=$23,
-         split=$24, plan_years=$25, plan_kind=$26, lender_flag=$27, updated_at=now() where id=$28`,
+         split=$24, plan_years=$25, plan_kind=$26, lender_flag=$27, phase_group=$28, phase_seq=$29, phase_of=$30, updated_at=now() where id=$31`,
       [...cols, p.id]
     );
   }
@@ -450,6 +455,18 @@ api.patch('/projects/:id', async (req, res) => {
   const notesOut = (await query<any>('select id, date, note, username, ts, files from progress_notes where project_id=$1 order by ts nulls last, id', [p.id]))
     .rows.map((n) => ({ id: n.id, date: n.date ? String(n.date).slice(0, 10) : '', note: n.note, username: n.username ?? '', ts: n.ts ? new Date(n.ts).toISOString() : '', files: Array.isArray(n.files) ? n.files : [] }));
   res.json(rowToProject(r.rows[0], p.bids || [], notesOut, await propLookup()));
+});
+
+/* Rename a phased program: phase_of is denormalized onto every sibling, so a
+   rename is one group-wide UPDATE. Any signed-in user (same as project edits). */
+api.patch('/programs/:group', async (req, res) => {
+  const name = String(req.body?.name || '').trim().slice(0, 120);
+  if (!name) return res.status(400).json({ error: 'program name required' });
+  const r = await query<{ id: string; property_code: string }>(
+    'update projects set phase_of=$1, updated_at=now() where phase_group=$2 returning id, property_code', [name, req.params.group]);
+  if (!r.rowCount) return res.status(404).json({ error: 'no phases carry that group' });
+  logChange(req, { action: 'program.rename', entityType: 'project', entityId: req.params.group, property: r.rows[0].property_code, summary: `Phased program renamed to "${name}" (${r.rowCount} phases)` });
+  res.json({ ok: true, count: r.rowCount });
 });
 
 api.delete('/projects/:id', async (req, res) => {
@@ -1904,7 +1921,7 @@ api.get('/export/plan.xlsx', async (req, res) => {
 
 api.get('/export/projects.csv', requireAdmin, async (_req, res) => {
   const state = await assembleState();
-  const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', 'lenderFlag', 'planKind', 'planTotal', ...STEP_KEYS];
+  const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', 'lenderFlag', 'planKind', 'planTotal', 'phaseOf', 'phaseSeq', ...STEP_KEYS];
   const lines = [cols.join(',')];
   for (const p of state.projects) {
     lines.push(cols.map((cc) => {

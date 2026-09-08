@@ -76,8 +76,8 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
       `insert into projects(id,property_code,category,name,description,plan,action_item,contractor,
          anticipated_cost,actual_cost,date_added,planned_start,planned_end,steps,notes,on_hold,pinned,
          in_house,ih_unit,total_to_complete,amount_completed,no_contract,no_contract_set,split,
-         plan_years,plan_kind,lender_flag)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27)`,
+         plan_years,plan_kind,lender_flag,phase_group,phase_seq,phase_of)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30)`,
       [
         p.id, p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '',
         p.actionItem || '', p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost),
@@ -87,6 +87,8 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
         (p as any).split ? JSON.stringify((p as any).split) : null,
         (p as any).planYears ? JSON.stringify((p as any).planYears) : null,
         (p as any).planKind || null, (p as any).lenderFlag || '',
+        (p as any).phaseGroup || null, (p as any).phaseGroup ? ((p as any).phaseSeq || 1) : null,
+        (p as any).phaseGroup ? ((p as any).phaseOf || null) : null,
       ]
     );
     let slot = 0;

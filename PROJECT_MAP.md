@@ -623,6 +623,37 @@ output is not byte-deterministic, so identical content differs by a couple of by
 checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
 glyph identical SP output before and after.
 
+## Phased programs (032, 2026-09-08)
+
+One capex program executed as several phases — "one building per quarter for
+four years", each phase with its OWN contract, contractor and dates. **A phase
+is a full ordinary project row**; nothing about the contract chain, countersign,
+GL linking, PM view or cash model changed — it all applies per phase. Siblings
+share `projects.phase_group` (uid); `phase_seq` orders them; `phase_of` is the
+program's display name denormalized onto every row (self-describing in
+exports/backups; renamed group-wide via `PATCH /api/programs/:group`, any
+signed-in user). All three NULL = normal project. writeProject sanitizes them
+as all-or-nothing; seed.ts restore carries them; CSV export gained
+phaseOf/phaseSeq columns.
+
+- **Wizard** `openPhasedWizard({property}|{fromProject})` (app.js) — "⧉ Phased
+  project" on the property topbar, and "Start a phased program from this
+  project" in the editor's Phased program panel (converts it to phase 1).
+  Program name, count, start date, interval + duration (months), optional
+  per-phase cost/contractor, `{program}/{n}` name pattern, live date preview;
+  Create = one POST /projects per phase.
+- **Editor panel** (between Cost allocation and In-house): sibling table
+  (click to switch — closes this editor first, so autosave flushes), program
+  total, ✎ Rename (group-wide endpoint), ＋ Add phase (cadence inferred from
+  the last two phases' starts), ✕ Remove from program (nulls the fields on
+  this row only).
+- **Plan tie-in needs no plan wiring**: each phase's cost flows into its own
+  planned-end year via the auto layer, so the cadence spreads across the plan
+  columns by itself. The per-property **plan grid rolls a program into ONE
+  row** (per-year sums, `⧉ <name>` + "N phases" expander in
+  `PLANV.openGroups`); expanded phase rows are editable as usual, indented.
+- Rows/cards show a `⧉ seq/N` chip (`phaseChip`, `.chip.phase`).
+
 ## Advanced past countersign without the paper (2026-09-08)
 
 `advancedUncountersigned(p)` in domain.ts (unit-tested; mirrored by hand in

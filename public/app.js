@@ -59,7 +59,7 @@ let BFILT={year:null};   // property view: selected year for the non-SP budget n
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts view filters + sort
 let IHF={region:''};   // in-house view region toggle
-let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true};  // GL ledger filters
+let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true,q:'',proj:''};  // GL ledger filters (q = text search, proj = tie-out project)
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
 let PLANV={prop:''};         // long-range plan view: ''=portfolio summary, else a property code
 let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
@@ -1583,11 +1583,16 @@ function trackEl(p){
   const t=el('div',{class:'track'});
   // N/A (no-contract) and auto attachment-derived steps excluded from the bar.
   const steps=appLifecycle(p).filter(s=>!AUTO_STEPS.includes(s.key));
-  let cur=-1; steps.forEach((s,i)=>{ if(p.steps&&p.steps[s.key])cur=i; });
+  // Yellow marks the NEXT step to do (first unticked), not the last one
+  // finished (2026-09-08) — finished steps are all green. Parked (hold) and
+  // idea-stage (note) rows get no "up next" marker: nothing is next there.
+  const ph=phase(p);
+  const showNext=!isComplete(p)&&ph!=='hold'&&ph!=='note';
+  const next=showNext?steps.findIndex(s=>!(p.steps&&p.steps[s.key])):-1;
   steps.forEach((s,i)=>{
     const done=p.steps&&p.steps[s.key];
-    const cls=done?(i===cur&&!isComplete(p)?'seg cur':'seg done'):'seg';
-    const seg=el('div',{class:cls,title:`${s.label}${done?' ✓':''}`});
+    const cls=done?'seg done':(i===next?'seg cur':'seg');
+    const seg=el('div',{class:cls,title:`${s.label}${done?' ✓':(i===next?' — up next':'')}`});
     t.append(seg);
   });
   return t;
@@ -4391,6 +4396,7 @@ function viewProperty(){
   const projs=allOwn.filter(p2=>!FUTURE_PHASES.includes(phase(p2)));
   if(PFILT.hide.atl===undefined)PFILT.hide.atl=false;
   if(PFILT.hide.shared===undefined)PFILT.hide.shared=true;
+  if(PFILT.hide.done===undefined)PFILT.hide.done=true;   // Completed hidden by default (2026-09-08) — the chip shows it
   const pj=el('div',{class:'panel'});
   const counts={}; PHASES.forEach(ph=>counts[ph.key]=allOwn.filter(p2=>phase(p2)===ph.key).length);
   // phase filter chips — click to hide/show a completion group (the Future
@@ -4469,60 +4475,97 @@ function viewProperty(){
   // in its own panel below Projects (2026-09-08). Same rows, same hide chips;
   // pinning inside this panel just sorts its group to the top.
   if(futureProjs.length){
-    const fp=el('div',{class:'panel'});
+    if(PFILT.futureOpen===undefined)PFILT.futureOpen=true;   // collapsible, open until collapsed (per session)
+    const fp=el('div',{class:'panel future-panel'});
     const fFilt=el('div',{class:'phasefilt'});
     FUTURE_PHASES.forEach(k=>{ const n=counts[k]; if(!n)return; const ph=phaseMeta(k), hidden=!!PFILT.hide[k];
-      fFilt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[k]=!PFILT.hide[k];render();}},
+      fFilt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',
+        onclick:e=>{e.stopPropagation();PFILT.hide[k]=!PFILT.hide[k];render();}},
         el('span',{},ph.label), el('span',{class:'pf-n'},String(n))));
     });
-    fp.append(el('div',{class:'ph'}, el('h3',{},'Future Projects'), el('div',{class:'sp'}),
-      fFilt, el('span',{class:'chip'},String(futureProjs.length))));
-    const fb=el('div',{class:'proj-list'});
-    FUTURE_PHASES.forEach(k=>{
-      if(PFILT.hide[k])return;
-      const ph=phaseMeta(k);
-      const list=futureProjs.filter(p2=>phase(p2)===k);
-      if(!list.length)return;
-      list.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||(b.dateAdded||'').localeCompare(a.dateAdded||''));
-      fb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
-      list.forEach(pr=>fb.append(projRow(pr)));
-    });
-    if(FUTURE_PHASES.every(k=>PFILT.hide[k]))
-      fb.append(el('div',{class:'empty'},'Groups hidden — click a chip above to show them.'));
-    fp.append(fb); right.append(fp);
+    fp.append(el('div',{class:'ph',style:'cursor:pointer;user-select:none',title:PFILT.futureOpen?'Collapse':'Expand',
+      onclick:()=>{PFILT.futureOpen=!PFILT.futureOpen;render();}},
+      el('span',{style:'font-size:11px;color:var(--ink-3);width:12px'},PFILT.futureOpen?'▾':'▸'),
+      el('h3',{},'Future Projects'), el('div',{class:'sp'}),
+      ...(PFILT.futureOpen?[fFilt]:[]), el('span',{class:'chip'},String(futureProjs.length))));
+    if(PFILT.futureOpen){
+      const fb=el('div',{class:'proj-list'});
+      FUTURE_PHASES.forEach(k=>{
+        if(PFILT.hide[k])return;
+        const ph=phaseMeta(k);
+        const list=futureProjs.filter(p2=>phase(p2)===k);
+        if(!list.length)return;
+        list.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||(b.dateAdded||'').localeCompare(a.dateAdded||''));
+        fb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
+        list.forEach(pr=>fb.append(projRow(pr)));
+      });
+      if(FUTURE_PHASES.every(k=>PFILT.hide[k]))
+        fb.append(el('div',{class:'empty'},'Groups hidden — click a chip above to show them.'));
+      fp.append(fb);
+    }
+    right.append(fp);
   }
 
-  // reconciliation & flags
+  // reconciliation & flags — collapsed by default (2026-09-08); the header chip
+  // still says "N to review" / "all clear" so nothing hides silently.
+  const gls=S.gl.filter(g=>g.property===code);
+  const untied=gls.filter(g=>!g.linkedProjectId&&!isInterestGL(g));
+  const untiedTotal=untied.reduce((a,g)=>a+(Number(g.amount)||0),0);
   const auditP=el('div',{class:'panel'});
   const reviewN=am.unplanned.length+am.paidNoGL.length;
-  auditP.append(el('div',{class:'ph'}, el('h3',{},'Reconciliation & flags'), el('div',{class:'sp'}),
+  if(PFILT.reconOpen===undefined)PFILT.reconOpen=false;
+  auditP.append(el('div',{class:'ph',style:'cursor:pointer;user-select:none',title:PFILT.reconOpen?'Collapse':'Expand',
+    onclick:()=>{PFILT.reconOpen=!PFILT.reconOpen;render();}},
+    el('span',{style:'font-size:11px;color:var(--ink-3);width:12px'},PFILT.reconOpen?'▾':'▸'),
+    el('h3',{},'Reconciliation & flags'), el('div',{class:'sp'}),
+    untied.length?el('span',{class:'chip',title:'Ledger lines not tied to any project'},`${untied.length} untied`):null,
     el('span',{class:'chip'+(reviewN?' hold':' done')}, reviewN?`${reviewN} to review`:'all clear')));
+  if(PFILT.reconOpen){
   const ab=el('div',{class:'pad'});
   ab.append(el('div',{class:'recon'},
     reconCell('GL posted',am.glTotal),
     reconCell('Paid per tracker',cm.paidTotal),
     reconCell('Difference',am.glTotal-cm.paidTotal,Math.abs(am.glTotal-cm.paidTotal)>OVER_THRESHOLD)));
+  // GL lines not tied to any project — every size, not just the >$5K flags.
+  // "Review in ledger" points the ledger's filters at exactly these lines.
+  ab.append(el('div',{class:'rc',style:'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px'},
+    el('div',{}, el('div',{class:'rk'},'Not tied to a project'),
+      el('div',{class:'rv mono'},untied.length?`${fmt(untiedTotal)} · ${untied.length} line${untied.length>1?'s':''}`:'none — every line is tied')),
+    el('div',{style:'flex:1'}),
+    untied.length?el('button',{class:'btn sm accent',onclick:()=>{GLFILT.match='unlinked';GLFILT.hideSmall=false;GLFILT.cat='';GLFILT.q='';GLFILT.proj='';render();
+      setTimeout(()=>{const g2=document.querySelector('[data-gl-panel]');if(g2)g2.scrollIntoView({behavior:'smooth',block:'start'});},60);}},'Review in ledger ↓'):null));
   ab.append(flagBlock('Posted over $5,000 — unplanned',
     am.unplanned.map(g=>({title:g.vendor||g.category,sub:(g.date||'')+' · '+g.category,amt:g.amount})),'rust',
     'Large ledger postings not linked to a tracked project. Link them on the ledger below, or add the project so the spend is accounted for.'));
   ab.append(flagBlock('Marked paid — no ledger match',
     am.paidNoGL.map(p2=>({title:p2.name,sub:p2.category,amt:projOutflow(p2),onclick:()=>openProject(p2.id)})),'amber',
     'Flagged paid in the tracker but with no linked GL entry to confirm. Link a ledger line below to finalize.'));
-  auditP.append(ab); right.append(auditP);
+  auditP.append(ab);
+  }
+  right.append(auditP);
 
   // GL
-  const gls=S.gl.filter(g=>g.property===code);
   const glCats=[...new Set(gls.map(g=>g.category).filter(Boolean))].sort();
+  // Tie-out project filter: only projects at this property; a stale id from
+  // another property's visit is treated as unset.
+  const propProjects=projForProp(code).slice().sort((a,b)=>String(a.name||'').localeCompare(String(b.name||'')));
+  if(GLFILT.proj&&!propProjects.some(pr=>pr.id===GLFILT.proj))GLFILT.proj='';
   let glView=gls.slice();
-  if(GLFILT.hideSmall) glView=glView.filter(g=>Math.abs(Number(g.amount)||0)>=1000);
+  const glQ=String(GLFILT.q||'').toLowerCase().trim();
+  if(glQ) glView=glView.filter(g=>((g.vendor||'')+' '+(g.remarks||'')+' '+(g.category||'')+' '+(g.control||'')+' '+String(g.amount==null?'':g.amount)).toLowerCase().includes(glQ));
+  // Tying out a project needs EVERY linked line, so the project filter ignores
+  // the under-$1,000 switch.
+  if(GLFILT.proj) glView=glView.filter(g=>g.linkedProjectId===GLFILT.proj);
+  else if(GLFILT.hideSmall) glView=glView.filter(g=>Math.abs(Number(g.amount)||0)>=1000);
   if(GLFILT.cat) glView=glView.filter(g=>g.category===GLFILT.cat);
   if(GLFILT.match==='linked') glView=glView.filter(g=>!!g.linkedProjectId);
   if(GLFILT.match==='unlinked') glView=glView.filter(g=>!g.linkedProjectId&&!isInterestGL(g));
   if(GLFILT.match==='interest') glView=glView.filter(g=>isInterestGL(g));
   // Sweep/interest income is never budgeted SP spend — hidden by default unless explicitly viewed
-  if(GLFILT.hideInterest && GLFILT.match!=='interest') glView=glView.filter(g=>!isInterestGL(g));
+  if(GLFILT.hideInterest && GLFILT.match!=='interest' && !GLFILT.proj) glView=glView.filter(g=>!isInterestGL(g));
   glView.sort((a,b)=>Math.abs(Number(b.amount)||0)-Math.abs(Number(a.amount)||0)||(String(a.category||'').localeCompare(String(b.category||''))));
-  const gp=el('div',{class:'panel',style:'overflow:auto'});
+  const glViewTotal=glView.reduce((a,g)=>a+(Number(g.amount)||0),0);
+  const gp=el('div',{class:'panel',style:'overflow:auto','data-gl-panel':'1'});
   const glCatSel=el('select',{class:'mini-sel',onchange:e=>{GLFILT.cat=e.target.value;render();}},
     el('option',{value:''},'All categories'),
     ...glCats.map(cat=>el('option',{value:cat,...(GLFILT.cat===cat?{selected:true}:{})},cat)));
@@ -4531,15 +4574,44 @@ function viewProperty(){
     el('option',{value:'unlinked',...(GLFILT.match==='unlinked'?{selected:true}:{})},'Unlinked'),
     el('option',{value:'linked',...(GLFILT.match==='linked'?{selected:true}:{})},'Linked'),
     el('option',{value:'interest',...(GLFILT.match==='interest'?{selected:true}:{})},'Interest income'));
-  const glHideChk=el('input',{type:'checkbox',...(GLFILT.hideSmall?{checked:true}:{}),onchange:e=>{GLFILT.hideSmall=e.target.checked;render();}});
+  const glHideChk=el('input',{type:'checkbox',...(GLFILT.hideSmall?{checked:true}:{}),...(GLFILT.proj?{disabled:true}:{}),onchange:e=>{GLFILT.hideSmall=e.target.checked;render();}});
   const glHideIntChk=el('input',{type:'checkbox',...(GLFILT.hideInterest?{checked:true}:{}),...(GLFILT.match==='interest'?{disabled:true}:{}),onchange:e=>{GLFILT.hideInterest=e.target.checked;render();}});
+  // Text search commits on Enter/blur (a per-keystroke re-render would drop focus).
+  const glSearch=el('input',{type:'search',class:'date-f',placeholder:'Search vendor / memo / control… ⏎',style:'min-width:180px',value:GLFILT.q||'',
+    onchange:e=>{GLFILT.q=e.target.value;render();},
+    onkeydown:e=>{ if(e.key==='Enter'){GLFILT.q=e.target.value;render();} }});
+  const glProjSel=el('select',{class:'mini-sel',style:'max-width:200px',title:'Show only the ledger lines linked to one project, with its tie-out summary',
+    onchange:e=>{GLFILT.proj=e.target.value;render();}},
+    el('option',{value:''},'Tie out: pick a project…'),
+    ...propProjects.map(pr=>el('option',{value:pr.id,...(GLFILT.proj===pr.id?{selected:true}:{})},(pr.name||'').slice(0,44))));
   gp.append(el('div',{class:'ph'}, el('h3',{},'General ledger — SP spend'), el('div',{class:'sp'}),
     el('span',{class:'chip'},`${glView.length}${glView.length!==gls.length?' of '+gls.length:''} lines`),
+    glView.length!==gls.length?el('span',{class:'chip',title:'Total of the lines currently shown'},'shown: '+fmt(glViewTotal)):null,
     el('span',{class:'chip'},fmt(glSpent))));
   gp.append(el('div',{style:'display:flex;gap:10px;align-items:center;padding:8px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap'},
-    glCatSel, glMatchSel,
-    el('label',{style:'display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer'}, glHideChk, 'Hide under $1,000'),
+    glSearch, glCatSel, glMatchSel, glProjSel,
+    el('label',{style:`display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer${GLFILT.proj?';opacity:.5':''}`,...(GLFILT.proj?{title:'Ignored while tying out a project — every linked line counts'}:{})}, glHideChk, 'Hide under $1,000'),
     el('label',{style:`display:flex;align-items:center;gap:5px;font-size:12.5px;cursor:pointer${GLFILT.match==='interest'?';opacity:.5':''}`,title:'Sweep/interest income is never budgeted SP spend'}, glHideIntChk, 'Hide interest income')));
+  // Tie-out summary: GL linked to the picked project vs the tracker's cost for
+  // this property (share-weighted for split projects).
+  if(GLFILT.proj){
+    const pr=S.projects.find(x=>x.id===GLFILT.proj);
+    if(pr){
+      const linkedSum=gls.filter(g=>g.linkedProjectId===pr.id).reduce((a,g)=>a+(Number(g.amount)||0),0);
+      const target=(isInHouse(pr)?ihTotal(pr):projOutflow(pr))*shareFor(pr,code);
+      const diff=linkedSum-target;
+      const tone=Math.abs(diff)<1?'var(--green)':(Math.abs(diff)>OVER_THRESHOLD?'var(--rust)':'var(--amber)');
+      const hasPartial=gls.some(g=>g.linkedProjectId===pr.id&&g.partial);
+      gp.append(el('div',{style:'display:flex;gap:14px;align-items:center;padding:9px 14px;border-bottom:1px solid var(--line-2);flex-wrap:wrap;font-size:12.5px;background:var(--panel-2)'},
+        el('strong',{},pr.name.slice(0,40)),
+        el('span',{class:'mono'},'GL linked '+fmt(linkedSum)),
+        el('span',{class:'mono'},'tracker cost '+fmt(target)),
+        el('span',{class:'mono',style:'font-weight:700;color:'+tone},(diff===0?'ties out exactly':(diff>0?'+':'−')+fmt(Math.abs(diff)).replace('$','$'))+(diff===0?'':' vs tracker')),
+        hasPartial?el('span',{class:'chip',style:'background:var(--amber-soft);color:var(--amber)',title:'One or more linked lines are partial payments'},'partial links'):null,
+        el('span',{style:'flex:1'}),
+        el('button',{class:'btn ghost sm',onclick:()=>{GLFILT.proj='';render();}},'✕ Clear')));
+    }
+  }
   if(glView.length){
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},tr(th('Amount','r'),th('Category'),th('Date'),th('Vendor / description'),th('Match'))));
@@ -4550,6 +4622,7 @@ function viewProperty(){
         td(el('div',{style:'font-size:12px;max-width:260px'}, el('div',{},g.vendor), g.remarks?el('div',{style:'color:var(--ink-3);font-size:11px'},g.remarks):null)),
         td(glLinkCell(g,code))));
     });
+    if(glView.length>1) tbb.append(tr(td(el('strong',{class:'mono'},fmt(glViewTotal)),'r'),td(el('strong',{},'TOTAL — shown lines')),td(''),td(''),td('')));
     t.append(tbb); gp.append(t);
   } else gp.append(el('div',{class:'empty'},gls.length?'No lines match the current filters.':'No ledger lines for this property. Upload a general ledger on the Data tab.'));
   right.append(gp);

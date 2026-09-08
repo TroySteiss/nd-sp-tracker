@@ -465,6 +465,12 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .qs-lab{font-size:11px;font-weight:700;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);flex:1}
 .qs-draft{width:100%;min-height:88px;padding:10px 12px;border:1px solid var(--line);border-radius:8px;background:var(--panel);color:var(--ink);font-family:var(--body);font-size:13px;line-height:1.55;resize:vertical}
 
+/* ---- Future Projects panel (property view): visibly a different surface
+   than the main Projects panel — amber accent (the "hold" hue) on a dimmer
+   ground, in both themes. ---- */
+.future-panel{background:var(--panel-2);border-left:4px solid var(--amber)}
+.future-panel .grp-h{background:var(--surface-2)}
+
 /* ---- property projects list rows ---- */
 /* content-visibility lets the browser skip layout/paint of rows outside the
    viewport — a big win for long project lists on slower machines. The

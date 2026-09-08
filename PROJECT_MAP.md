@@ -632,7 +632,9 @@ and `signed` is attachment-derived, so that means no countersigned contract is
 attached. Applies only where the contract chain applies (not in-house, not
 no-contract) AND a contract is actually in play (`contractGenerated` ticked, or
 a generated/contractor-signed file present) — legacy projects with no contract
-anywhere never flag. Three surfaces, all display-only:
+anywhere never flag. **Adoption cutoff `COUNTERSIGN_FLAG_SINCE = 2026-06-01`**:
+projects with `dateAdded` before it (or no date at all) are grandfathered —
+the discipline is being adopted, not applied retroactively. Three surfaces, all display-only:
 - **Progress bars go red** (`.track.alert` — done segs rust, next-step marker
   dimmed rust) everywhere trackEl renders, with an explanatory title.
 - **The editor's lifecycle** appends a `.step-alert` warning row naming the way

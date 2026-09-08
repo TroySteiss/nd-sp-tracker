@@ -284,8 +284,10 @@ function syncDerivedSteps(p){
    dashboard's "Awaiting signature" list keeps the project even once advanced.
    Only where the contract chain applies AND a contract is actually in play. */
 const POST_SIGN_STEPS=['workStarted','workCompleted','paid','completed'];
+const COUNTERSIGN_FLAG_SINCE='2026-06-01';   // adoption cutoff — older entries (or no date) are grandfathered
 function advancedUncountersigned(p){
   if(!p||p.inHouse||p.noContract)return false;
+  if(!p.dateAdded||String(p.dateAdded).slice(0,10)<COUNTERSIGN_FLAG_SINCE)return false;
   if(p.steps&&p.steps.signed)return false;
   const inPlay=!!(p.steps&&p.steps.contractGenerated)||!!p.contractFileKey||!!p.contractorSignedFileKey;
   if(!inPlay)return false;

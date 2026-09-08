@@ -430,8 +430,13 @@ export const POST_SIGN_STEPS = ['workStarted', 'workCompleted', 'paid', 'complet
     in-house, not no-contract) and only once a contract is actually in play
     (generated/uploaded or contractor-signed) — a legacy or bid-stage project
     is not "awaiting countersign". */
+/** Adoption cutoff: the countersign discipline is being adopted, so projects
+    entered before this date (or with no dateAdded at all — that reads as
+    legacy) are grandfathered and never flagged. ISO strings compare correctly. */
+export const COUNTERSIGN_FLAG_SINCE = '2026-06-01';
 export function advancedUncountersigned(p: Project): boolean {
   if (p.inHouse || p.noContract) return false;
+  if (!p.dateAdded || String(p.dateAdded).slice(0, 10) < COUNTERSIGN_FLAG_SINCE) return false;
   if (p.steps && p.steps.signed) return false;
   const inPlay = !!(p.steps && p.steps.contractGenerated) || !!p.contractFileKey || !!p.contractorSignedFileKey;
   if (!inPlay) return false;

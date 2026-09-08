@@ -439,20 +439,26 @@ describe('region colour ramps (migration 029)', () => {
 });
 
 describe('advanced past countersign without the paper', () => {
-  const base = { steps: { planned: true, gotBids: true, approved: true, contractGenerated: true } };
+  const base = { dateAdded: '2026-07-15', steps: { planned: true, gotBids: true, approved: true, contractGenerated: true } };
   it('flags post-sign steps ticked with signed unticked and a contract in play', () => {
     expect(advancedUncountersigned(proj({ ...base, steps: { ...base.steps, workStarted: true } }))).toBe(true);
-    expect(advancedUncountersigned(proj({ steps: { paid: true }, contractorSignedFileKey: 'F1' }))).toBe(true);
-    expect(advancedUncountersigned(proj({ steps: { completed: true }, contractFileKey: 'F2' }))).toBe(true);
+    expect(advancedUncountersigned(proj({ dateAdded: '2026-07-15', steps: { paid: true }, contractorSignedFileKey: 'F1' }))).toBe(true);
+    expect(advancedUncountersigned(proj({ dateAdded: '2026-07-15', steps: { completed: true }, contractFileKey: 'F2' }))).toBe(true);
   });
   it('clear when countersigned (signed ticked) or nothing past signed', () => {
     expect(advancedUncountersigned(proj({ ...base, steps: { ...base.steps, signed: true, paid: true } }))).toBe(false);
     expect(advancedUncountersigned(proj(base))).toBe(false);                      // stopped at contract generated
   });
   it('never flags where the contract chain does not apply or is not in play', () => {
-    expect(advancedUncountersigned(proj({ steps: { workStarted: true }, inHouse: true }))).toBe(false);
-    expect(advancedUncountersigned(proj({ steps: { paid: true }, noContract: true }))).toBe(false);
-    expect(advancedUncountersigned(proj({ steps: { paid: true, completed: true } }))).toBe(false);  // legacy: no contract anywhere
+    expect(advancedUncountersigned(proj({ dateAdded: '2026-07-15', steps: { workStarted: true }, inHouse: true }))).toBe(false);
+    expect(advancedUncountersigned(proj({ dateAdded: '2026-07-15', steps: { paid: true }, noContract: true }))).toBe(false);
+    expect(advancedUncountersigned(proj({ dateAdded: '2026-07-15', steps: { paid: true, completed: true } }))).toBe(false);  // no contract anywhere
+  });
+  it('grandfathers anything entered before the 6/1/26 adoption cutoff (or undated)', () => {
+    expect(advancedUncountersigned(proj({ ...base, dateAdded: '2026-05-31', steps: { ...base.steps, paid: true } }))).toBe(false);
+    expect(advancedUncountersigned(proj({ ...base, dateAdded: '2025-11-03', steps: { ...base.steps, completed: true } }))).toBe(false);
+    expect(advancedUncountersigned(proj({ ...base, dateAdded: '', steps: { ...base.steps, paid: true } }))).toBe(false);      // undated = legacy
+    expect(advancedUncountersigned(proj({ ...base, dateAdded: '2026-06-01', steps: { ...base.steps, paid: true } }))).toBe(true);  // ON the cutoff counts
   });
 });
 

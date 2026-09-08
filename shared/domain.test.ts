@@ -7,7 +7,7 @@ import {
   toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
   allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
-  lenderFlagged, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
+  lenderFlagged, planAutoHold, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
   syncDateDerivedSteps, needsCompletionReview,
 } from './domain.js';
@@ -324,6 +324,19 @@ describe('long-range plan (migration 028)', () => {
     const st = blankState({ projects: [p], cash: { CLND: { cash: 50000 } } });
     expect(cashModel(st, 'CLND').outstandingTotal).toBe(10000);   // anticipated, NOT the plan
     expect(cashModel(st, 'CLND').projectedCash).toBe(40000);
+  });
+  it('planAutoHold: future-only plan parks, current-year money un-parks, no signal leaves alone', () => {
+    // Scheduled only into future years (until the loan comes due) → hold
+    expect(planAutoHold({ '2027': 50000, '2028': 50000 }, 2026)).toBe(true);
+    expect(planAutoHold({ post: 100000 }, 2026)).toBe(true);                       // Post-Refi only = future
+    expect(planAutoHold({ '2026': 0, '2027': 50000 }, 2026)).toBe(true);           // explicit zero this year, money later
+    // Money in the current (or a past) year → active
+    expect(planAutoHold({ '2026': 25000, '2027': 50000 }, 2026)).toBe(false);
+    expect(planAutoHold({ '2025': 10000 }, 2026)).toBe(false);                     // past year = already on the books
+    // No signal → null (caller leaves onHold alone)
+    expect(planAutoHold(null, 2026)).toBeNull();                                   // not explicitly scheduled
+    expect(planAutoHold({}, 2026)).toBeNull();
+    expect(planAutoHold({ '2026': 0, '2027': 0 }, 2026)).toBeNull();               // zeros only — deliberate nothing, not a park
   });
 });
 

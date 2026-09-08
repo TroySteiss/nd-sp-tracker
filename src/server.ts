@@ -3,6 +3,7 @@ import express from 'express';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
+import { bumpMutation } from './db.js';
 import { conversionAvailable } from './convert.js';
 import { api } from './routes.js';
 import { pmApi } from './pm.js';
@@ -28,6 +29,12 @@ app.get('/healthz', (_req, res) => res.json({
   // false ⇒ the countersign / bid-review PDF viewers can't load (see /vendor/pdfjs below)
   pdfjs: existsSync(join(process.cwd(), 'node_modules', 'pdfjs-dist', 'build', 'pdf.min.js')),
 }));
+
+// Any non-GET /api call may change data — invalidate the cached /api/state blob
+// (see routes.ts). Bumping BEFORE the handler runs is the safe direction: an
+// assembly overlapping the write re-assembles next time instead of going stale.
+// Covers both routers (main api + /api/pm) and costs one integer increment.
+app.use('/api', (req, _res, next) => { if (req.method !== 'GET') bumpMutation(); next(); });
 
 // The property-manager surface. Mounted before the main api router so /api/pm/*
 // never falls through to a full-view endpoint. Its own routes re-check the

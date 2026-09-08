@@ -2,7 +2,11 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-09-01 (date-derived lifecycle — Work Started auto-ticks on
+> Last updated: 2026-09-08 (multi-user perf: /api/state assembled+gzipped once
+> per mutation and served from cache; GL full-link ticks Completed; ATL groups
+> shown until hidden; plan-driven hold — future-only planYears auto-tick On
+> Hold, current-year money clears it, applied only when a save CHANGES the plan).
+> Previously: 2026-09-01 (date-derived lifecycle — Work Started auto-ticks on
 > the planned start date; a passed planned end flags "confirm work completed" on
 > the dashboard, never auto-ticks).
 > Previously: 2026-08-26 (non-SP budget notes — per-property above-the-line
@@ -188,8 +192,9 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   dashboard Portfolio-summary rows still always show current cash — deliberately out of scope.
 - **"Above the Line"** in a project NAME (`isAboveLine` in domain.ts / `isATL` in app.js) =
   operationally funded: excluded from cash/budget projections (cashModel), GL tie-out (auditModel),
-  dashboards, nav counts, quarterly-summary future list, and update emails. Visible only via the
-  property view's collapsed "Above the Line" group and a Projects-view toggle (off by default).
+  dashboards, nav counts, quarterly-summary future list, and update emails. Listed via the
+  property view's "Above the Line" group and a Projects-view toggle — both **SHOWN by default
+  until hidden** (2026-09-08; they used to start hidden). The money exclusions are unchanged.
 
 ## Database tables (migrations/)
 
@@ -218,6 +223,15 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
 ## API surface (src/routes.ts)
 
 - `GET /state` — the whole app state (client re-fetches after every write via `afterWrite`).
+  **Cached per mutation (2026-09-08)**: the blob is assembled, stringified and gzipped ONCE per
+  in-process mutation seq (db.ts `bumpMutation`, incremented by a server.ts middleware on every
+  non-GET /api request BEFORE the handler runs) and every client gets the cached buffer —
+  N clients live-sync-refetching after one edit used to cost N assemblies of 12 `select *`
+  queries plus N multi-MB uncompressed serializations, which is what made concurrent use crawl.
+  Concurrent cache misses share one in-flight build; a request whose seq is newer than the
+  in-flight build re-builds, so a client's own afterWrite refetch can never see pre-write data.
+  Single-instance cache — if the app ever scales to 2+ Railway replicas this must move to a
+  shared signal (e.g. keying on `change_log` max id).
 - Projects: `POST/PATCH/DELETE /projects[/:id]` (PATCH logs a field-level diff), bid file upload,
   `POST /projects/:id/note-file` (note attachments — stored in files, referenced from the note's
   `files` jsonb), `POST /projects/:id/contract` (generate PDF), contract-file / executed-contract /
@@ -227,7 +241,11 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
   `PATCH /projects/:id/notes/:noteId` (replace that note's `files` — how an attachment is removed).
   See "Notes are append-only" below — **do not** go back to saving notes through the project.
 - Cash: `PATCH /cash/:code`, `POST/DELETE /cash-adjustments`.
-- GL: `PATCH /gl/:id/link`.
+- GL: `PATCH /gl/:id/link`. A FULL link from the matcher modal (link or
+  update-total mode, not partial) ticks `workCompleted` + `paid` + **`completed`
+  (2026-09-08)** on the project — the ledger posting is the money confirmed in
+  the financials. Client-side in `commitLink` (app.js), saved through the normal
+  project PATCH; manual step ticking is unaffected, and unlinking clears nothing.
 - Imports: `POST /import/gl` + `/confirm`, `POST /import/cushion` + `/confirm`, `GET /imports`.
   - Parse keeps **all** property codes (unknown ones included); preview returns `unknownCodes`.
   - GL confirm replaces **only the properties present in the file** and carries GL→project links
@@ -371,7 +389,20 @@ years when any are set, else the auto amount in the auto year only. Setting ANY
 explicit year — including a 0 — takes the project off the auto layer; the grid
 materializes the auto year at the auto amount on a project's first edit
 elsewhere, so "layer 1" survives spreading. Parking a project (hold) removes it
-from the plan; there is no other exclusion flag.
+from the AUTO layer; an explicitly scheduled on-hold project still renders in
+the plan grid. There is no other exclusion flag.
+
+**Plan-driven hold (2026-09-08).** `planAutoHold(planYears, nowYear)` in
+domain.ts (mirrored in app.js): explicit money ONLY in future years / Post-Refi
+⇒ `onHold = true` ("spread until the loan comes due, nothing this year" IS a
+parked project); money in the current or a past year ⇒ `onHold = false`; no
+signal (not scheduled, or explicit zeros only) ⇒ untouched. The server applies
+it in POST /projects (when a create carries planYears) and PATCH /projects
+**only when the save actually CHANGES planYears** (compared normalized), so a
+manual hold toggle is never fought by an unrelated save; the editor's plan
+panel mirrors it live so the On-hold pill stays in step while typing. Because
+hold removes the project from cashModel's outstanding bucket, a future-only
+plan also stops projecting against this year's cash — that is the point.
 
 **The plan is a pure overlay.** cashModel / auditModel / projOutflow never read
 `plan_years` (unit-tested), so scheduling $500K across five years changes no

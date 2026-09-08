@@ -4,7 +4,8 @@ import { randomUUID } from 'node:crypto';
 import { extname } from 'node:path';
 import type pg from 'pg';
 import { PDFDocument } from 'pdf-lib';
-import { pool, query, tx, assembleState, rowToProject, propLookup } from './db.js';
+import { gzipSync } from 'node:zlib';
+import { pool, query, tx, assembleState, rowToProject, propLookup, getMutationSeq } from './db.js';
 import { requireAdmin, isAdminUser, isManagerUser, normUser } from './auth.js';
 import { loadStateInto } from './seed.js';
 import { requestContractRevision, clearRevisionFlag } from './revision.js';
@@ -13,7 +14,7 @@ import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
 import { buildChangeOrder, type ChangeOrderVars } from './change-order.js';
-import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planTotal, isHexColor, regionShadeMap, type Project, type AppState } from '../shared/domain.js';
+import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planAutoHold, planTotal, isHexColor, regionShadeMap, type Project, type AppState } from '../shared/domain.js';
 import { buildPlanWorkbook } from './plan-export.js';
 
 export const api = Router();
@@ -200,8 +201,43 @@ const dnull = (v: any): string | null => {
   return /^\d{4}-\d{2}-\d{2}$/.test(s) ? s : null;
 };
 
-/* ---------- bootstrap ---------- */
-api.get('/state', async (_req, res) => { res.json(await assembleState()); });
+/* ---------- bootstrap ----------
+   /api/state is the app's hot path: every client refetches it after its own
+   writes AND whenever the live-sync heartbeat says someone else changed data —
+   with several users editing at once that was one full 12-query assembly plus
+   a multi-MB uncompressed JSON serialization PER CLIENT PER CHANGE, which is
+   what made concurrent use crawl. The blob is now assembled ONCE per mutation
+   (keyed on the in-process mutation seq — see db.ts; server.ts bumps it on
+   every non-GET /api request), stringified once, gzipped once, and every
+   client gets the cached buffer. Concurrent misses share one assembly. */
+let STATE_CACHE: { seq: number; json: Buffer; gz: Buffer } | null = null;
+let STATE_BUILDING: Promise<{ seq: number; json: Buffer; gz: Buffer }> | null = null;
+api.get('/state', async (req, res) => {
+  // The seq this request must see: at least everything written before it began.
+  // An in-flight build that started before a newer write is stale for us —
+  // await it (it fills the cache for whoever it IS fresh enough for), then
+  // build again. seq only grows, so `>=` terminates.
+  const want = getMutationSeq();
+  let cache = STATE_CACHE;
+  while (!cache || cache.seq < want) {
+    if (!STATE_BUILDING) {
+      STATE_BUILDING = (async () => {
+        const seq = getMutationSeq();   // captured BEFORE assembling — never stamps stale data current
+        const json = Buffer.from(JSON.stringify(await assembleState()));
+        const built = { seq, json, gz: gzipSync(json) };
+        STATE_CACHE = built;
+        return built;
+      })().finally(() => { STATE_BUILDING = null; });
+    }
+    cache = await STATE_BUILDING;
+  }
+  res.setHeader('Content-Type', 'application/json; charset=utf-8');
+  res.setHeader('Cache-Control', 'no-store');
+  if (/\bgzip\b/i.test(String(req.headers['accept-encoding'] || ''))) {
+    res.setHeader('Content-Encoding', 'gzip');
+    res.send(cache.gz);
+  } else res.send(cache.json);
+});
 
 /* ---------- live-sync heartbeat: the latest change_log id + who made it.
    Clients poll this cheaply and refetch /state only when it changes, so edits
@@ -357,6 +393,10 @@ api.post('/projects', async (req, res) => {
   p.id = p.id || uid('P');
   p.dateAdded = p.dateAdded || new Date().toISOString().slice(0, 10);
   stampNotes(req, p);
+  // Plan-driven hold: a project created already scheduled only into future
+  // years is parked from the start; current-year money says the opposite.
+  const holdVerdict = planAutoHold(p.planYears, new Date().getFullYear());
+  if (holdVerdict !== null) p.onHold = holdVerdict;
   await tx((c) => writeProject(c, p, true));
   logChange(req, { action: 'project.create', entityType: 'project', entityId: p.id, property: p.property, summary: `Project "${p.name}" created${p.anticipatedCost != null ? ` (${fmtMoney(p.anticipatedCost)})` : ''}` });
   const r = await query('select * from projects where id=$1', [p.id]);
@@ -378,6 +418,14 @@ api.patch('/projects/:id', async (req, res) => {
     return res.status(403).json({ error: APPROVAL_MSG });
   }
   stampNotes(req, p);
+  // Plan-driven hold — applied ONLY when this save actually changes the plan,
+  // so a manual hold toggle on an unrelated save is never fought. Future-only
+  // plan ⇒ parked; current-year money ⇒ un-parked; no signal ⇒ left alone.
+  const planKey = (v: any) => { const n = normalizePlanYears(v); return n ? Object.keys(n).sort().map((k) => `${k}:${n[k]}`).join('|') : ''; };
+  if (planKey(existing.rows[0].plan_years) !== planKey(p.planYears)) {
+    const holdVerdict = planAutoHold(p.planYears, new Date().getFullYear());
+    if (holdVerdict !== null) p.onHold = holdVerdict;
+  }
   await tx((c) => writeProject(c, p, false));
   const changes = projectDiff(existing.rows[0], p);   // p.steps reflects post-write rules (applyCostRules mutates)
   const newBids = (p.bids || []).map((b) => ({ contractor: b.contractor || '', amount: nnull(b.amount), approved: !!b.approved }));

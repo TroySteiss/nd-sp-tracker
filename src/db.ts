@@ -31,6 +31,18 @@ export async function query<T = any>(text: string, params?: any[]): Promise<{ ro
   return { rows: r.rows as T[], rowCount: r.rowCount ?? 0 };
 }
 
+/* ---------- Mutation sequence (in-process) ----------
+   Bumped by server.ts on every non-GET /api request, BEFORE the write runs.
+   GET /api/state caches its assembled+gzipped blob against this number, so the
+   N clients that live-sync-refetch after one person's edit cost ONE assembly
+   instead of N. Single Railway instance ⇒ an in-process counter is authoritative.
+   Bumping before the write is the safe direction: a /state assembly that
+   overlaps a write gets stamped with the pre-write seq and simply re-assembles
+   on the next request — stale data is never stamped current. */
+let mutationSeq = 1;
+export const bumpMutation = (): void => { mutationSeq++; };
+export const getMutationSeq = (): number => mutationSeq;
+
 export async function tx<T>(fn: (client: pg.PoolClient) => Promise<T>): Promise<T> {
   const client = await pool.connect();
   try {

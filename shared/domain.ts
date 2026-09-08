@@ -544,6 +544,28 @@ export const planForProp = (p: Project, code: string, key: string): number => pl
 export const planTotalForProp = (p: Project, code: string): number => planTotal(p) * shareFor(p, code);
 export const lenderFlagged = (p: Project): boolean => !!(p.lenderFlag && String(p.lenderFlag).trim());
 
+/** Plan-driven hold (2026-09-08): a project explicitly scheduled ONLY into
+    future years — e.g. spread across the years until the loan comes due, with
+    nothing in the current year — is by definition parked, so the plan edit
+    itself ticks On Hold. Money in the current year (or a past year — that is
+    spend already on the books) says the opposite and clears it. Returns null
+    when the plan carries no signal (not explicitly scheduled, or explicit
+    zeros only) — the caller must then leave onHold alone. Callers apply this
+    ONLY on a write that actually CHANGES planYears, so a manual hold toggle
+    is never fought by an unrelated save. */
+export function planAutoHold(planYears: any, nowYear: number): boolean | null {
+  const py = normalizePlanYears(planYears);
+  if (!py) return null;
+  let current = 0, future = 0;
+  for (const [k, v] of Object.entries(py)) {
+    const amt = Number(v) || 0;
+    if (k === PLAN_POST || +k > nowYear) future += amt; else current += amt;
+  }
+  if (current > 0) return false;
+  if (future > 0) return true;
+  return null;
+}
+
 /* ---- The auto layer: the tracker's live pipeline IS the plan's first year.
    An open project (active / paid / discussed) that nobody has explicitly
    scheduled flows its projected spend into the CURRENT year by default —

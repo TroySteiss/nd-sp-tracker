@@ -53,7 +53,7 @@ async function refreshState(){ S=await API.get('/state'); S.cashAdjustments=S.ca
 /* ---------- App state ---------- */
 let S=null;            // working state
 let VIEW={tab:'dashboard',prop:null};
-let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:''};
+let FILT={region:'',props:null,cats:null,statuses:null,q:'',view:'board',catOpen:false,dateFrom:'',dateTo:'',showATL:true};   // ATL shown until hidden (2026-09-08)
 let PFILT={hide:{},dateFrom:'',dateTo:''};   // property view: which phase groups are hidden + date range (per session)
 let BFILT={year:null};   // property view: selected year for the non-SP budget notes panel
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
@@ -353,6 +353,20 @@ function planYearColsFor(code){
 }
 const planYearLabel=(key)=>{ if(key===PLAN_POST)return 'Post-Refi';
   const n=+key-new Date().getFullYear()+1; return n>=1?`${key} · Yr ${n}`:key; };
+/* Plan-driven hold (mirrors shared/domain.ts planAutoHold, 2026-09-08): money
+   ONLY in future years / Post-Refi ⇒ parked (true); money in the current or a
+   past year ⇒ active (false); no signal (no plan, or zeros only) ⇒ null =
+   leave onHold alone. The server applies the same rule when a save changes
+   planYears; this mirror keeps the editor's On-hold pill live while typing. */
+function planAutoHold(p){
+  if(!onPlan(p))return null;
+  const nw=+nowYearStr(); let current=0,future=0;
+  Object.entries(p.planYears||{}).forEach(([k,v])=>{ const amt=Number(v)||0; if(!(amt>=0)||(!/^\d{4}$/.test(k)&&k!==PLAN_POST))return;
+    if(k===PLAN_POST||+k>nw)future+=amt; else current+=amt; });
+  if(current>0)return false;
+  if(future>0)return true;
+  return null;
+}
 
 /* ---------- Cash projection + audit model ---------- */
 const OVER_THRESHOLD = 5000;                       // unplanned-spend flag threshold
@@ -1410,10 +1424,10 @@ function viewProjects(){
   STAT.forEach(([k,lab])=>{ const on=FILT.statuses.includes(k);
     statRow.append(el('button',{class:'bub'+(on?' on accent':''),onclick:()=>toggle(FILT.statuses,k)},
       lab, statCounts[k]?el('span',{style:'margin-left:5px;opacity:.75;font-size:10px'},String(statCounts[k])):null)); });
-  // Above-the-Line toggle — hidden by default (operationally funded work)
+  // Above-the-Line toggle — shown by default like the other groups; toggle to hide (2026-09-08)
   const atlCount=S.projects.filter(isATL).length;
   if(atlCount) statRow.append(el('button',{class:'bub'+(FILT.showATL?' on accent':''),
-    title:'Operationally funded ("Above the Line" in the name) — excluded from SP projections; hidden unless toggled on',
+    title:'Operationally funded ("Above the Line" in the name) — excluded from SP projections; toggle to hide',
     onclick:()=>{FILT.showATL=!FILT.showATL;render();}},`Above the Line (${atlCount})`));
   fbar.append(statRow);
 
@@ -1947,6 +1961,10 @@ function openProject(id,preset){
     const refreshPlanMeta=()=>{ const au=autoPlanAmount(p);
       planMeta.textContent=onPlan(p)?fmt(planTotal(p))+' planned':(au>0?'auto — '+fmt(au)+' → '+autoPlanYear(p):'not in the plan'); };
     refreshPlanMeta();
+    // Plan-driven hold: editing the spread re-derives On hold (future-only ⇒
+    // parked, current-year money ⇒ active) and keeps the pill in step — the
+    // server applies the same rule on save (planAutoHold in domain.ts).
+    const applyPlanHold=()=>{ const v=planAutoHold(p); if(v!==null&&v!==!!p.onHold){ p.onHold=v; holdWrap.classList.toggle('on',v); } };
     const years=[...new Set([...planYearColsFor(p.property),...Object.keys(p.planYears).filter(k=>/^\d{4}$/.test(k))])].sort();
     // Collapsed view: the first 5 years, plus any year already carrying a value
     // (dollars can never hide behind the fold).
@@ -1972,13 +1990,13 @@ function openProject(id,preset){
             if(!(n>0)){toast('Enter an annual amount first.');return;}
             years.forEach(y=>{ if(+y>=new Date().getFullYear())p.planYears[y]=n; });
             if(p.planKind==null)p.planKind='recurring';
-            drawPlan(); }},'Fill')))));
+            applyPlanHold(); drawPlan(); }},'Fill')))));
     const grid=el('div',{style:'display:flex;gap:8px;flex-wrap:wrap'});
     keys.forEach(k=>{
       const yInp=el('input',{type:'number',min:'0',step:'any',value:(p.planYears&&k in p.planYears)?p.planYears[k]:'',placeholder:'—',style:'width:92px;text-align:right',
         onchange:e=>{ const raw=e.target.value, n=Number(raw);
           if(raw!==''&&isFinite(n)&&n>=0)p.planYears[k]=n; else delete p.planYears[k];
-          refreshPlanMeta(); }});
+          refreshPlanMeta(); applyPlanHold(); }});
       grid.append(el('div',{},lab(planYearLabel(k)),yInp));
     });
     if(!planYearsExpanded&&visYears.length<years.length)
@@ -4312,14 +4330,14 @@ function viewProperty(){
   // RIGHT: projects (grouped) + reconciliation + GL
   const right=el('div',{class:'grid',style:'gap:16px;align-content:start'});
   const projsAll=projForProp(code).filter(p2=>inDateRange(p2,PFILT));
-  const atlProjs=projsAll.filter(isATL);            // operational-cashflow work: own group, hidden by default
+  const atlProjs=projsAll.filter(isATL);            // operational-cashflow work: own group, shown until hidden (2026-09-08)
   /* Projects allocated across several properties get their own group, hidden by
      default — this site usually cares about its own work. Unlike ATL this is
      DISPLAY ONLY: the share is real money here, so it stays in the financial
      summary, the cash projection and the GL tie-out whether shown or not. */
   const sharedProjs=projsAll.filter(p2=>!isATL(p2)&&isSplitP(p2));
   const projs=projsAll.filter(p2=>!isATL(p2)&&!isSplitP(p2));
-  if(PFILT.hide.atl===undefined)PFILT.hide.atl=true;
+  if(PFILT.hide.atl===undefined)PFILT.hide.atl=false;
   if(PFILT.hide.shared===undefined)PFILT.hide.shared=true;
   const pj=el('div',{class:'panel'});
   const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
@@ -4495,16 +4513,19 @@ function openGLMatch(g,code){
   function commitLink(pr,mode){
     g.linkedProjectId=pr.id;
     const amt=Math.abs(Number(g.amount)||0);
+    // A full (non-partial) GL link IS the ledger confirming the money is in the
+    // financials, so it ticks Completed too (2026-09-08). Manual ticking in the
+    // lifecycle switch still works exactly as before.
     if(mode==='update'){
       if(pr.inHouse){ pr.totalToComplete=amt; pr.amountCompleted=amt; }
-      else { pr.actualCost=amt; pr.anticipatedCost=pr.anticipatedCost!=null?pr.anticipatedCost:amt; pr.steps.workCompleted=true; pr.steps.paid=true; }
+      else { pr.actualCost=amt; pr.anticipatedCost=pr.anticipatedCost!=null?pr.anticipatedCost:amt; pr.steps.workCompleted=true; pr.steps.paid=true; pr.steps.completed=true; }
       g.partial=false;
     } else if(mode==='partial'){
       g.partial=true;
       if(pr.inHouse){ pr.amountCompleted=Math.min(ihTotal(pr)||amt,(Number(pr.amountCompleted)||0)+amt); }
       else { pr.steps.workStarted=true; }   // partial payment — work underway, not fully paid
     } else {
-      if(!pr.inHouse){ pr.steps.workCompleted=true; pr.steps.paid=true; }
+      if(!pr.inHouse){ pr.steps.workCompleted=true; pr.steps.paid=true; pr.steps.completed=true; }
       g.partial=false;
     }
     scrim.remove(); saveMatch(g,pr,'Ledger line matched');

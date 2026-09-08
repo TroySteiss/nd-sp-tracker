@@ -9,7 +9,7 @@ import {
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planAutoHold, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
-  syncDateDerivedSteps, needsCompletionReview,
+  syncDateDerivedSteps, needsCompletionReview, advancedUncountersigned,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -435,6 +435,24 @@ describe('region colour ramps (migration 029)', () => {
     expect(hexToHsl(m.CLND)!.l).toBeGreaterThan(hexToHsl(m.TPND)!.l);
     // re-running with the same inputs gives the same colours
     expect(regionShadeMap('#3f7cb8', ['SPND', 'CLND', 'TPND'])).toEqual(m);
+  });
+});
+
+describe('advanced past countersign without the paper', () => {
+  const base = { steps: { planned: true, gotBids: true, approved: true, contractGenerated: true } };
+  it('flags post-sign steps ticked with signed unticked and a contract in play', () => {
+    expect(advancedUncountersigned(proj({ ...base, steps: { ...base.steps, workStarted: true } }))).toBe(true);
+    expect(advancedUncountersigned(proj({ steps: { paid: true }, contractorSignedFileKey: 'F1' }))).toBe(true);
+    expect(advancedUncountersigned(proj({ steps: { completed: true }, contractFileKey: 'F2' }))).toBe(true);
+  });
+  it('clear when countersigned (signed ticked) or nothing past signed', () => {
+    expect(advancedUncountersigned(proj({ ...base, steps: { ...base.steps, signed: true, paid: true } }))).toBe(false);
+    expect(advancedUncountersigned(proj(base))).toBe(false);                      // stopped at contract generated
+  });
+  it('never flags where the contract chain does not apply or is not in play', () => {
+    expect(advancedUncountersigned(proj({ steps: { workStarted: true }, inHouse: true }))).toBe(false);
+    expect(advancedUncountersigned(proj({ steps: { paid: true }, noContract: true }))).toBe(false);
+    expect(advancedUncountersigned(proj({ steps: { paid: true, completed: true } }))).toBe(false);  // legacy: no contract anywhere
   });
 });
 

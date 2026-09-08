@@ -418,6 +418,26 @@ export function needsCompletionReview(p: Project, todayIso: string): boolean {
   return !!(p.plannedEnd && p.plannedEnd < todayIso);
 }
 
+/* ---------- Advanced past countersign without the paper (2026-09-08) ---------- */
+export const POST_SIGN_STEPS = ['workStarted', 'workCompleted', 'paid', 'completed'];
+/** Steps advanced beyond "Signed & Countersigned" while no countersigned
+    (executed) contract is attached — `signed` is attachment-derived (AUTO), so
+    unticked `signed` with later steps ticked means work or money moved on
+    paper Monarch hasn't countersigned. Needs review: the UI shows these
+    projects' progress bars in red, the editor's lifecycle carries a warning,
+    and the dashboard's "Awaiting signature" list keeps them even once
+    advanced/complete. Applies only where the contract chain applies (not
+    in-house, not no-contract) and only once a contract is actually in play
+    (generated/uploaded or contractor-signed) — a legacy or bid-stage project
+    is not "awaiting countersign". */
+export function advancedUncountersigned(p: Project): boolean {
+  if (p.inHouse || p.noContract) return false;
+  if (p.steps && p.steps.signed) return false;
+  const inPlay = !!(p.steps && p.steps.contractGenerated) || !!p.contractFileKey || !!p.contractorSignedFileKey;
+  if (!inPlay) return false;
+  return POST_SIGN_STEPS.some((k) => !!(p.steps && p.steps[k]));
+}
+
 /* ---------- In-house (own-crew) helpers (spec §6) ---------- */
 export const isInHouse = (p: Project): boolean => !!p.inHouse;
 export const ihIsBudget = (p: Project): boolean => p.ihUnit !== 'quantity'; // default budget ($)

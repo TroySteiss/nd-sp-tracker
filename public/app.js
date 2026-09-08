@@ -278,6 +278,19 @@ function syncDerivedSteps(p){
   // a passed end date only flags the project on the dashboard for confirmation.
   if(!p.onHold&&p.steps.approved&&p.plannedStart&&p.plannedStart<=today()) p.steps.workStarted=true;
 }
+/* Advanced past "Signed & Countersigned" with no countersigned contract in
+   hand (mirrors advancedUncountersigned in domain.ts, 2026-09-08). Needs
+   review: progress bars go red, the editor's lifecycle warns, and the
+   dashboard's "Awaiting signature" list keeps the project even once advanced.
+   Only where the contract chain applies AND a contract is actually in play. */
+const POST_SIGN_STEPS=['workStarted','workCompleted','paid','completed'];
+function advancedUncountersigned(p){
+  if(!p||p.inHouse||p.noContract)return false;
+  if(p.steps&&p.steps.signed)return false;
+  const inPlay=!!(p.steps&&p.steps.contractGenerated)||!!p.contractFileKey||!!p.contractorSignedFileKey;
+  if(!inPlay)return false;
+  return POST_SIGN_STEPS.some(k=>!!(p.steps&&p.steps[k]));
+}
 const appKeys=p=>{ const na=naKeys(p); return STEP_KEYS.filter(k=>!na.includes(k)); };
 const appLifecycle=p=>{ const na=naKeys(p); return LIFECYCLE.filter(s=>!na.includes(s.key)); };
 function stage(p){ let last=-1; STEP_KEYS.forEach((k,i)=>{if(p.steps&&p.steps[k])last=i;}); return last; } // index of furthest completed step (global)
@@ -1065,9 +1078,13 @@ function viewDashboard(){
   /* Awaiting approval — moved above the pipeline so the most actionable list is first. */
   body.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)));
 
-  /* Awaiting signature — contractor returned a signed contract, no countersigned copy yet. */
-  const awaitingSig=all.filter(p=>p.contractorSignedFileKey&&!p.executedContractFileKey&&!isComplete(p));
-  body.append(attentionPanel('Awaiting signature · contractor signed, not countersigned',awaitingSig));
+  /* Awaiting signature — contractor returned a signed contract, no countersigned
+     copy yet. Advancing (or even completing) the steps does NOT clear a project
+     from this list (2026-09-08) — only the countersigned contract does; advanced
+     ones carry a red "needs review" chip. */
+  const awaitingSig=all.filter(p=>p.contractorSignedFileKey&&!p.executedContractFileKey);
+  body.append(attentionPanel('Awaiting signature · contractor signed, not countersigned',awaitingSig,
+    {sub:p=>advancedUncountersigned(p)?'⚠ advanced — needs review':null}));
 
   /* Planned end passed, Work Completed still unticked — flagged for a HUMAN to
      confirm, deliberately never auto-ticked ("the calendar says done" is not
@@ -1283,10 +1300,11 @@ function attentionPanel(title,list,opts={}){
   if(!list.length) b.append(el('div',{class:'empty'},'Nothing here — all clear.'));
   list.slice(0,40).forEach(p2=>{
     const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
+    const subTxt=opts.sub?opts.sub(p2):null;   // null/'' ⇒ no chip for this row
     r.append(propChip(p2.property),
       el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name),
         el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category)),
-      opts.sub?el('span',{class:'chip hold',style:'white-space:nowrap'},opts.sub(p2)):null,
+      subTxt?el('span',{class:'chip hold',style:'white-space:nowrap'},subTxt):null,
       el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(p2.anticipatedCost||p2.actualCost,false)));
     b.append(r);
   });
@@ -1580,7 +1598,10 @@ function progressEl(p){
   return el('div',{class:'progress',title:pct(pc)+' complete'}, el('i',{class:done?'full':'',style:`width:${Math.round(pc*100)}%`}));
 }
 function trackEl(p){
-  const t=el('div',{class:'track'});
+  // Red bar = steps advanced past countersign with no countersigned contract
+  // attached (2026-09-08) — needs review, not celebration.
+  const alert=advancedUncountersigned(p);
+  const t=el('div',{class:'track'+(alert?' alert':''),...(alert?{title:'⚠ Advanced without a countersigned contract — countersign it (Contract section) or roll the steps back'}:{})});
   // N/A (no-contract) and auto attachment-derived steps excluded from the bar.
   const steps=appLifecycle(p).filter(s=>!AUTO_STEPS.includes(s.key));
   // Yellow marks the NEXT step to do (first unticked), not the last one
@@ -2880,6 +2901,11 @@ function openProject(id,preset){
       }
       stepsList.append(row);
     });
+    // Advanced past countersign with no countersigned contract → say so right
+    // where the switches are, with the way out.
+    if(advancedUncountersigned(p))
+      stepsList.append(el('div',{class:'step-alert'},
+        '⚠ Steps are advanced past “Signed & Countersigned” but no countersigned contract is attached — needs review. Countersign in the Contract section below, or roll the steps back.'));
     if(typeof refreshCommit==='function') refreshCommit();
   }
   drawSteps(); stepBody.append(stepsList); stepsPanel.append(stepBody); b.append(stepsPanel);

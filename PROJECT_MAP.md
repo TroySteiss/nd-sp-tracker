@@ -623,6 +623,25 @@ output is not byte-deterministic, so identical content differs by a couple of by
 checksum tells you nothing. The layout-engine extraction was verified exactly this way: byte-for-
 glyph identical SP output before and after.
 
+## Advanced past countersign without the paper (2026-09-08)
+
+`advancedUncountersigned(p)` in domain.ts (unit-tested; mirrored by hand in
+app.js next to `syncDerivedSteps`): any post-sign step (`POST_SIGN_STEPS` =
+workStarted/workCompleted/paid/completed) ticked while `signed` is unticked —
+and `signed` is attachment-derived, so that means no countersigned contract is
+attached. Applies only where the contract chain applies (not in-house, not
+no-contract) AND a contract is actually in play (`contractGenerated` ticked, or
+a generated/contractor-signed file present) — legacy projects with no contract
+anywhere never flag. Three surfaces, all display-only:
+- **Progress bars go red** (`.track.alert` — done segs rust, next-step marker
+  dimmed rust) everywhere trackEl renders, with an explanatory title.
+- **The editor's lifecycle** appends a `.step-alert` warning row naming the way
+  out (countersign, or roll steps back).
+- **The dashboard's "Awaiting signature" panel no longer drops advanced or
+  completed projects** — only attaching the countersigned contract clears a
+  row; advanced rows carry a "⚠ advanced — needs review" chip
+  (`attentionPanel`'s `opts.sub` may now return null per row = no chip).
+
 ## Date-derived lifecycle (2026-09-01)
 
 Two rules in `shared/domain.ts` (unit-tested), asymmetric on purpose:

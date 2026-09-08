@@ -135,6 +135,10 @@ a{color:var(--blue)}
 .track .seg{height:8px;flex:1;border-radius:2px;background:var(--line);position:relative;min-width:5px}
 .track .seg.done{background:var(--green)}
 .track .seg.cur{background:var(--wheat)}
+/* Advanced past countersign without the countersigned contract — the bar goes
+   red so the progress reads as "needs review", not done (2026-09-08). */
+.track.alert .seg.done{background:var(--rust)}
+.track.alert .seg.cur{background:var(--rust);opacity:.45}
 .track.lg .seg{height:11px;border-radius:3px}
 .track .seg:hover{outline:2px solid rgba(0,0,0,.12)}
 .tracklabels{display:flex;gap:3px;margin-top:5px}
@@ -143,6 +147,7 @@ a{color:var(--blue)}
 /* Step toggles (in modal) */
 .steps{display:flex;flex-direction:column;gap:2px}
 .step{display:flex;align-items:center;gap:11px;padding:9px 11px;border-radius:8px;border:1px solid var(--line-2);background:var(--panel-2)}
+.step-alert{border:1px solid var(--rust);border-left-width:4px;border-radius:8px;padding:9px 12px;font-size:12.5px;line-height:1.5;color:var(--rust);background:rgba(156,53,40,.06)}
 .step .num{width:22px;height:22px;border-radius:50%;display:grid;place-items:center;font-family:var(--mono);font-size:11px;font-weight:600;background:var(--panel);border:1px solid var(--line);color:var(--ink-3);flex:none}
 .step.on{background:#fff;border-color:var(--green)}
 .step.on .num{background:var(--green);color:#fff;border-color:var(--green)}

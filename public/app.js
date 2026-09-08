@@ -2297,10 +2297,45 @@ function openProject(id,preset){
     // box hanging below it (descenders). Mirrors SIG_MAX_H_PCT / SIG_BASELINE_DROP
     // in src/contract-layout.ts — keep the two in step.
     const SIG_MAX_H_PCT=0.032, SIG_BASELINE_DROP=0.2;
-    const marker=el('div',{style:'position:absolute;display:none;pointer-events:none;box-sizing:border-box;border:1.5px dashed #1fa356;border-radius:3px;background:rgba(31,163,86,.08)'});
-    const markerLine=el('div',{style:'position:absolute;left:-1.5px;right:-1.5px;height:0;border-top:2px solid #1fa356'});
+    const marker=el('div',{style:'position:absolute;display:none;box-sizing:border-box;border:1.5px dashed #1fa356;border-radius:3px;background:rgba(31,163,86,.08);cursor:move;touch-action:none'});
+    const markerLine=el('div',{style:'position:absolute;left:-1.5px;right:-1.5px;height:0;border-top:2px solid #1fa356;pointer-events:none'});
     marker.append(markerLine);
     canvasWrap.append(pdfCanvas,marker);
+    // The box is DRAGGABLE (2026-09-08): the pre-placed spot keeps landing off
+    // target on scanned returns, and re-clicking the exact spot by eye is
+    // fiddly. Drag it, or nudge with the arrow keys (Shift = bigger steps).
+    // xPct is the box's LEFT edge, yPct the solid baseline — same convention
+    // as the click handler and the server's stamper.
+    let drag=null;
+    marker.addEventListener('pointerdown',e=>{ e.preventDefault(); e.stopPropagation();
+      marker.setPointerCapture(e.pointerId);
+      const r=pdfCanvas.getBoundingClientRect();
+      drag={dx:(e.clientX-r.left)-st.xPct*pdfCanvas.width,
+            dy:(e.clientY-r.top)-(st.yPct*pdfCanvas.height+SIG_MAX_H_PCT*pdfCanvas.height*SIG_BASELINE_DROP-SIG_MAX_H_PCT*pdfCanvas.height)};
+    });
+    marker.addEventListener('pointermove',e=>{ if(!drag)return;
+      const r=pdfCanvas.getBoundingClientRect(), W=pdfCanvas.width, H=pdfCanvas.height, h=SIG_MAX_H_PCT*H;
+      st.xPct=Math.min(Math.max(0,((e.clientX-r.left)-drag.dx)/W),0.98);
+      st.yPct=Math.min(Math.max(0,(((e.clientY-r.top)-drag.dy)+h*(1-SIG_BASELINE_DROP))/H),0.995);
+      placeMarker();
+    });
+    marker.addEventListener('pointerup',()=>{ drag=null; err.textContent=''; });
+    // Arrow keys fine-tune the spot (2px, Shift = 12px). Detaches itself once
+    // the modal is gone; typing in the name/title inputs is left alone.
+    const nudge=e=>{
+      if(!scrim.isConnected){ document.removeEventListener('keydown',nudge,true); return; }
+      if(st.xPct==null||st.markPage!==st.page) return;
+      const t=e.target; if(t&&(t.tagName==='INPUT'||t.tagName==='TEXTAREA')) return;
+      const stepX=(e.shiftKey?12:2)/pdfCanvas.width, stepY=(e.shiftKey?12:2)/pdfCanvas.height;
+      let moved=true;
+      if(e.key==='ArrowLeft')st.xPct=Math.max(0,st.xPct-stepX);
+      else if(e.key==='ArrowRight')st.xPct=Math.min(0.98,st.xPct+stepX);
+      else if(e.key==='ArrowUp')st.yPct=Math.max(0,st.yPct-stepY);
+      else if(e.key==='ArrowDown')st.yPct=Math.min(0.995,st.yPct+stepY);
+      else moved=false;
+      if(moved){ e.preventDefault(); placeMarker(); }
+    };
+    document.addEventListener('keydown',nudge,true);
     const placeMarker=()=>{
       const show=st.xPct!=null&&st.markPage===st.page;
       marker.style.display=show?'':'none'; if(!show)return;
@@ -2311,6 +2346,15 @@ function openProject(id,preset){
     };
     const pageLbl=el('span',{class:'mono',style:'font-size:12px'},'…');
     const nav=(d)=>async()=>{ st.page=Math.min(Math.max(1,st.page+d),st.numPages); await renderPage(); };
+    // Scans sometimes come back with pages out of order, so the pre-placed spot
+    // sits on the wrong page. This keeps the exact x/y and moves the box to the
+    // page being viewed — no need to re-click the same place by eye (2026-09-08).
+    const moveBtn=el('button',{class:'btn ghost sm',style:'display:none',
+      title:'Keep the box in the same spot but stamp it on the page you are viewing — for scans whose pages are out of order',
+      onclick:()=>{ st.markPage=st.page; placeMarker(); syncMoveBtn(); err.textContent=''; }},'⤓ Stamp on this page');
+    const syncMoveBtn=()=>{ const off=st.xPct!=null&&st.markPage!==st.page;
+      moveBtn.style.display=off?'':'none';
+      if(off)moveBtn.textContent='⤓ Stamp on this page (box is on p.'+st.markPage+')'; };
     let pdfDoc=null;
     async function renderPage(){
       const page=await pdfDoc.getPage(st.page);
@@ -2323,6 +2367,7 @@ function openProject(id,preset){
       await page.render({canvasContext:pdfCanvas.getContext('2d'),viewport:v2,intent:'print'}).promise;
       pageLbl.textContent=st.page+' / '+st.numPages;
       placeMarker();
+      syncMoveBtn();
     }
     // Fractions of the canvas = fractions of the page AS DISPLAYED (pdf.js has
     // already applied the CropBox and /Rotate) — the convention SigAnchor and the
@@ -2330,6 +2375,7 @@ function openProject(id,preset){
     pdfCanvas.addEventListener('click',e=>{
       st.xPct=e.offsetX/pdfCanvas.width; st.yPct=e.offsetY/pdfCanvas.height; st.markPage=st.page;
       placeMarker();
+      syncMoveBtn();
       err.textContent='';
     });
 
@@ -2423,11 +2469,11 @@ function openProject(id,preset){
       el('div',{style:'margin-top:14px'},prevBtn), err);
 
     const head=el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'Countersign · '+(p.contractorSignedFileName||'contract')),
-      el('span',{},pageLbl), el('button',{class:'btn ghost sm',onclick:nav(-1)},'‹'), el('button',{class:'btn ghost sm',onclick:nav(1)},'›'),
+      el('span',{},pageLbl), el('button',{class:'btn ghost sm',onclick:nav(-1)},'‹'), el('button',{class:'btn ghost sm',onclick:nav(1)},'›'), moveBtn,
       el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'));
     const bodyRow=el('div',{class:'sb',style:'display:flex;gap:16px;align-items:flex-start;flex-wrap:wrap'});
     bodyRow.append(el('div',{style:'flex:1;min-width:320px'},
-      el('p',{style:'margin:0 0 8px;color:var(--ink-3);font-size:12.5px'},'The signature is pre-placed on the Owner “By:” line (green marker). Click anywhere to move it if needed, draw or reuse your signature, then preview and confirm.'),
+      el('p',{style:'margin:0 0 8px;color:var(--ink-3);font-size:12.5px'},'The signature lands where the green box sits — drag the box (or use the arrow keys, Shift for bigger steps) to put it right on the “By:” line, or click anywhere to jump it there. If the scan’s pages are out of order, page ‹ › to the right one and use “⤓ Stamp on this page” to carry the box over to the same spot.'),
       canvasWrap), right);
     sheet.append(head,bodyRow); scrim.append(sheet); document.body.append(scrim);
 
@@ -4336,14 +4382,21 @@ function viewProperty(){
      DISPLAY ONLY: the share is real money here, so it stays in the financial
      summary, the cash projection and the GL tie-out whether shown or not. */
   const sharedProjs=projsAll.filter(p2=>!isATL(p2)&&isSplitP(p2));
-  const projs=projsAll.filter(p2=>!isATL(p2)&&!isSplitP(p2));
+  const allOwn=projsAll.filter(p2=>!isATL(p2)&&!isSplitP(p2));
+  // On-hold + no-cost notes live in their own "Future Projects" panel below the
+  // Projects panel (2026-09-08) — they're not current work, so they no longer
+  // interleave with the active/paid/discussed/done groups.
+  const FUTURE_PHASES=['hold','note'];
+  const futureProjs=allOwn.filter(p2=>FUTURE_PHASES.includes(phase(p2)));
+  const projs=allOwn.filter(p2=>!FUTURE_PHASES.includes(phase(p2)));
   if(PFILT.hide.atl===undefined)PFILT.hide.atl=false;
   if(PFILT.hide.shared===undefined)PFILT.hide.shared=true;
   const pj=el('div',{class:'panel'});
-  const counts={}; PHASES.forEach(ph=>counts[ph.key]=projs.filter(p2=>phase(p2)===ph.key).length);
-  // phase filter chips — click to hide/show a completion group
+  const counts={}; PHASES.forEach(ph=>counts[ph.key]=allOwn.filter(p2=>phase(p2)===ph.key).length);
+  // phase filter chips — click to hide/show a completion group (the Future
+  // Projects panel below carries its own chips for On hold / Notes)
   const filt=el('div',{class:'phasefilt'});
-  PHASES.forEach(ph=>{ if(!counts[ph.key])return; const hidden=!!PFILT.hide[ph.key];
+  PHASES.forEach(ph=>{ if(!counts[ph.key]||FUTURE_PHASES.includes(ph.key))return; const hidden=!!PFILT.hide[ph.key];
     filt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[ph.key]=!PFILT.hide[ph.key];render();}},
       el('span',{},ph.label), el('span',{class:'pf-n'},String(counts[ph.key]))));
   });
@@ -4367,11 +4420,12 @@ function viewProperty(){
       el('div',{class:'pj-hint',style:'font-size:11px;color:var(--ink-3);margin-top:8px'},'Auto-grouped by completion. Click a group to hide it; 📌 pins a project to the top.')));
   pj.append(stick);
   const pb=el('div',{class:'proj-list'});
-  // Don't claim "no projects" when the only ones here are shared and collapsed.
+  // Don't claim "no projects" when the only ones here are shared and collapsed,
+  // or when everything sits in the Future Projects panel below.
   if(!projs.length&&!(sharedProjs.length&&!PFILT.hide.shared))
     pb.append(el('div',{class:'empty'}, sharedProjs.length
       ? `No ${code}-only projects — ${sharedProjs.length} shared project${sharedProjs.length>1?'s':''} hidden. Click “⇄ Shared” above to show ${sharedProjs.length>1?'them':'it'}.`
-      : 'No projects yet for this property.'));
+      : (futureProjs.length?'Nothing in progress — see Future Projects below.':'No projects yet for this property.')));
   function projRow(pr){
     const ih=isInHouse(pr);
     const split=isSplitP(pr);
@@ -4410,6 +4464,33 @@ function viewProperty(){
     atlProjs.slice().sort((a,b)=>(b.dateAdded||'').localeCompare(a.dateAdded||'')).forEach(pr=>pb.append(projRow(pr)));
   }
   pj.append(pb); right.append(pj);
+
+  // Future Projects — parked (on hold) and idea-stage (no-cost notes) work,
+  // in its own panel below Projects (2026-09-08). Same rows, same hide chips;
+  // pinning inside this panel just sorts its group to the top.
+  if(futureProjs.length){
+    const fp=el('div',{class:'panel'});
+    const fFilt=el('div',{class:'phasefilt'});
+    FUTURE_PHASES.forEach(k=>{ const n=counts[k]; if(!n)return; const ph=phaseMeta(k), hidden=!!PFILT.hide[k];
+      fFilt.append(el('button',{class:'pf-chip'+(hidden?' off':''),title:hidden?'Show':'Hide',onclick:()=>{PFILT.hide[k]=!PFILT.hide[k];render();}},
+        el('span',{},ph.label), el('span',{class:'pf-n'},String(n))));
+    });
+    fp.append(el('div',{class:'ph'}, el('h3',{},'Future Projects'), el('div',{class:'sp'}),
+      fFilt, el('span',{class:'chip'},String(futureProjs.length))));
+    const fb=el('div',{class:'proj-list'});
+    FUTURE_PHASES.forEach(k=>{
+      if(PFILT.hide[k])return;
+      const ph=phaseMeta(k);
+      const list=futureProjs.filter(p2=>phase(p2)===k);
+      if(!list.length)return;
+      list.sort((a,b)=>((b.pinned?1:0)-(a.pinned?1:0))||(b.dateAdded||'').localeCompare(a.dateAdded||''));
+      fb.append(el('div',{class:'grp-h'}, ph.label, el('span',{class:'grp-n'},String(list.length))));
+      list.forEach(pr=>fb.append(projRow(pr)));
+    });
+    if(FUTURE_PHASES.every(k=>PFILT.hide[k]))
+      fb.append(el('div',{class:'empty'},'Groups hidden — click a chip above to show them.'));
+    fp.append(fb); right.append(fp);
+  }
 
   // reconciliation & flags
   const auditP=el('div',{class:'panel'});

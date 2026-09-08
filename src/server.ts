@@ -1,5 +1,6 @@
 import 'dotenv/config';
 import express from 'express';
+import compression from 'compression';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
 import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
@@ -16,6 +17,10 @@ const publicDir = join(process.cwd(), 'public');
 
 const app = express();
 app.set('trust proxy', 1); // Railway terminates TLS in front of us
+// gzip everything text-ish (app.js is ~370KB raw → ~85KB, styles/pm.js/API JSON
+// likewise) — a real difference on slow machines & connections. GET /api/state
+// pre-gzips its cached blob itself and is skipped here (Content-Encoding set).
+app.use(compression());
 app.use(express.json({ limit: '30mb' }));
 app.use(sessionMiddleware());
 

@@ -2,10 +2,15 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-09-08 (multi-user perf: /api/state assembled+gzipped once
+> Last updated: 2026-09-08 pm (property view: On hold + Notes moved to their own
+> "Future Projects" panel below Projects; countersign box is draggable +
+> arrow-key nudgeable + "⤓ Stamp on this page" carries the spot to another page
+> for out-of-order scans; app-wide gzip via `compression`; content-visibility
+> on .proj-row/.pcard).
+> Previously same day: multi-user perf — /api/state assembled+gzipped once
 > per mutation and served from cache; GL full-link ticks Completed; ATL groups
 > shown until hidden; plan-driven hold — future-only planYears auto-tick On
-> Hold, current-year money clears it, applied only when a save CHANGES the plan).
+> Hold, current-year money clears it, applied only when a save CHANGES the plan.
 > Previously: 2026-09-01 (date-derived lifecycle — Work Started auto-ticks on
 > the planned start date; a passed planned end flags "confirm work completed" on
 > the dashboard, never auto-ticks).
@@ -179,7 +184,12 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   scan meant a 20MB string plus a decoded copy in the browser and stalled small laptops) stamps
   the contractor-signed PDF → attaches as executed + ticks `signed`. Client modal renders the PDF
   with pdf.js (lazy CDN, **render with `intent:'print'`** so it completes in background tabs),
-  click to place, draw/reuse signature. `GET/PUT /signature` store the reusable signature. `✉
+  click to place, draw/reuse signature. **Placement (2026-09-08): the green box is DRAGGABLE and
+  arrow-key nudgeable (Shift = bigger steps — the pre-placed anchor kept landing off the "By:"
+  line on scanned returns), and "⤓ Stamp on this page" keeps the same x/y but moves the box to
+  the page being viewed, for scans whose pages come back out of order.** The marker geometry
+  (xPct = box left edge, yPct = solid baseline) is shared by click, drag, nudge and the server's
+  stamper — keep them in step. `GET/PUT /signature` store the reusable signature. `✉
   Email` on the executed row builds a multipart .eml (buildEml supports attachments) with the PDF,
   pre-addressed to the contractor from the directory.
 - **Property cash tile mode** (`app_meta.cash_tile_mode`, 022; Settings ▸ Property cash tile,
@@ -287,7 +297,7 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 |---|---|---|
 | dashboard | viewDashboard | region toggle + property bubbles, KPIs, funnel, pipeline |
 | projects / inhouse / contracts | viewProjects/viewInHouse/viewContracts | board/table, in-house tiles |
-| property | viewProperty | per-property: financial summary, projects by phase, GL reconciliation, update email |
+| property | viewProperty | per-property: financial summary, projects by phase, GL reconciliation, update email. **On hold + Notes render in their own "Future Projects" panel below the Projects panel (2026-09-08)** with their own hide chips; the main panel's groups are active/paid/discussed/done (+Shared/ATL) |
 | cash | viewCash | snapshot/loan table (grouped by region), adjustments, quarterly summary panel |
 | plan | viewPlan | long-range plan: portfolio summary grid → per-property plan grid (editable year cells), unscheduled backlog, Excel export |
 | data | viewData | Admin group; GL/cushion upload + preview modals, **import history**, backup/restore |

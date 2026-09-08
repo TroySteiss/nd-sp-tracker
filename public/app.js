@@ -377,7 +377,8 @@ const planYearLabel=(key)=>{ if(key===PLAN_POST)return 'Post-Refi';
 const isPhaseP=p=>!!(p&&p.phaseGroup);
 const phasesOf=g=>S.projects.filter(x=>x.phaseGroup===g).sort((a,b)=>(a.phaseSeq||0)-(b.phaseSeq||0)||String(a.plannedStart||'').localeCompare(b.plannedStart||''));
 const phaseChip=p=>{ if(!isPhaseP(p))return null; const sibs=phasesOf(p.phaseGroup);
-  return el('span',{class:'chip phase',title:'Phased program: '+(p.phaseOf||'')+' — phase '+(p.phaseSeq||'?')+' of '+sibs.length},
+  return el('button',{class:'chip phase',title:'Phased program: '+(p.phaseOf||'')+' — phase '+(p.phaseSeq||'?')+' of '+sibs.length+'. Click to edit all phases in one table.',
+    onclick:e=>{e.stopPropagation();openProgramEditor(p.phaseGroup);}},
     '⧉ '+(p.phaseSeq||'?')+'/'+sibs.length); };
 const addMonthsISO=(iso,m)=>{ const [y,mo,dd]=String(iso).split('-').map(Number); if(!y)return iso;
   const t=new Date(y,mo-1+m,1); const dim=new Date(t.getFullYear(),t.getMonth()+1,0).getDate(); t.setDate(Math.min(dd||1,dim));
@@ -1667,6 +1668,66 @@ function projectsTable(list){
 function trackElMini(p){ const t=trackEl(p); return t; }
 
 /* =========================================================
+   PROGRAM EDITOR — bulk-edit every phase (name / contractor / cost /
+   dates) in one table, no per-phase editor round-trips. Explicit Save
+   PATCHes only the phases that actually changed.
+========================================================= */
+function openProgramEditor(group){
+  const sibs=phasesOf(group);
+  if(!sibs.length){ toast('No phases found for that program.'); return; }
+  const scrim=el('div',{class:'scrim modal-center',onclick:e=>{if(e.target===scrim)scrim.remove();}});
+  // .modal-center .sheet is 560px by default — this is a six-column editing
+  // table, so widen it inline (inline width beats the class rule).
+  const sheet=el('div',{class:'sheet',style:'width:min(920px,96vw)'});
+  const err=el('div',{style:'color:var(--rust);font-size:12px;min-height:16px'});
+  const drafts=sibs.map(sb=>({id:sb.id,name:sb.name||'',contractor:sb.contractor||'',
+    cost:sb.anticipatedCost==null?'':String(sb.anticipatedCost),start:sb.plannedStart||'',end:sb.plannedEnd||'',inHouse:!!sb.inHouse}));
+  const orig=JSON.parse(JSON.stringify(drafts));
+  const cellInp=(d,key,attrs={})=>el('input',{value:d[key],style:'width:100%;min-width:0;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font-size:12.5px',
+    oninput:e=>{d[key]=e.target.value;},...attrs});
+  const t=el('table',{class:'tbl'});
+  t.append(el('thead',{},tr(th('#'),th('Phase name'),th('Contractor'),th('Est. cost ($)','r'),th('Start'),th('End'),th(''))));
+  const tb=el('tbody');
+  sibs.forEach((sb,i)=>{
+    const d=drafts[i];
+    const pm=phaseMeta(phase(sb))||{};
+    tb.append(tr(
+      td(el('span',{class:'mono'},String(sb.phaseSeq||i+1))),
+      el('td',{style:'min-width:220px'},cellInp(d,'name')),
+      el('td',{style:'min-width:130px'},cellInp(d,'contractor',{placeholder:'—'})),
+      td(cellInp(d,'cost',{type:'number',min:'0',step:'any',style:'width:110px;text-align:right;padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font-size:12.5px',
+        ...(d.inHouse?{disabled:true,title:'In-house phase — cost is tracked as progress in its own editor'}:{})})),
+      td(cellInp(d,'start',{type:'date',style:'padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font-size:12px'})),
+      td(cellInp(d,'end',{type:'date',style:'padding:5px 7px;border:1px solid var(--line);border-radius:6px;background:var(--panel);color:var(--ink);font-size:12px'})),
+      td(el('span',{class:'chip '+(pm.chip||'')},pm.label||''))));
+  });
+  t.append(tb);
+  const saveBtn=el('button',{class:'btn accent',onclick:async()=>{
+    const changed=drafts.filter((d,i)=>JSON.stringify(d)!==JSON.stringify(orig[i]));
+    if(!changed.length){ scrim.remove(); return; }
+    if(changed.some(d=>!d.name.trim())){ err.textContent='Every phase needs a name.'; return; }
+    saveBtn.disabled=true; saveBtn.textContent='Saving…';
+    try{
+      for(const d of changed){
+        const full=S.projects.find(x=>x.id===d.id); if(!full)continue;
+        const patched={...full,name:d.name.trim(),contractor:d.contractor.trim(),
+          anticipatedCost:d.inHouse?full.anticipatedCost:(d.cost===''?null:Number(d.cost)),
+          plannedStart:d.start,plannedEnd:d.end};
+        await API.send('PATCH','/projects/'+d.id,projectPayload(patched,false));
+      }
+      scrim.remove();
+      await afterWrite(changed.length+' phase'+(changed.length>1?'s':'')+' updated');
+    }catch(e){ err.textContent='Save failed: '+e.message; saveBtn.disabled=false; saveBtn.textContent='Save changes'; }
+  }},'Save changes');
+  sheet.append(
+    el('div',{class:'sh'}, el('h2',{style:'font-size:16px;flex:1'},'⧉ '+(sibs[0].phaseOf||'Phased program')+' — all phases'),
+      el('button',{class:'btn ghost',onclick:()=>scrim.remove()},'Cancel'), saveBtn),
+    el('div',{class:'sb'},
+      el('div',{style:'overflow:auto;max-height:62vh'},t), err));
+  scrim.append(sheet); document.body.append(scrim);
+}
+
+/* =========================================================
    PHASED PROGRAM WIZARD — stamp out N phases on a cadence
    ("one building per quarter for four years" = 16 phases, each its own
    project with its own dates, contract chain and cost). `preset` may carry
@@ -2120,7 +2181,8 @@ function openProject(id,preset){
     phasedStrip.style.display='';
     const sibs=phasesOf(p.phaseGroup);
     const total=sibs.reduce((a,x)=>a+(Number(x.actualCost!=null?x.actualCost:x.anticipatedCost)||0),0);
-    phasedStrip.append(el('span',{class:'ps-lab',title:'Phased program · '+sibs.length+' phases · total '+fmt(total)},'⧉ '+(p.phaseOf||'Program')));
+    phasedStrip.append(el('span',{class:'ps-lab',style:'cursor:pointer',title:'Phased program · '+sibs.length+' phases · total '+fmt(total)+' — click to edit every phase (names, costs, dates) in one table',
+      onclick:()=>{ const g=p.phaseGroup; close(); setTimeout(()=>openProgramEditor(g),60); }},'⧉ '+(p.phaseOf||'Program')));
     const dots=el('span',{class:'ps-dots'});
     sibs.forEach(sb=>{
       const me=sb.id===p.id;
@@ -2130,6 +2192,8 @@ function openProject(id,preset){
         ...(me?{}:{onclick:()=>{ close(); setTimeout(()=>openProject(sb.id),60); }})},String(sb.phaseSeq||'?')));
     });
     phasedStrip.append(dots, el('span',{style:'flex:1'}),
+      el('button',{class:'btn ghost sm',title:'Edit every phase — names, costs, dates — in one table',
+        onclick:()=>{ const g=p.phaseGroup; close(); setTimeout(()=>openProgramEditor(g),60); }},'⊞'),
       el('button',{class:'btn ghost sm',title:'Rename the program on every phase',onclick:async()=>{
         const nm=prompt('Program name',p.phaseOf||''); if(nm==null||!nm.trim())return;
         try{ await API.send('PATCH','/programs/'+encodeURIComponent(p.phaseGroup),{name:nm.trim()}); p.phaseOf=nm.trim(); await refreshState(); drawPhases(); toast('Program renamed'); }
@@ -5237,7 +5301,8 @@ function planDetail(code){
   const programRow=(g,members)=>{
     const open=PLANG.has(g);
     const row=tr(
-      td(el('span',{style:'font-weight:700'},'⧉ '+(members[0].phaseOf||'Phased program'))),
+      td(el('a',{href:'javascript:void 0',style:'font-weight:700;color:var(--ink)',title:'Edit every phase (names, costs, dates) in one table',
+        onclick:()=>openProgramEditor(g)},'⧉ '+(members[0].phaseOf||'Phased program'))),
       td(el('button',{class:'chip',style:'cursor:pointer',title:open?'Collapse the phases':'Show each phase (editable per phase)',
         onclick:()=>{ if(open)PLANG.delete(g); else PLANG.add(g); render(); }},(open?'▾ ':'▸ ')+members.length+' phases')));
     keys.forEach(k=>{ const v=members.reduce((a,x)=>a+effPlanForProp(x,code,k),0); row.append(el('td',{class:'num r',style:'font-weight:600'},v?fmt(v):'—')); });

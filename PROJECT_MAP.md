@@ -656,6 +656,14 @@ phaseOf/phaseSeq columns.
   row** (per-year sums, `⧉ <name>` + "N phases" expander in
   `PLANV.openGroups`); expanded phase rows are editable as usual, indented.
 - Rows/cards show a `⧉ seq/N` chip (`phaseChip`, `.chip.phase`).
+- **Program editor** `openProgramEditor(group)` — bulk-edit every phase's
+  name / contractor / est. cost / start / end in one wide modal table
+  (inline `width:min(920px,96vw)` — `.modal-center .sheet` is otherwise
+  560px); Save PATCHes only the phases that actually changed. Reached from
+  the ⧉ chip on any row/card, the editor strip's ⊞ button or its program
+  label (both close the editor first so autosave flushes), and the plan
+  grid's program-row name. In-house phases' cost cells are disabled there
+  (their $ is progress, not an estimate).
 
 ## Advanced past countersign without the paper (2026-09-08)
 

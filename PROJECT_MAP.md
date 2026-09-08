@@ -637,10 +637,13 @@ anywhere never flag. Three surfaces, all display-only:
   dimmed rust) everywhere trackEl renders, with an explanatory title.
 - **The editor's lifecycle** appends a `.step-alert` warning row naming the way
   out (countersign, or roll steps back).
-- **The dashboard's "Awaiting signature" panel no longer drops advanced or
-  completed projects** — only attaching the countersigned contract clears a
-  row; advanced rows carry a "⚠ advanced — needs review" chip
-  (`attentionPanel`'s `opts.sub` may now return null per row = no chip).
+- **The dashboard panel is now "Needs countersignature"** and lists BOTH
+  contractor-signed returns awaiting countersign AND every red-flagged project
+  (advanced with no countersigned contract, even with no signed return on
+  file). Advancing or completing steps never clears a row — only the
+  countersigned contract does. Red-flagged rows sort first with a
+  "⚠ advanced — needs review" chip (`attentionPanel`'s `opts.sub` may return
+  null per row = no chip).
 
 ## Date-derived lifecycle (2026-09-01)
 

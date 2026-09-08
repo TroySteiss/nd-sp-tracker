@@ -1078,12 +1078,15 @@ function viewDashboard(){
   /* Awaiting approval — moved above the pipeline so the most actionable list is first. */
   body.append(discussedPanel(active.filter(p=>!p.onHold&&phase(p)==='discussed'&&!!p.steps.gotBids)));
 
-  /* Awaiting signature — contractor returned a signed contract, no countersigned
-     copy yet. Advancing (or even completing) the steps does NOT clear a project
-     from this list (2026-09-08) — only the countersigned contract does; advanced
-     ones carry a red "needs review" chip. */
-  const awaitingSig=all.filter(p=>p.contractorSignedFileKey&&!p.executedContractFileKey);
-  body.append(attentionPanel('Awaiting signature · contractor signed, not countersigned',awaitingSig,
+  /* Needs countersignature — a contractor-signed return awaiting countersign,
+     OR any project whose steps advanced past "Signed & Countersigned" without a
+     countersigned contract (the red-bar flag — even with no signed return on
+     file). Advancing or completing the steps does NOT clear a project from this
+     list (2026-09-08) — only the countersigned contract does. Red-flagged rows
+     lead and carry a "needs review" chip. */
+  const awaitingSig=all.filter(p=>(p.contractorSignedFileKey&&!p.executedContractFileKey)||advancedUncountersigned(p))
+    .sort((a,b)=>((advancedUncountersigned(b)?1:0)-(advancedUncountersigned(a)?1:0))||((Number(b.anticipatedCost||b.actualCost)||0)-(Number(a.anticipatedCost||a.actualCost)||0)));
+  body.append(attentionPanel('Needs countersignature · signed returns + steps advanced without one',awaitingSig,
     {sub:p=>advancedUncountersigned(p)?'⚠ advanced — needs review':null}));
 
   /* Planned end passed, Work Completed still unticked — flagged for a HUMAN to

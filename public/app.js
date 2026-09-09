@@ -59,7 +59,7 @@ let BFILT={year:null};   // property view: selected year for the non-SP budget n
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts view filters + sort
 let IHF={region:''};   // in-house view region toggle
-let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true,q:'',proj:''};  // GL ledger filters (q = text search, proj = tie-out project)
+let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true,q:'',proj:'',showAll:false};  // GL ledger filters (q = text search, proj = tie-out project, showAll = lift the 250-row render cap)
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
 let PLANV={prop:''};         // long-range plan view: ''=portfolio summary, else a property code
 let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
@@ -206,8 +206,26 @@ async function saveProject(p,msg,isNew){
   }catch(e){ toast('Save failed: '+e.message); }
 }
 async function deleteProject(id){ try{ await API.send('DELETE','/projects/'+id); await afterWrite('Project deleted'); }catch(e){ toast('Delete failed: '+e.message); } }
-async function linkGl(g,msg){ try{ await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
-async function saveMatch(g,pr,msg){ try{ await API.send('PATCH','/projects/'+pr.id,projectPayload(pr,false)); await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial}); await afterWrite(msg); }catch(e){ toast('Failed: '+e.message); } }
+/* GL tie-out writes apply LOCALLY instead of refetching the whole state
+   (2026-09-09 — each match used to cost a multi-MB /state download + parse,
+   the biggest part of the "massive lag after tying out"). The g object IS the
+   S.gl entry (mutated by the caller) and the project PATCH returns the
+   server-recomputed row, so local state is already authoritative. On failure
+   the optimistic local mutations are rolled back with a full resync. */
+async function linkGl(g,msg){
+  try{
+    await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial});
+    render(); if(msg)toast(msg);
+  }catch(e){ toast('Failed: '+e.message); await afterWrite(); }
+}
+async function saveMatch(g,pr,msg){
+  try{
+    const saved=await API.send('PATCH','/projects/'+pr.id,projectPayload(pr,false));
+    await API.send('PATCH','/gl/'+g.id+'/link',{linkedProjectId:g.linkedProjectId||null,partial:!!g.partial});
+    if(saved&&saved.id){ syncDerivedSteps(saved); const i=S.projects.findIndex(x=>x.id===saved.id); if(i>=0)S.projects[i]=saved; }
+    render(); if(msg)toast(msg);
+  }catch(e){ toast('Failed: '+e.message); await afterWrite(); }
+}
 async function addAdj(a){ try{ await API.send('POST','/cash-adjustments',a); await afterWrite('Adjustment recorded'); }catch(e){ toast('Failed: '+e.message); } }
 async function delAdj(id){ try{ await API.send('DELETE','/cash-adjustments/'+id); await afterWrite('Adjustment removed'); }catch(e){ toast('Failed: '+e.message); } }
 async function saveCash(code,obj,msg){ try{ await API.send('PATCH','/cash/'+code,obj); await afterWrite(msg||'Cash updated'); }catch(e){ toast('Failed: '+e.message); } }
@@ -525,6 +543,38 @@ function glMatchScore(g,p){
   let overlap=0; ptok.forEach(t=>{ if(gtok.has(t))overlap++; });
   if(overlap){ score+=Math.min(30,overlap*12); reasons.push('name'); }
   return {score,reasons};
+}
+/* Prepared scoring for the property view's GL table (2026-09-09). glMatchScore
+   re-tokenizes the PROJECT side (name/contractor/plan regex splits + Set
+   builds) for every (line × project) pair, which made rendering the ledger
+   O(lines × projects) string work — seconds of main-thread lag on a property
+   with a few hundred unlinked lines, re-paid on every render. glCandPrep
+   tokenizes each project ONCE per render; each line's own tokens are cached on
+   the row object (rebuilt naturally when /state is refetched). Same scoring
+   weights as glMatchScore — keep the two in step (the matcher modal still uses
+   glMatchScore directly: 40 rows, needs the reasons list). */
+const GL_TOKS=s=>String(s||'').toLowerCase().split(/[^a-z0-9]+/).filter(w=>w.length>2);
+function glCandPrep(code){
+  return projForProp(code).map(p=>({p,
+    cat:String(p.category||'').toUpperCase(),
+    tot:Math.abs(p.inHouse?ihTotal(p):projOutflow(p))*((isSplitP(p)?shareFor(p,code):1)||1),
+    ptok:new Set([...GL_TOKS(p.name),...GL_TOKS(p.contractor),...GL_TOKS(p.plan)])}));
+}
+function glBestCandidate(g,prep){
+  if(g._catU===undefined)g._catU=String(g.category||'').toUpperCase();
+  if(g._tok===undefined)g._tok=new Set([...GL_TOKS(g.vendor),...GL_TOKS(g.remarks)]);
+  const amt=Math.abs(Number(g.amount)||0);
+  let best=null,bestScore=0;
+  for(const c of prep){
+    let score=0;
+    if(g._catU&&c.cat&&g._catU===c.cat)score+=40;
+    if(c.tot>0&&amt>0){ const diff=Math.abs(amt-c.tot)/Math.max(amt,c.tot);
+      if(diff<0.005)score+=45; else if(diff<0.05)score+=32; else if(diff<0.2)score+=16; }
+    let overlap=0; c.ptok.forEach(t=>{ if(g._tok.has(t))overlap++; });
+    if(overlap)score+=Math.min(30,overlap*12);
+    if(score>bestScore){ bestScore=score; best=c.p; }
+  }
+  return bestScore>0?best:null;
 }
 
 /* =========================================================
@@ -4893,13 +4943,22 @@ function viewProperty(){
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},tr(th('Amount','r'),th('Category'),th('Date'),th('Vendor / description'),th('Match'))));
     const tbb=el('tbody');
-    glView.forEach(g=>{
+    // One candidate-prep for the whole table + a row cap: a thousand-row DOM
+    // (with a suggestion per row) is the other half of the tie-out lag.
+    const prep=glCandPrep(code);
+    const GL_CAP=250;
+    const rowsToShow=(!GLFILT.showAll&&glView.length>GL_CAP)?glView.slice(0,GL_CAP):glView;
+    rowsToShow.forEach(g=>{
       tbb.append(tr(tdn(g.amount,1),td(el('span',{style:'font-size:12px'},g.category)),
         td(el('span',{class:'mono',style:'font-size:12px'},g.date)),
         td(el('div',{style:'font-size:12px;max-width:260px'}, el('div',{},g.vendor), g.remarks?el('div',{style:'color:var(--ink-3);font-size:11px'},g.remarks):null)),
-        td(glLinkCell(g,code))));
+        td(glLinkCell(g,code,prep))));
     });
-    if(glView.length>1) tbb.append(tr(td(el('strong',{class:'mono'},fmt(glViewTotal)),'r'),td(el('strong',{},'TOTAL — shown lines')),td(''),td(''),td('')));
+    if(rowsToShow.length<glView.length)
+      tbb.append(tr(el('td',{colspan:'5',style:'text-align:center;padding:10px'},
+        el('button',{class:'btn ghost sm',onclick:()=>{GLFILT.showAll=true;render();}},
+          'Show all '+glView.length+' lines ('+(glView.length-rowsToShow.length)+' more — largest are already shown)'))));
+    if(glView.length>1) tbb.append(tr(td(el('strong',{class:'mono'},fmt(glViewTotal)),'r'),td(el('strong',{},'TOTAL — shown lines'),el('div',{style:'font-weight:400;font-size:11px;color:var(--ink-3)'},rowsToShow.length<glView.length?'total covers every filtered line, not just the '+rowsToShow.length+' rendered':'')),td(''),td(''),td('')));
     t.append(tbb); gp.append(t);
   } else gp.append(el('div',{class:'empty'},gls.length?'No lines match the current filters.':'No ledger lines for this property. Upload a general ledger on the Data tab.'));
   right.append(gp);
@@ -4907,8 +4966,10 @@ function viewProperty(){
   body.append(left,right);
   return {bar,body};
 }
-/* GL link cell: shows the linked project or a Match button with a best-guess hint. */
-function glLinkCell(g,code){
+/* GL link cell: shows the linked project or a Match button with a best-guess
+   hint. `prep` = glCandPrep(code), built ONCE by the caller for the whole
+   table — passing it is what keeps a long ledger cheap to render. */
+function glLinkCell(g,code,prep){
   const cell=el('div',{class:'gl-link'});
   if(isInterestGL(g)){ cell.append(el('span',{class:'chip',title:'Interest income — excluded from matching; feeds the interest projection'},'interest income')); return cell; }
   if(g.linkedProjectId){
@@ -4917,9 +4978,9 @@ function glLinkCell(g,code){
     if(g.partial)cell.append(el('span',{class:'chip',style:'background:var(--amber-soft);color:var(--amber)'},'partial'));
     cell.append(el('button',{class:'btn ghost sm',title:'Unlink',onclick:()=>{g.linkedProjectId=null;g.partial=false;linkGl(g,'Unlinked');}},'✕'));
   } else {
-    const cands=projForProp(code).map(pr=>({pr,...glMatchScore(g,pr)})).filter(x=>x.score>0).sort((a,b)=>b.score-a.score);
+    const best=glBestCandidate(g,prep||glCandPrep(code));
     cell.append(el('button',{class:'btn sm accent',onclick:()=>openGLMatch(g,code)},'Match…'));
-    if(cands[0])cell.append(el('button',{class:'gl-hint',title:'Suggested: '+cands[0].pr.name,onclick:()=>openGLMatch(g,code)},'≈ '+cands[0].pr.name.slice(0,16)));
+    if(best)cell.append(el('button',{class:'gl-hint',title:'Suggested: '+best.name,onclick:()=>openGLMatch(g,code)},'≈ '+best.name.slice(0,16)));
   }
   return cell;
 }

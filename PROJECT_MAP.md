@@ -256,6 +256,17 @@ Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and
   (2026-09-08)** on the project — the ledger posting is the money confirmed in
   the financials. Client-side in `commitLink` (app.js), saved through the normal
   project PATCH; manual step ticking is unaffected, and unlinking clears nothing.
+  **Tie-out performance (2026-09-09)**: `saveMatch`/`linkGl` apply the result
+  LOCALLY (the project PATCH's returned row replaces the `S.projects` entry; the
+  gl row was already mutated in place) and just re-render — no full /state
+  refetch per match; a failure resyncs via `afterWrite()` to roll back the
+  optimistic mutations. The property GL table builds ONE `glCandPrep(code)`
+  (project tokens/totals prepared once) and `glBestCandidate` per line —
+  suggestion scoring used to re-tokenize every project for every line, O(lines ×
+  projects) regex work per render. Keep glBestCandidate's weights in step with
+  `glMatchScore` (still used by the matcher modal, which needs the reasons).
+  The table renders at most 250 rows (amount-sorted, "Show all N" lifts the
+  cap via `GLFILT.showAll`); the TOTAL row still covers every filtered line.
 - Imports: `POST /import/gl` + `/confirm`, `POST /import/cushion` + `/confirm`, `GET /imports`.
   - Parse keeps **all** property codes (unknown ones included); preview returns `unknownCodes`.
   - GL confirm replaces **only the properties present in the file** and carries GL→project links

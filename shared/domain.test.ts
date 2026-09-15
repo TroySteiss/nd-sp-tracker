@@ -9,7 +9,7 @@ import {
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planAutoHold, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
-  syncDateDerivedSteps, needsCompletionReview, advancedUncountersigned, qtyLabel,
+  syncDateDerivedSteps, needsCompletionReview, advancedUncountersigned, qtyLabel, bidTotal,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -444,6 +444,17 @@ describe('quantity label (migration 033)', () => {
     expect(qtyLabel(proj({ quantity: 5 }))).toBe('×5');
     expect(qtyLabel(proj({ quantity: 0, quantityUnit: 'patios' }))).toBe('');
     expect(qtyLabel(proj())).toBe('');
+  });
+});
+
+describe('per-unit bids (migration 034)', () => {
+  it('a per-unit bid multiplies by the quantity; lump sum passes through', () => {
+    const patios = proj({ quantity: 5, quantityUnit: 'patios' });
+    expect(bidTotal(patios, { amount: 1857, perUnit: true })).toBe(9285);        // Riley's exact case
+    expect(bidTotal(patios, { amount: 9285, perUnit: false })).toBe(9285);       // lump sum untouched
+    expect(bidTotal(patios, { amount: 9285 })).toBe(9285);                       // flag absent = lump
+    expect(bidTotal(proj(), { amount: 1857, perUnit: true })).toBe(1857);        // per-unit but no quantity → as-is
+    expect(bidTotal(patios, { amount: null, perUnit: true })).toBeNull();
   });
 });
 

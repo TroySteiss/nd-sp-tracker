@@ -322,8 +322,8 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
     const files = Array.isArray(b.files) && b.files.length ? b.files : (b.fileKey ? [{ fileKey: b.fileKey, fileName: b.fileName, fileSize: b.fileSize }] : []);
     const f0 = files[0] || {};
     await client.query(
-      `insert into bids(id,project_id,slot,contractor,amount,approved,file_key,file_name,file_size,files) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
-      [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!b.approved, f0.fileKey || null, f0.fileName || null, f0.fileSize || null, JSON.stringify(files)]
+      `insert into bids(id,project_id,slot,contractor,amount,per_unit,approved,file_key,file_name,file_size,files) values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11)`,
+      [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!b.perUnit, !!b.approved, f0.fileKey || null, f0.fileName || null, f0.fileSize || null, JSON.stringify(files)]
     );
     slot++;
   }
@@ -398,7 +398,9 @@ function projectDiff(old: any, p: Project): string[] {
    the "approved" step or approve a bid. Compared as the set of approved bids. */
 const APPROVAL_MSG = 'Bid approval is limited to top-level admins.';
 const approvedSig = (bids: any[]): string =>
-  JSON.stringify((bids || []).filter((b) => b.approved).map((b) => [String(b.contractor || ''), b.amount == null ? null : Number(b.amount)]).sort());
+  // perUnit is part of the signature: flipping it multiplies the approved bid's
+  // effective total by the project quantity, so it is an approval-level change.
+  JSON.stringify((bids || []).filter((b) => b.approved).map((b) => [String(b.contractor || ''), b.amount == null ? null : Number(b.amount), !!(b.perUnit ?? b.per_unit)]).sort());
 
 api.post('/projects', async (req, res) => {
   const p = req.body as Project;
@@ -426,8 +428,8 @@ api.patch('/projects/:id', async (req, res) => {
   if (!p.property || !p.name) return res.status(400).json({ error: 'property and name are required' });
   const oldNotes = (await query('select note, files from progress_notes where project_id=$1', [p.id])).rows;
   const oldNoteCount = oldNotes.length;
-  const oldBidRows = (await query('select contractor, amount, approved, files from bids where project_id=$1 order by slot', [p.id])).rows;
-  const oldBids = oldBidRows.map((b) => ({ contractor: b.contractor || '', amount: b.amount == null ? null : Number(b.amount), approved: !!b.approved }));
+  const oldBidRows = (await query('select contractor, amount, per_unit, approved, files from bids where project_id=$1 order by slot', [p.id])).rows;
+  const oldBids = oldBidRows.map((b) => ({ contractor: b.contractor || '', amount: b.amount == null ? null : Number(b.amount), perUnit: !!b.per_unit, approved: !!b.approved }));
   const wasApproved = !!((existing.rows[0].steps || {}).approved);
   const willApprove = !!(p.steps && p.steps.approved);
   if ((wasApproved !== willApprove || approvedSig(oldBidRows) !== approvedSig(p.bids || [])) && !isAdminUser((req.session as any)?.username)) {
@@ -444,7 +446,7 @@ api.patch('/projects/:id', async (req, res) => {
   }
   await tx((c) => writeProject(c, p, false));
   const changes = projectDiff(existing.rows[0], p);   // p.steps reflects post-write rules (applyCostRules mutates)
-  const newBids = (p.bids || []).map((b) => ({ contractor: b.contractor || '', amount: nnull(b.amount), approved: !!b.approved }));
+  const newBids = (p.bids || []).map((b) => ({ contractor: b.contractor || '', amount: nnull(b.amount), perUnit: !!b.perUnit, approved: !!b.approved }));
   if (JSON.stringify(oldBids) !== JSON.stringify(newBids)) changes.push('bids updated');
   // Attachment audit: name every bid/note file that appeared or disappeared in this save.
   // Notes are only in scope when the payload carried them (see writeProject) —

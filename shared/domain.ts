@@ -13,6 +13,10 @@ export interface Bid {
   id: string;
   contractor: string;
   amount: number | null;
+  /* Per-unit bid (034): the amount is per unit of the project's quantity
+     ("$1,857 per patio") — bidTotal() multiplies it out wherever a bid amount
+     flows into a total. false/absent = lump sum. */
+  perUnit?: boolean;
   approved: boolean;
   fileKey?: string | null;
   fileName?: string | null;
@@ -389,6 +393,16 @@ export function stepsTotal(p: Project): number { return appKeys(p).length; }
     projected-budget-remaining), from GL tie-out flags, and de-emphasized in the
     UI. Actual GL postings still count in "spent" — the ledger is factual. */
 export const isAboveLine = (p: Project): boolean => /above\s+the\s+line/i.test(p.name || '');
+
+/** A bid's effective TOTAL: a per-unit bid ("$1,857 per patio", migration 034)
+    multiplies by the project's quantity; a lump-sum bid is its amount as-is. */
+export const bidTotal = (p: Project, b: { amount?: number | null; perUnit?: boolean }): number | null => {
+  if (b == null || b.amount == null || b.amount === ('' as any)) return null;
+  const amt = Number(b.amount);
+  if (!isFinite(amt)) return null;
+  const q = Number(p.quantity);
+  return (b.perUnit && q > 0) ? Math.round(amt * q * 100) / 100 : amt;
+};
 
 /** "5 patios" (or "×5" when no unit was given); '' when no quantity is set. */
 export const qtyLabel = (p: Project): string => {

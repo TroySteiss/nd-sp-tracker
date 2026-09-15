@@ -95,9 +95,9 @@ export async function loadStateInto(client: pg.PoolClient, state: AppState): Pro
     let slot = 0;
     for (const b of p.bids || []) {
       await client.query(
-        `insert into bids(id,project_id,slot,contractor,amount,approved,file_key,file_name,file_size)
-         values($1,$2,$3,$4,$5,$6,$7,$8,$9)`,
-        [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!b.approved, b.fileKey || null, b.fileName || null, b.fileSize || null]
+        `insert into bids(id,project_id,slot,contractor,amount,per_unit,approved,file_key,file_name,file_size)
+         values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)`,
+        [b.id || `${p.id}-b${slot}`, p.id, slot, b.contractor || '', nnull(b.amount), !!(b as any).perUnit, !!b.approved, b.fileKey || null, b.fileName || null, b.fileSize || null]
       );
       slot++;
     }

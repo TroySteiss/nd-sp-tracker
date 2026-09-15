@@ -201,7 +201,7 @@ try{ applyTheme(localStorage.getItem('theme') || (matchMedia('(prefers-color-sch
 })();
 function commit(msg){ render(); if(msg) toast(msg); }
 async function afterWrite(msg){ try{ await refreshState(); }catch(e){} render(); if(msg) toast(msg); }
-function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize,originalFileKey:f.originalFileKey||null,originalFileName:f.originalFileName||null})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
+function cleanBids(p){ return (p.bids||[]).map(b=>{ const files=Array.isArray(b.files)?b.files.map(f=>({fileKey:f.fileKey,fileName:f.fileName,fileSize:f.fileSize,originalFileKey:f.originalFileKey||null,originalFileName:f.originalFileName||null})):(b.fileKey?[{fileKey:b.fileKey,fileName:b.fileName,fileSize:b.fileSize}]:[]); const f0=files[0]||{}; return {id:b.id,contractor:b.contractor||'',amount:b.amount==null?null:b.amount,perUnit:!!b.perUnit,approved:!!b.approved,fileKey:f0.fileKey||null,fileName:f0.fileName||null,fileSize:f0.fileSize||null,files}; }); }
 /* Progress notes have their own endpoints (POST/DELETE/PATCH /projects/:id/notes)
    so two people commenting at once can't overwrite each other. An UPDATE payload
    therefore omits `progressNotes` entirely — the server leaves the note table
@@ -465,6 +465,10 @@ const ihPct=p=>{ const t=ihTotal(p); return t>0?Math.min(1, ihDone(p)/t):0; };
 const isATL=p=>/above\s+the\s+line/i.test(p&&p.name||'');
 /* "5 patios" (or "×5" when no unit) — mirrors qtyLabel in shared/domain.ts. */
 const qtyLabel=p=>{ const q=Number(p&&p.quantity); if(!(q>0))return ''; const u=String(p.quantityUnit||'').trim(); return u?`${q} ${u}`:`×${q}`; };
+/* A bid's effective TOTAL (mirrors bidTotal in domain.ts): a per-unit bid
+   ("$1,857 per patio") multiplies by the project quantity; lump sum as-is. */
+const bidTotal=(p,b)=>{ if(!b||b.amount==null||b.amount==='')return null; const amt=Number(b.amount); if(!isFinite(amt))return null;
+  const q=Number(p&&p.quantity); return (b.perUnit&&q>0)?Math.round(amt*q*100)/100:amt; };
 const qtyChip=p=>{ const l=qtyLabel(p); return l?el('span',{class:'chip',title:'Quantity — set in the project editor next to the cost'},l):null; };
 function phase(p){
   if(p.onHold) return 'hold';
@@ -2472,12 +2476,25 @@ function openProject(id,preset){
         if(!IS_ADMIN){ toast('Bid approval is limited to top-level admins.'); return; }
         const willApprove=!bd.approved;
         p.bids.forEach((x,j)=>x.approved=(j===i)?willApprove:false);
-        if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor; if(bd.amount!=null)p.anticipatedCost=bd.amount; }
+        if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor;
+          // A per-unit bid ("$1,857 per patio") multiplies by the project quantity.
+          const t=bidTotal(p,bd);
+          if(t!=null){ p.anticipatedCost=t; if(typeof antInp!=='undefined'){ antInp.value=t; antInp.dispatchEvent(new Event('input',{bubbles:true})); } } }
         drawBids(); drawSteps();
       }}, bd.approved?'✓ Approved':'Approve')));
+    // Per-unit toggle (034): the vendor quoted per unit of the project quantity.
+    const puTotal=el('span',{style:'font-size:11px;color:var(--ink-3);white-space:nowrap'});
+    const syncPuTotal=()=>{ const t=bidTotal(p,bd); const q=Number(p.quantity);
+      puTotal.textContent=(bd.perUnit&&bd.amount!=null)?(q>0?`= ${fmt(t)} (${qtyLabel(p)||q+'×'})`:'⚠ set a Quantity above'):''; };
+    const puChk=el('input',{type:'checkbox',style:'width:auto;margin:0',...(bd.perUnit?{checked:true}:{}),
+      onchange:e=>{ bd.perUnit=e.target.checked; syncPuTotal(); refreshMeta(); }});
     slot.append(el('div',{class:'bs-row'},
       ctrInpRaw(bd.contractor||'','Contractor / vendor',e=>{bd.contractor=e.target.value;refreshMeta();},'contractor-dl-bid'+i),
-      el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;refreshMeta();}})));
+      el('input',{type:'number',value:bd.amount==null?'':bd.amount,placeholder:'Bid amount ($)',oninput:e=>{bd.amount=e.target.value===''?null:+e.target.value;syncPuTotal();refreshMeta();}})));
+    slot.append(el('label',{style:'display:flex;align-items:center;gap:6px;font-size:12px;margin-top:4px;cursor:pointer',
+      title:'The bid amount is PER UNIT of the project quantity — everywhere this bid\'s amount flows into a total (approval, contract total, combined contracts) it is multiplied by the quantity'},
+      puChk,'$ is per unit',puTotal));
+    syncPuTotal();
     const filesWrap=el('div',{});
     if(bd.files.length){
       const multi=bd.files.length>1;
@@ -2523,7 +2540,7 @@ function openProject(id,preset){
   function genChecks(){
     const approved=p.bids.find(b2=>b2.approved);
     const bidFile=p.bids.some(bd=>(bd.files&&bd.files.length)||bd.fileKey);
-    const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?approved.amount:p.anticipatedCost);
+    const total=p.actualCost!=null?p.actualCost:((approved&&approved.amount!=null)?bidTotal(p,approved):p.anticipatedCost);
     const contractor=((approved&&approved.contractor)||p.contractor||'').trim();
     const multi=isSplitP(p);
     // Multi-entity: EVERY ticked property must carry an owner entity or the
@@ -3041,7 +3058,7 @@ function openProject(id,preset){
   function openContractDialog(){
     const prop=PROP(p.property)||{};
     const approved=p.bids.find(b=>b.approved&&b.fileKey)||p.bids.find(b=>b.fileKey)||{};
-    const total=p.actualCost!=null?p.actualCost:(approved.amount!=null?approved.amount:(p.anticipatedCost!=null?p.anticipatedCost:0));
+    const total=p.actualCost!=null?p.actualCost:(approved.amount!=null?(bidTotal(p,approved)??0):(p.anticipatedCost!=null?p.anticipatedCost:0));
     const usd=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     const isoToMdy=iso=>{const m=String(iso||'').split('-');return m.length===3?`${m[1]}/${m[2]}/${m[0]}`:'';};
     const mdyToIso=mdy=>{const m=String(mdy||'').split('/');return m.length===3?`${m[2]}-${m[0].padStart(2,'0')}-${m[1].padStart(2,'0')}`:'';};
@@ -3108,7 +3125,7 @@ function openProject(id,preset){
     data.combineProjectIds=[]; data.segments=[];
     const leadTotal=Number(total)||0;
     const combineSel=new Map();   // project id -> {amtInp, dateInp}
-    const memberAmt=x=>{ const ab=(x.bids||[]).find(bd=>bd.approved&&bd.amount!=null); if(ab)return Number(ab.amount);
+    const memberAmt=x=>{ const ab=(x.bids||[]).find(bd=>bd.approved&&bd.amount!=null); if(ab)return bidTotal(x,ab);
       if(x.actualCost!=null)return Number(x.actualCost); return x.anticipatedCost!=null?Number(x.anticipatedCost):null; };
     const hasBidDoc=x=>(x.bids||[]).some(bd=>(Array.isArray(bd.files)&&bd.files.length)||bd.fileKey);
     const isoToMdyFull=iso=>{ const m2=String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})/); return m2?`${+m2[2]}/${+m2[3]}/${m2[1]}`:''; };

@@ -542,6 +542,16 @@ combine picker; appended to the generate dialog's scope prefill and — unless
 the name was overridden — to a combined contract's printed segment name
 ("DRND patios (5 patios)"). CSV export carries quantity/quantityUnit.
 
+**Per-unit bids (034)**: vendors often quote PER UNIT ("$1,857 per patio") —
+`bids.per_unit` + a "$ is per unit" toggle on each bid slot (live "= $9,285
+(5 patios)" hint). `bidTotal(p, bid)` in domain.ts (mirrored in app.js,
+unit-tested) is THE way to read a bid amount as money — used by bid approval
+(sets anticipatedCost to the multiplied total and syncs the visible field),
+the generate dialog's Contract-total prefill, the readiness check, and the
+combined-contract picker. Flipping per_unit on an APPROVED bid changes its
+effective total, so it is part of `approvedSig` (admin-gated like an amount
+change). PM bid writes are column-targeted and leave per_unit alone.
+
 ## Combined contracts — several projects, one agreement (2026-09-15)
 
 For bidding out a batch of vendor work at ONE property ("the attached bids are

@@ -884,7 +884,12 @@ function viewContracts(){
               el('div',{},el('span',{class:'chip',style:'margin-right:6px'},'Multi-entity'),c.scope||'Multi-property contract'),
               el('div',{style:'color:var(--ink-3);font-size:11px'},ents.map(e=>e.entity).join(' · ')||''),
               el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||'')))
-          : td(el('div',{style:'font-size:12px'},el('div',{},proj?proj.name:(c.outputFilename||'—')),el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
+          : td(el('div',{style:'font-size:12px'},
+              el('div',{},proj?proj.name:(c.outputFilename||'—'),
+                (c.details&&Array.isArray(c.details.projects)&&c.details.projects.length>1)
+                  ? el('span',{class:'chip',style:'margin-left:6px',title:'Combined contract — one agreement covering: '+c.details.projects.map(m=>m.name+(m.completion?' (by '+m.completion+')':'')).join(' · ')},'⊕ '+c.details.projects.length+' projects')
+                  : null),
+              el('div',{style:'color:var(--ink-3);font-size:11px'},c.outputFilename||''))),
         isMulti(c)
           ? td(el('span',{style:'display:inline-flex;gap:3px;flex-wrap:wrap'},...(mProps.length?mProps:[c.property]).map(code=>propChip(code))))
           : td(propChip(c.property)),
@@ -2852,7 +2857,10 @@ function openProject(id,preset){
     // Change orders hang off the CONTRACT RECORD (the Contracts view row), so an
     // uploaded-but-never-generated contract has nothing to amend here.
     {
-      const cRec=(S.contracts||[]).filter(x=>x.projectId&&x.projectId===p.id)
+      // A combined contract's record hangs on the LEAD project; members find it
+      // through details.projects so ± Change order works from any of them.
+      const cRec=(S.contracts||[]).filter(x=>(x.projectId&&x.projectId===p.id)
+          ||(x.details&&Array.isArray(x.details.projects)&&x.details.projects.some(m=>m&&m.id===p.id)))
         .sort((a,b)=>String(a.createdAt||'').localeCompare(String(b.createdAt||''))).pop();
       const coCt=cRec&&Array.isArray(cRec.changeOrders)?cRec.changeOrders.length:0;
       if(cRec&&(IS_ADMIN||coCt)) gRow.append(el('button',{class:'btn ghost sm',
@@ -3011,7 +3019,9 @@ function openProject(id,preset){
     sect('Contract');
     const dateFld=(label,key,initIso)=>{const inp=el('input',{type:'date',value:initIso,onchange:e=>data[key]=isoToMdy(e.target.value),oninput:e=>data[key]=isoToMdy(e.target.value)});return el('div',{class:'field'},el('label',{},label),inp);};
     bb.append(el('div',{class:'frow'}, dateFld('Start date','effectiveDate',today()), dateFld('End date','termEndDate',plusDaysIso(60))));
-    bb.append(el('div',{class:'frow'}, f('Contract total','contractTotal'), f('Unit # (optional)','unit',{ph:'e.g. 201'})));
+    const totalField=f('Contract total','contractTotal');
+    const totalInp=totalField.querySelector('input');
+    bb.append(el('div',{class:'frow'}, totalField, f('Unit # (optional)','unit',{ph:'e.g. 201'})));
     bb.append(f('Scope of work','scope',{ph:'e.g. HVAC replacement — Unit 316'}));
     /* One-time vs recurring split. Both blank = a plain single-figure contract
        (unchanged wording). Amounts print VERBATIM under the Contract Total and
@@ -3029,6 +3039,58 @@ function openProject(id,preset){
         f('One-time amount','oneTimeAmount',{ph:'e.g. $12,000.00'}),
         f('Recurring amount','ongoingAmount',{ph:'e.g. $450.00'}),
         el('div',{class:'field'},el('label',{},'Billed'),perSel))));
+
+    /* ---- Combined contract (2026-09-15): tick other projects at THIS property
+       to cover them under this one contract — a batch of approved bids to one
+       vendor becomes one agreement. Each ticked project prints as a segment
+       with its own amount and completion date (all verbatim), its winning bid
+       embeds into Exhibit A & B, and the whole signature chain (generated →
+       signed → countersigned → lien waiver) applies to every one of them. ---- */
+    sect('Combine with other projects — one contract, several scopes');
+    data.combineProjectIds=[]; data.segments=[];
+    const leadTotal=Number(total)||0;
+    const combineSel=new Map();   // project id -> {amtInp, dateInp}
+    const memberAmt=x=>{ const ab=(x.bids||[]).find(bd=>bd.approved&&bd.amount!=null); if(ab)return Number(ab.amount);
+      if(x.actualCost!=null)return Number(x.actualCost); return x.anticipatedCost!=null?Number(x.anticipatedCost):null; };
+    const hasBidDoc=x=>(x.bids||[]).some(bd=>(Array.isArray(bd.files)&&bd.files.length)||bd.fileKey);
+    const isoToMdyFull=iso=>{ const m2=String(iso||'').match(/^(\d{4})-(\d{2})-(\d{2})/); return m2?`${+m2[2]}/${+m2[3]}/${m2[1]}`:''; };
+    const combineNote=el('p',{class:'bs-hint',style:'margin:8px 0 0'},'');
+    const syncCombine=()=>{
+      data.combineProjectIds=[...combineSel.keys()];
+      if(!data.combineProjectIds.length){ data.segments=[]; combineNote.textContent=''; return; }
+      data.segments=[...combineSel.entries()].map(([id,ctl])=>({id,amount:ctl.amtInp.value.trim(),completion:isoToMdyFull(ctl.dateInp.value)}));
+      data.segments.push({id:p.id,amount:leadTotal?usd(leadTotal):'',completion:data.termEndDate||''});
+      const sum=leadTotal+[...combineSel.entries()].reduce((a,[,ctl])=>a+(Number(String(ctl.amtInp.value).replace(/[^0-9.\-]/g,''))||0),0);
+      data.contractTotal=usd(sum); totalInp.value=data.contractTotal;
+      combineNote.textContent=data.combineProjectIds.length+' more project'+(data.combineProjectIds.length>1?'s':'')+' on this contract — Contract total refreshed to '+data.contractTotal+' (edit it if needed). Every combined project shares the signature chain: signed/countersigned/lien-waiver saves apply to all of them.';
+    };
+    const combinable=S.projects.filter(x=>x.id!==p.id&&x.property===p.property&&!isInHouse(x)&&!isComplete(x)&&phase(x)!=='note')
+      .sort((a2,b2)=>String(a2.name||'').localeCompare(String(b2.name||'')));
+    if(!combinable.length){
+      bb.append(el('p',{class:'bs-hint',style:'margin:0'},'No other open projects at '+p.property+' to combine.'));
+    } else {
+      bb.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Tick projects at '+p.property+' to include in THIS contract. Each prints as a segment with its own amount and completion date, and its winning bid embeds behind the exhibit.'));
+      const box=el('div',{style:'max-height:210px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px'});
+      combinable.forEach(x=>{
+        const amt=memberAmt(x);
+        const amtInp=el('input',{value:amt!=null?usd(amt):'',placeholder:'$ amount',disabled:true,style:'width:110px;text-align:right;font-size:12px;padding:4px 6px',oninput:syncCombine});
+        const dateInp=el('input',{type:'date',value:x.plannedEnd||'',disabled:true,style:'font-size:12px;padding:3px 6px',onchange:syncCombine,oninput:syncCombine});
+        const cb=el('input',{type:'checkbox',style:'width:auto;margin:0'});
+        cb.addEventListener('change',()=>{
+          if(cb.checked){ combineSel.set(x.id,{amtInp,dateInp}); amtInp.disabled=false; dateInp.disabled=false; }
+          else { combineSel.delete(x.id); amtInp.disabled=true; dateInp.disabled=true; }
+          syncCombine();
+        });
+        box.append(el('label',{style:'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer;flex-wrap:wrap'},
+          cb,
+          el('span',{style:'flex:1;min-width:140px;font-weight:600'},x.name,
+            hasBidDoc(x)?null:el('span',{class:'chip hold',style:'margin-left:6px',title:'This project has no bid document attached — generation will refuse until its winning bid is attached and saved'},'⚠ no bid doc'),
+            isPhaseP(x)?el('span',{class:'chip phase',style:'margin-left:6px'},'⧉ '+(x.phaseSeq||'?')+'/'+phasesOf(x.phaseGroup).length):null),
+          amtInp, dateInp));
+      });
+      bb.append(box, combineNote);
+    }
+
     // --- Contractor ---
     sect('Contractor');
     const ctrDl=el('datalist',{id:'contract-gen-dl'});(S.contractors||[]).forEach(c=>ctrDl.append(el('option',{value:c.name})));document.body.append(ctrDl);

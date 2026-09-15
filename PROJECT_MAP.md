@@ -527,6 +527,40 @@ print, and a strike box can't be placed over a line you can't read. One-across i
 US Letter page's natural 816px at 96dpi. Marks are stored as fractions of the page, so resizing
 never moves them.
 
+## Combined contracts — several projects, one agreement (2026-09-15)
+
+For bidding out a batch of vendor work at ONE property ("the attached bids are
+approved — draft up 1 contract per property"): the SP generate dialog's
+**"Combine with other projects"** section ticks other open projects at the same
+property onto THIS contract. Per member: an editable segment amount (prefilled
+from the approved bid, else actual/anticipated) and completion date (prefilled
+from planned end); the Contract total refreshes to the sum but stays editable —
+printed verbatim as always, never derived at print time.
+
+- **Template** (`contract.ts`): optional `ContractVars.segments`
+  (`{name, amount, completion}[]`, <2 entries ⇒ byte-identical output —
+  snapshot-verified). Prints: a sentence INTO the Contract Price paragraph
+  (segments listed on Exhibit A & B, each amount payable on that segment's
+  completion), a per-segment completion duty appended to Time of Performance,
+  and a **WORK SEGMENTS** list on the Exhibit A & B page above the embedded
+  bids. Every member's winning bid embeds under a `Scope — <project>` label.
+- **Server** (`POST /projects/:id/contract` + `combineProjectIds`/`segments`):
+  members must be same-property, not in-house, each with an embeddable bid
+  (400 naming the offender); generating writes the file + step cascade to
+  EVERY member and records ONE contracts row (`details.projects` = the
+  authoritative member list, lead = `project_id`).
+- **"Any save down routes to all"**: `combinedMemberRows(id)` resolves a
+  project's siblings from the LATEST 'sp' contract record involving it (a later
+  solo regeneration takes it back out). Contract-file upload, contractor-signed,
+  executed, lien waiver, in-app countersign, attachment removal and contract
+  revision (request + clear) all fan out to every member — the chains share one
+  document and must never diverge. Change-log lines say "(combined contract —
+  applied to all N projects)". GL tie-out stays PER PROJECT: each member links
+  its own ledger lines against its own segment amount.
+- Contracts view marks combined rows with a `⊕ N projects` chip (tooltip lists
+  segments + dates); the editor's ± Change order button finds the record from
+  any member via details.projects.
+
 ## Multi-entity contract generator (027, 2026-07-30)
 
 One Independent Contractor Agreement covering work across several properties owned by different

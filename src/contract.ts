@@ -35,6 +35,38 @@ export interface ContractVars {
   oneTimeAmount?: string;   // e.g. "$12,000.00" — mobilization / the job itself
   ongoingAmount?: string;   // e.g. "$450.00" — recurring charge
   ongoingPeriod?: RecurPeriod;
+  /* Combined contract (2026-09-15): one agreement covering SEVERAL tracked
+     projects for the same vendor at one property — "1 contract per property"
+     across a batch of approved bids. Each segment is one member project, with
+     its own amount and its own completion date, all printed VERBATIM (nothing
+     is totalled — the Contract Total is typed by the admin, same rule as
+     everywhere else). Absent or fewer than 2 entries ⇒ the wording is
+     byte-identical to a plain single-project contract. */
+  segments?: SegmentLine[];
+}
+export interface SegmentLine { name: string; amount: string; completion: string }
+const segmentsOf = (v: ContractVars): SegmentLine[] =>
+  (Array.isArray(v.segments) ? v.segments : []).filter((s) => s && String(s.name || '').trim());
+export const hasSegments = (v: ContractVars): boolean => segmentsOf(v).length >= 2;
+/** Appended INTO the Contract Price paragraph (same pattern as the one-time /
+    recurring split — never a new lettered sub-item, the section text cites its
+    own letters). */
+function segmentsPriceSentence(v: ContractVars): string {
+  if (!hasSegments(v)) return '';
+  return ` The Work is comprised of the segments listed on Exhibit A & B, and the Contract Price is comprised of the corresponding segment amounts stated there, each payable on satisfactory completion of that segment.`;
+}
+/** Appended into Time of Performance — each segment carries its own date. */
+function segmentsTimeSentence(v: ContractVars): string {
+  if (!hasSegments(v)) return '';
+  return ` Contractor shall complete each segment of the Work by the completion date stated for that segment on Exhibit A & B.`;
+}
+/** Exhibit A & B lines — one per segment, verbatim. */
+function segmentLines(v: ContractVars): string[] {
+  return segmentsOf(v).map((s) => {
+    const amt = String(s.amount || '').trim();
+    const done = String(s.completion || '').trim();
+    return `${String(s.name).trim()}${amt ? ` — ${amt}` : ''}${done ? ` — complete by ${done}` : ''}`;
+  });
 }
 /** How a recurring SP charge is invoiced. */
 export type RecurPeriod = 'monthly' | 'quarterly' | 'annual';
@@ -237,6 +269,9 @@ async function exhibitAB(doc: PDFDocument, vars: ContractVars, attachments: BidA
     }
     yy -= 6;
   };
+  // Combined contract: one line per segment (member project) — name, amount,
+  // completion date, all verbatim — on the same page the bids staple behind.
+  if (hasSegments(vars)) bullets('WORK SEGMENTS — AMOUNT & COMPLETION DATE PER SEGMENT', segmentLines(vars));
   bullets('ELECTED OPTIONS — THESE CONTROL OVER ANY OTHER OPTION SHOWN BELOW', electedTerms);
   bullets('THE FOLLOWING TERMS IN THIS EXHIBIT ARE EXCLUDED AND OF NO EFFECT', excludedTerms);
 
@@ -276,10 +311,10 @@ function buildSections(v: ContractVars): { title: string; paras: string[] }[] {
     { title: 'Term', paras: [S('This Agreement shall commence on {EFFECTIVE_DATE} and remain in effect until {TERM_END_DATE} unless sooner terminated in accordance with this Agreement.')] },
     { title: 'Payment for Services and Contract Price', paras: [
       '',
-      S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price").') + priceSplitSentence(v) + S(' The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),
+      S('Contract Price. Owner will pay Contractor the amount agreed to on Exhibit A or B for the satisfactory performance of the Work (the "Contract Price").') + priceSplitSentence(v) + segmentsPriceSentence(v) + S(' The term "Contract Price" includes all of Contractor\'s overhead, profits, general conditions (for example, insurance and licenses) and all applicable state and local sales and use taxes incurred by Contractor in the performance of the Work and its other obligations under this Agreement. The term "Contract Price," as used in this Agreement, means the total amount Owner owes to the Contractor.'),
       S('Progress Invoices and Payments. **All invoices under this Agreement must be itemized and for Work actually completed.** Provided that the Work performed is acceptable to Owner and subject to Section {SEC:contractor-representations-warranties-and-compliance} below, payment of each invoice is due within thirty (30) days of the Owner\'s receipt of a written invoice in accordance with this Section {SEC:payment-for-services-and-contract-price}(b). **Owner will have no obligation to pay any invoice that is not in accordance with this Section {SEC:payment-for-services-and-contract-price}(b).**'),
     ] },
-    { title: 'Time of Performance and Completion', paras: [S('Contractor shall perform the Work promptly and diligently. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work may result in the termination of this Agreement by Owner, at Owner\'s sole discretion.')] },
+    { title: 'Time of Performance and Completion', paras: [S('Contractor shall perform the Work promptly and diligently. Contractor shall coordinate the schedule of Work with Owner so as to minimize the inconvenience to residents at the Property. Unnecessary delay in completion of the Work may result in the termination of this Agreement by Owner, at Owner\'s sole discretion.') + segmentsTimeSentence(v)] },
     { title: 'Contractor Representations, Warranties and Compliance', paras: [S('Contractor represents that it has the right, ability (including all necessary licenses) and authorization to enter into this Agreement and to fully perform all of the obligations in this Agreement. Contractor shall comply, and take reasonable steps to ensure any and all subcontractors\' compliance, with all applicable federal, state, and local laws and regulations, including, without limitation, all state and local licensing and registration requirements for the Work. The Work shall be performed by individuals duly licensed and authorized by law to perform said work, to the extent required by law. All materials used in performing and/or constructing the Work shall be in compliance with all applicable laws and codes. Contractor represents that it and its subcontractors (if any) have the required skill, experience, and qualifications to perform the Work and shall perform, and ensure all performance by subcontractors of, the Work in a professional, good and workmanlike manner in accordance with generally recognized industry standards for similar work.')] },
     { title: 'Guarantee', paras: [S('All work performed and all materials, equipment, or other personal property furnished by Contractor under this Agreement, if applicable, are hereby guaranteed by Contractor to be free from all defects for a period of one (1) calendar year from the date on which the work under this Agreement is finally accepted by Owner. During the guarantee period, Contractor shall promptly, upon Owner\'s request, furnish all labor, materials, equipment, and other items necessary to correct or replace any defective work, materials, equipment or other personal property installed or furnished under this Agreement, at no additional cost to Owner.')] },
     { title: 'Subcontractors and Employees of Contractor', paras: [S('Contractor is solely responsible for the supervision and direction of work by its employees and any approved subcontractors, suppliers, and materialmen. Neither Owner\'s approval of any subcontractor, suppliers, or materialmen, nor the failure of performance by such parties, shall relieve, release, or affect in any manner any of Contractor\'s duties, liabilities, or obligations under this Agreement. Contractor agrees that Contractor\'s employees and any subcontractors, suppliers, or materialmen shall be properly qualified and shall use reasonable care in the performance of their duties. If, however, Owner determines, for any reason, that a particular employee, subcontractor, supplier, or materialman is unsatisfactory, upon written notice from Owner to Contractor, Contractor shall remove such person and shall provide a qualified substitute. Contractor shall timely pay all amounts owed to subcontractors, employees, suppliers and materialmen in connection with this Agreement. **Notwithstanding anything else to the contrary in this Agreement, in the event Owner receives notice or knowledge that there are outstanding amounts owed to any subcontractor, supplier or materialman, Owner may withhold or set off any payment or amounts otherwise owed to Contractor for work performed or materials or supplies provided under this Agreement until Contractor submits evidence satisfactory to Owner that all amounts due to such persons in connection with this Agreement have been paid and all applicable liens or claims for liens have been waived and released.**')] },

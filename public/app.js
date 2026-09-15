@@ -34,6 +34,27 @@ const fmt1=(n)=>{if(n==null||isNaN(n))return '—';return '$'+Number(n).toLocale
 const pct = (n)=>n==null||isNaN(n)?'—':(Number(n)*100).toFixed(n<0.1?1:0)+'%';
 const pctWhole = (n)=>n==null||isNaN(n)?'—':Number(n).toFixed(1).replace(/\.0$/,'')+'%';
 const esc = s=>String(s==null?'':s).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c]));
+/* ---------- Leak guards (2026-09-15) ----------
+   The tracker got slower the longer a tab stayed open, fixed only by a refresh:
+   modals were appending <datalist>s to <body> and "cleaning up" on a 'remove'
+   event that DOM elements never fire (one leaked per editor open AND per
+   bid-slot redraw — thousands of dead nodes a session), and the PDF modals
+   never released pdf.js documents or their IntersectionObserver. These two
+   helpers are the pattern: ONE persistent datalist per id with options
+   refreshed per use, and a cleanup hook that runs exactly once when a modal's
+   scrim is removed (every close path calls scrim.remove(), so wrapping it is
+   the one reliable hook — there is no DOM 'remove' event). */
+function ensureDatalist(dlId,values){
+  let dl=document.getElementById(dlId);
+  if(!dl){ dl=el('datalist',{id:dlId}); document.body.append(dl); }
+  dl.innerHTML='';
+  (values||[]).forEach(v=>dl.append(el('option',{value:v})));
+  return dl;
+}
+function onScrimClose(scrim,fn){
+  const orig=scrim.remove.bind(scrim); let done=false;
+  scrim.remove=()=>{ if(!done){ done=true; try{fn();}catch(e){} } orig(); };
+}
 /* LOCAL date, not toISOString() (UTC) — that flips to tomorrow in the evening,
    which would tick date-derived steps early and misdate date-input defaults. */
 const today=()=>{const n=new Date();return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;};
@@ -2010,9 +2031,11 @@ function openProject(id,preset){
       }},'Add to directory'));
     parent.append(warn);
   };
-  const makeDl=(dlId)=>{const dl=el('datalist',{id:dlId});(S.contractors||[]).forEach(c=>dl.append(el('option',{value:c.name})));document.body.append(dl);return dl;};
-  const ctrInp=(key,dlId,attrs={})=>{const dl=makeDl(dlId);const n=el('input',{value:p[key]||'',list:dlId,...attrs,oninput:e=>{p[key]=e.target.value;}});n.addEventListener('blur',()=>ctrWarn(n,p[key]));scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
-  const ctrInpRaw=(val,placeholder,handler,dlId)=>{const dl=makeDl(dlId);const n=el('input',{value:val,placeholder,list:dlId,oninput:e=>{handler(e);ctrWarn(n,e.target.value);}});n.addEventListener('blur',()=>ctrWarn(n,n.value));scrim.addEventListener('remove',()=>dl.remove(),{once:true});return n;};
+  // ONE persistent datalist per id, refreshed per use — see ensureDatalist (the
+  // old per-call datalist leaked on every editor open and bid-slot redraw).
+  const makeDl=(dlId)=>ensureDatalist(dlId,(S.contractors||[]).map(c=>c.name));
+  const ctrInp=(key,dlId,attrs={})=>{makeDl(dlId);const n=el('input',{value:p[key]||'',list:dlId,...attrs,oninput:e=>{p[key]=e.target.value;}});n.addEventListener('blur',()=>ctrWarn(n,p[key]));return n;};
+  const ctrInpRaw=(val,placeholder,handler,dlId)=>{makeDl(dlId);const n=el('input',{value:val,placeholder,list:dlId,oninput:e=>{handler(e);ctrWarn(n,e.target.value);}});n.addEventListener('blur',()=>ctrWarn(n,n.value));return n;};
   // Entering a cost figure promotes a bare note into a planned project — tick "Planned".
   const costInp=(key)=>{const n=inp(key,{type:'number',placeholder:key==='actualCost'?'from GL':'0'});
     n.addEventListener('input',()=>{
@@ -2651,8 +2674,10 @@ function openProject(id,preset){
       placeMarker();
     });
     marker.addEventListener('pointerup',()=>{ drag=null; err.textContent=''; });
-    // Arrow keys fine-tune the spot (2px, Shift = 12px). Detaches itself once
-    // the modal is gone; typing in the name/title inputs is left alone.
+    // Arrow keys fine-tune the spot (2px, Shift = 12px). Removed the moment the
+    // modal closes (leak guard below) — the old self-detach-on-next-keydown
+    // kept the whole modal (PDF page canvases included) alive in the closure
+    // until some later keypress; typing in the name/title inputs is left alone.
     const nudge=e=>{
       if(!scrim.isConnected){ document.removeEventListener('keydown',nudge,true); return; }
       if(st.xPct==null||st.markPage!==st.page) return;
@@ -2667,6 +2692,12 @@ function openProject(id,preset){
       if(moved){ e.preventDefault(); placeMarker(); }
     };
     document.addEventListener('keydown',nudge,true);
+    // Leak guard (2026-09-15): release the key listener and the pdf.js document
+    // (worker memory for every rendered page) the moment the modal closes.
+    onScrimClose(scrim,()=>{
+      document.removeEventListener('keydown',nudge,true);
+      if(pdfDoc){ try{ pdfDoc.destroy(); }catch(e){} pdfDoc=null; }
+    });
     const placeMarker=()=>{
       const show=st.xPct!=null&&st.markPage===st.page;
       marker.style.display=show?'':'none'; if(!show)return;
@@ -2776,12 +2807,14 @@ function openProject(id,preset){
           const bytes=new Uint8Array(await fetch(out.preview).then(r=>{ if(!r.ok) throw new Error('the preview has expired — press Preview again'); return r.arrayBuffer(); }));
           const pdfjs=await loadPdfJs();
           const doc2=await pdfjs.getDocument({data:bytes}).promise;
-          const pg=await doc2.getPage(Math.min(body2.page,doc2.numPages));
-          const vp=pg.getViewport({scale:1});
-          const sc=Math.min(1.7,760/vp.width);
-          const v2=pg.getViewport({scale:sc});
-          cvs.width=v2.width; cvs.height=v2.height;
-          await pg.render({canvasContext:cvs.getContext('2d'),viewport:v2,intent:'print'}).promise;
+          try{
+            const pg=await doc2.getPage(Math.min(body2.page,doc2.numPages));
+            const vp=pg.getViewport({scale:1});
+            const sc=Math.min(1.7,760/vp.width);
+            const v2=pg.getViewport({scale:sc});
+            cvs.width=v2.width; cvs.height=v2.height;
+            await pg.render({canvasContext:cvs.getContext('2d'),viewport:v2,intent:'print'}).promise;
+          } finally { try{ doc2.destroy(); }catch(e){} }   // the bitmap is on the canvas — release the decoder
         }catch(e){ wrap.append(el('div',{style:'padding:18px;color:var(--rust);font-size:13px'},'Could not render the preview page: '+e.message)); }
       }catch(e){ err.textContent=e.message; }
       prevBtn.disabled=false; prevBtn.textContent='👁 Preview stamped page';
@@ -3093,8 +3126,7 @@ function openProject(id,preset){
 
     // --- Contractor ---
     sect('Contractor');
-    const ctrDl=el('datalist',{id:'contract-gen-dl'});(S.contractors||[]).forEach(c=>ctrDl.append(el('option',{value:c.name})));document.body.append(ctrDl);
-    scrim.addEventListener('remove',()=>ctrDl.remove(),{once:true});
+    ensureDatalist('contract-gen-dl',(S.contractors||[]).map(c=>c.name));   // persistent, refreshed per open — never leaks
     const genCtrKnown=(val)=>(S.contractors||[]).some(c=>c.name.trim().toLowerCase()===val.trim().toLowerCase());
     const genCtrWarn=async(val)=>{
       ctrNameField.querySelectorAll('.ctr-warn').forEach(w=>w.remove());
@@ -4064,6 +4096,16 @@ async function openScopePreviewer(source, state, onSave){
     ? new IntersectionObserver(entries=>{ for(const e of entries){ if(!e.isIntersecting) continue; lazyIO.unobserve(e.target); const fn=e.target._lazyDraw; if(fn) fn().catch(()=>{}); } },{rootMargin:'800px 0px'})
     : null;
   const lazy={ observe(node,fn){ node._lazyDraw=fn; if(lazyIO) lazyIO.observe(node); else fn().catch(()=>{}); } };
+  /* Leak guard (2026-09-15): without this, every previewer open retained its
+     pdf.js documents (worker memory for every decoded page) and the observer's
+     grip on undrawn canvases until the tab was refreshed — the "gets laggier
+     until I refresh" complaint. Runs on every close path via scrim.remove(). */
+  const openDocs=[];
+  onScrimClose(scrim,()=>{
+    if(lazyIO) lazyIO.disconnect();
+    openDocs.forEach(d=>{ try{ d.destroy(); }catch(e){} });
+    openDocs.length=0;
+  });
   const colWidth=()=>{
     const avail=Math.max(240,(body.clientWidth||900)-8);
     return Math.floor((avail-(cols-1)*14)/cols);
@@ -4095,6 +4137,7 @@ async function openScopePreviewer(source, state, onSave){
     let doc;
     try{ doc=await pdfjs.getDocument({data:bytes}).promise; }
     catch(e){ wrap.append(el('div',{class:'bs-hint'},'Could not open this file for preview.')); continue; }
+    openDocs.push(doc);   // destroyed when the previewer closes (leak guard above)
 
     const grid=el('div',{style:`display:grid;grid-template-columns:repeat(${cols},minmax(0,1fr));gap:14px`});
     wrap.append(grid); grids.push(grid);

@@ -887,6 +887,29 @@ gets `overflow-x:hidden` as a backstop. Check phone changes with the mock backen
 pane's mobile preset — measure `document.documentElement.scrollWidth` against `innerWidth` on
 each view; anything over is a page-wide sideways scroll.
 
+## Long-session leak guards (2026-09-15)
+
+The tab got slower the longer it stayed open (refresh fixed it). Three leaks,
+two helpers near `el()` in app.js — use them for any new modal:
+
+- **`ensureDatalist(id, values)`** — ONE persistent `<datalist>` per id,
+  options refreshed per use. Modals used to append a fresh datalist to `<body>`
+  and "clean up" on a `'remove'` event **that DOM elements never fire** — one
+  leaked per editor open AND per bid-slot redraw, thousands of dead nodes a
+  session slowing every style/layout pass. Never append a datalist per open.
+- **`onScrimClose(scrim, fn)`** — cleanup that runs exactly once when a modal's
+  scrim is removed (wraps `scrim.remove()`, which every close path calls).
+  Used by: the bid previewer (disconnects its lazy-render IntersectionObserver
+  and `destroy()`s every pdf.js document — the observer retained undrawn
+  canvases and the docs held worker memory for every decoded page) and the
+  countersign modal (removes its document-level arrow-key listener, which
+  retained the whole modal incl. page canvases until some later keypress, and
+  destroys its pdf.js doc). The countersign PREVIEW's document is destroyed in
+  a `finally` right after its page renders.
+- Rule of thumb: anything appended to `document.body`, any
+  `document.addEventListener`, any Observer, and any pdf.js document created by
+  a modal MUST be released via `onScrimClose` (or be a persistent singleton).
+
 ## Gotchas
 
 - Dates arriving as MM/DD/YYYY must go through `dnull()` before hitting date columns.

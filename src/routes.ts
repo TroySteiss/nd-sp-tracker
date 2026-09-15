@@ -285,6 +285,10 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
   p.phaseGroup = String(p.phaseGroup || '').trim() || null;
   p.phaseSeq = p.phaseGroup ? Math.max(1, Math.round(Number(p.phaseSeq) || 1)) : null;
   p.phaseOf = p.phaseGroup ? String(p.phaseOf || '').trim().slice(0, 120) : null;
+  // Quantity (033): positive count + unit label, or neither.
+  const qn = Number(p.quantity);
+  p.quantity = isFinite(qn) && qn > 0 ? Math.round(qn * 100) / 100 : null;
+  p.quantityUnit = p.quantity != null ? (String(p.quantityUnit || '').trim().slice(0, 40) || null) : null;
   const cols = [
     p.property, p.category || 'GENERAL', p.name || '(untitled)', p.description || '', p.plan || '', p.actionItem || '',
     p.contractor || '', nnull(p.anticipatedCost), nnull(p.actualCost), dnull(p.dateAdded), dnull(p.plannedStart), dnull(p.plannedEnd),
@@ -292,14 +296,14 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
     nnull(p.totalToComplete), nnull(p.amountCompleted), !!p.noContract, !!p.noContractSet, !!p.commitCash,
     p.split ? JSON.stringify(p.split) : null,
     p.planYears ? JSON.stringify(p.planYears) : null, p.planKind, p.lenderFlag,
-    p.phaseGroup, p.phaseSeq, p.phaseOf,
+    p.phaseGroup, p.phaseSeq, p.phaseOf, p.quantity, p.quantityUnit,
   ];
   if (isNew) {
     await client.query(
       `insert into projects(property_code,category,name,description,plan,action_item,contractor,anticipated_cost,actual_cost,
          date_added,planned_start,planned_end,steps,notes,on_hold,pinned,in_house,ih_unit,total_to_complete,amount_completed,
-         no_contract,no_contract_set,commit_cash,split,plan_years,plan_kind,lender_flag,phase_group,phase_seq,phase_of,id)
-       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31)`,
+         no_contract,no_contract_set,commit_cash,split,plan_years,plan_kind,lender_flag,phase_group,phase_seq,phase_of,quantity,quantity_unit,id)
+       values($1,$2,$3,$4,$5,$6,$7,$8,$9,$10,$11,$12,$13,$14,$15,$16,$17,$18,$19,$20,$21,$22,$23,$24,$25,$26,$27,$28,$29,$30,$31,$32,$33)`,
       [...cols, p.id]
     );
   } else {
@@ -307,7 +311,7 @@ async function writeProject(client: pg.PoolClient, p: Project, isNew: boolean): 
       `update projects set property_code=$1,category=$2,name=$3,description=$4,plan=$5,action_item=$6,contractor=$7,
          anticipated_cost=$8,actual_cost=$9,date_added=$10,planned_start=$11,planned_end=$12,steps=$13,notes=$14,on_hold=$15,
          pinned=$16,in_house=$17,ih_unit=$18,total_to_complete=$19,amount_completed=$20,no_contract=$21,no_contract_set=$22,commit_cash=$23,
-         split=$24, plan_years=$25, plan_kind=$26, lender_flag=$27, phase_group=$28, phase_seq=$29, phase_of=$30, updated_at=now() where id=$31`,
+         split=$24, plan_years=$25, plan_kind=$26, lender_flag=$27, phase_group=$28, phase_seq=$29, phase_of=$30, quantity=$31, quantity_unit=$32, updated_at=now() where id=$33`,
       [...cols, p.id]
     );
   }
@@ -686,9 +690,18 @@ api.post('/projects/:id/contract', async (req, res) => {
       const m = String(d).match(/^(\d{4})-(\d{2})-(\d{2})/);
       return m ? `${+m[2]}/${+m[3]}/${m[1]}` : String(d);
     };
+    // Quantity (033) prints inside the segment name — "DRND patios (5 patios)"
+    // — unless the client overrode the name outright.
+    const withQty = (row: any) => {
+      const base = String(row.name || '').trim();
+      const q = Number(row.quantity);
+      if (!(q > 0)) return base;
+      const u = String(row.quantity_unit || '').trim();
+      return `${base} (${u ? `${q} ${u}` : `×${q}`})`;
+    };
     const segOf = (row: any) => {
       const o = segIn[row.id] || {};
-      return { name: String(o.name || row.name || '').trim(),
+      return { name: String(o.name || withQty(row)).trim(),
         amount: String(o.amount || '').trim() || money(row.actual_cost != null ? row.actual_cost : row.anticipated_cost),
         completion: String(o.completion || '').trim() || mdY(row.planned_end) };
     };
@@ -2043,7 +2056,7 @@ api.get('/export/plan.xlsx', async (req, res) => {
 
 api.get('/export/projects.csv', requireAdmin, async (_req, res) => {
   const state = await assembleState();
-  const cols = ['property', 'region', 'category', 'name', 'contractor', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', 'lenderFlag', 'planKind', 'planTotal', 'phaseOf', 'phaseSeq', ...STEP_KEYS];
+  const cols = ['property', 'region', 'category', 'name', 'contractor', 'quantity', 'quantityUnit', 'anticipatedCost', 'actualCost', 'dateAdded', 'onHold', 'lenderFlag', 'planKind', 'planTotal', 'phaseOf', 'phaseSeq', ...STEP_KEYS];
   const lines = [cols.join(',')];
   for (const p of state.projects) {
     lines.push(cols.map((cc) => {

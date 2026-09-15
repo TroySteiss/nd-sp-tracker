@@ -527,6 +527,21 @@ print, and a strike box can't be placed over a line you can't read. One-across i
 US Letter page's natural 816px at 96dpi. Marks are stored as fractions of the page, so resizing
 never moves them.
 
+## Project quantity (033, 2026-09-15)
+
+"On the DRND patio, please include 5 patios ($9,285 total)": `projects.quantity`
+(numeric) + `quantity_unit` (text ≤40) — a count and unit label per project.
+Editor (contractor mode only; in-house has its own quantity tracking): a
+Quantity / Unit / Per-unit row next to the costs where editing any of
+count × per-unit ⇄ anticipated cost keeps the other two in step (per-unit is
+DERIVED, never stored — it can't disagree with the total; the recompute
+dispatches `input` on the anticipated-cost field so its own side-effects run).
+`qtyLabel(p)` in domain.ts (mirrored in app.js, unit-tested) renders
+"5 patios" / "×5"; shown as a chip on property rows, board cards and the
+combine picker; appended to the generate dialog's scope prefill and — unless
+the name was overridden — to a combined contract's printed segment name
+("DRND patios (5 patios)"). CSV export carries quantity/quantityUnit.
+
 ## Combined contracts — several projects, one agreement (2026-09-15)
 
 For bidding out a batch of vendor work at ONE property ("the attached bids are

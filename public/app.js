@@ -463,6 +463,9 @@ const ihPct=p=>{ const t=ihTotal(p); return t>0?Math.min(1, ihDone(p)/t):0; };
    property cash. Excluded from all SP projections, GL tie-out and update emails;
    shown only in a collapsed property-view group / optional Projects filter. */
 const isATL=p=>/above\s+the\s+line/i.test(p&&p.name||'');
+/* "5 patios" (or "×5" when no unit) — mirrors qtyLabel in shared/domain.ts. */
+const qtyLabel=p=>{ const q=Number(p&&p.quantity); if(!(q>0))return ''; const u=String(p.quantityUnit||'').trim(); return u?`${q} ${u}`:`×${q}`; };
+const qtyChip=p=>{ const l=qtyLabel(p); return l?el('span',{class:'chip',title:'Quantity — set in the project editor next to the cost'},l):null; };
 function phase(p){
   if(p.onHold) return 'hold';
   if(p.inHouse){
@@ -1673,7 +1676,7 @@ function projectCard(p){
   else if(!ih&&phase(p)==='discussed')top.append(el('span',{class:'chip discussed'},'Discussed'));
   top.append(el('div',{style:'flex:1'}), el('span',{style:'font-size:11px;color:var(--ink-3)'},p.category));
   c.append(top);
-  c.append(el('div',{class:'nm'},p.name,projSym(p),phaseChip(p)));
+  c.append(el('div',{class:'nm'},p.name,projSym(p),phaseChip(p),qtyChip(p)));
   c.append(el('div',{class:'meta'}, p.contractor? '◷ '+p.contractor : (p.actionItem? p.actionItem.slice(0,70):'—')));
   c.append(el('div',{class:'card-added'}, 'Added '+fmtDate(p.dateAdded)));
   if(ih){
@@ -1916,7 +1919,7 @@ function openPhasedWizard(preset={}){
 ========================================================= */
 function openProject(id,preset){
   const isNew=!id;
-  let p = isNew ? {id:uid('P'),property:VIEW.prop||S.properties[0].code,category:'GENERAL',name:'',description:'',plan:'',contractor:'',actionItem:'',anticipatedCost:null,actualCost:null,dateAdded:today(),plannedStart:'',plannedEnd:'',bids:[],steps:{},notes:'',onHold:false,pinned:false,inHouse:false,ihUnit:'budget',totalToComplete:null,amountCompleted:null,progressNotes:[],noContract:false,noContractSet:false,commitCash:false,split:null}
+  let p = isNew ? {id:uid('P'),property:VIEW.prop||S.properties[0].code,category:'GENERAL',name:'',description:'',plan:'',contractor:'',actionItem:'',anticipatedCost:null,actualCost:null,quantity:null,quantityUnit:'',dateAdded:today(),plannedStart:'',plannedEnd:'',bids:[],steps:{},notes:'',onHold:false,pinned:false,inHouse:false,ihUnit:'budget',totalToComplete:null,amountCompleted:null,progressNotes:[],noContract:false,noContractSet:false,commitCash:false,split:null}
                  : JSON.parse(JSON.stringify(S.projects.find(x=>x.id===id)));
   if(isNew&&preset)Object.assign(p,preset);
   p.steps=p.steps||{}; p.bids=p.bids||[]; p.progressNotes=p.progressNotes||[];
@@ -2157,15 +2160,37 @@ function openProject(id,preset){
     f('Planned start',inp('plannedStart',{type:'date'})),
     f('Planned end',plannedEndInp)));
   // mode-specific cost block
+  const antInp=costInp('anticipatedCost');
   const contractorCost=el('div',{class:'frow'},
-    f('Anticipated cost',costInp('anticipatedCost')),
+    f('Anticipated cost',antInp),
     f('Actual cost',costInp('actualCost')));
+  /* Quantity (033): "5 patios ($9,285 total)". Count × per-unit price stays in
+     step with the anticipated cost while typing (edit any of the three);
+     only the count + unit label are STORED — per-unit is derived, so it can
+     never disagree with the total. */
+  const qtyInp=inp('quantity',{type:'number',min:'0',step:'any',placeholder:'e.g. 5'});
+  const qtyUnitInp=inp('quantityUnit',{placeholder:'e.g. patios, doors, units'});
+  const eachInp=el('input',{type:'number',min:'0',step:'any',placeholder:'auto = cost ÷ qty'});
+  const round2=n=>Math.round(n*100)/100;
+  const syncEach=()=>{ const q=Number(p.quantity), c=Number(p.anticipatedCost);
+    if(document.activeElement!==eachInp) eachInp.value=(q>0&&isFinite(c)&&c>0)?String(round2(c/q)):''; };
+  const applyQtyMath=()=>{ const q=Number(qtyInp.value), each=Number(eachInp.value);
+    if(q>0&&each>0){ p.anticipatedCost=round2(q*each); antInp.value=p.anticipatedCost;
+      antInp.dispatchEvent(new Event('input',{bubbles:true})); } };   // runs costInp's own side-effects (planned tick, plan meta…)
+  qtyInp.addEventListener('input',applyQtyMath);
+  eachInp.addEventListener('input',applyQtyMath);
+  antInp.addEventListener('input',syncEach);
+  const qtyRow=el('div',{class:'frow3'},
+    f('Quantity (optional)',qtyInp),
+    f('Unit',qtyUnitInp),
+    f('Per-unit $ (derived)',eachInp));
   const ihTotalInp=inp('totalToComplete',{type:'number',placeholder:'estimated total $'});
   const ihDoneInp=inp('amountCompleted',{type:'number',placeholder:'$ completed so far'});
   const inhouseCost=el('div',{class:'frow'},
     f('Total to complete',ihTotalInp),
     f('Amount completed',ihDoneInp));
-  core.append(contractorCost, inhouseCost);
+  core.append(contractorCost, qtyRow, inhouseCost);
+  syncEach();
   // Option pills — colored toggle chips instead of bare checkboxes.
   const optPill=(icon,label,cls,get,set,title)=>{
     const pill=el('button',{type:'button',class:'opt-pill '+cls+(get()?' on':''),...(title?{title}:{}),
@@ -3030,7 +3055,7 @@ function openProject(id,preset){
       ownerEntity:prop.ownerEntity||'', contractorName:initCtrName,
       propertyName:prop.name||'', propertyAddr:prop.address||'',
       ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:(initCtr&&initCtr.address)||'',
-      contractTotal:usd(total), unit:'', scope:p.name||'',
+      contractTotal:usd(total), unit:'', scope:(p.name||'')+(qtyLabel(p)?' — '+qtyLabel(p):''),
       // Optional one-time / recurring breakdown — blank leaves the wording as-is.
       oneTimeAmount:'', ongoingAmount:'', ongoingPeriod:'monthly'
     };
@@ -3117,6 +3142,7 @@ function openProject(id,preset){
         box.append(el('label',{style:'display:flex;align-items:center;gap:8px;padding:4px 0;font-size:12.5px;cursor:pointer;flex-wrap:wrap'},
           cb,
           el('span',{style:'flex:1;min-width:140px;font-weight:600'},x.name,
+            qtyLabel(x)?el('span',{class:'chip',style:'margin-left:6px'},qtyLabel(x)):null,
             hasBidDoc(x)?null:el('span',{class:'chip hold',style:'margin-left:6px',title:'This project has no bid document attached — generation will refuse until its winning bid is attached and saved'},'⚠ no bid doc'),
             isPhaseP(x)?el('span',{class:'chip phase',style:'margin-left:6px'},'⧉ '+(x.phaseSeq||'?')+'/'+phasesOf(x.phaseGroup).length):null),
           amtInp, dateInp));
@@ -3308,6 +3334,7 @@ function openProject(id,preset){
   function applyMode(){
     const ih=!!p.inHouse;
     contractorCost.style.display=ih?'none':'';
+    qtyRow.style.display=ih?'none':'';   // in-house tracks its own quantities via the progress panel
     inhouseCost.style.display=ih?'':'none';
     inhousePanel.style.display=ih?'':'none';
     bidsWrap.style.display=ih?'none':'';
@@ -4874,7 +4901,7 @@ function viewProperty(){
     const r=el('div',{class:'clickrow proj-row',onclick:()=>openProject(pr.id)});
     const head=el('div',{class:'pr-head'},
       el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
-      el('strong',{class:'pr-name'}, pr.name), projSym(pr), phaseChip(pr),
+      el('strong',{class:'pr-name'}, pr.name), projSym(pr), phaseChip(pr), qtyChip(pr),
       split?el('span',{class:'chip',title:`Split across ${allocsOf(pr).map(a=>a.property+' '+a.pct+'%').join(' · ')} — total ${fmt(fullCost,false)}`},`⇄ ${Math.round(shareFor(pr,code)*100)}%`):null,
       el('div',{class:'pr-right'},
         hasCost?el('span',{class:'mono pr-cost',title:split?`This property’s share of ${fmt(fullCost,false)} total`:''},fmt(costVal,false)):null,

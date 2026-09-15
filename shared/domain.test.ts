@@ -9,7 +9,7 @@ import {
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planAutoHold, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
-  syncDateDerivedSteps, needsCompletionReview, advancedUncountersigned,
+  syncDateDerivedSteps, needsCompletionReview, advancedUncountersigned, qtyLabel,
 } from './domain.js';
 
 function proj(over: Partial<Project> = {}): Project {
@@ -435,6 +435,15 @@ describe('region colour ramps (migration 029)', () => {
     expect(hexToHsl(m.CLND)!.l).toBeGreaterThan(hexToHsl(m.TPND)!.l);
     // re-running with the same inputs gives the same colours
     expect(regionShadeMap('#3f7cb8', ['SPND', 'CLND', 'TPND'])).toEqual(m);
+  });
+});
+
+describe('quantity label (migration 033)', () => {
+  it('renders "5 patios", "×5" without a unit, and nothing without a count', () => {
+    expect(qtyLabel(proj({ quantity: 5, quantityUnit: 'patios' }))).toBe('5 patios');
+    expect(qtyLabel(proj({ quantity: 5 }))).toBe('×5');
+    expect(qtyLabel(proj({ quantity: 0, quantityUnit: 'patios' }))).toBe('');
+    expect(qtyLabel(proj())).toBe('');
   });
 });
 

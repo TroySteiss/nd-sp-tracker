@@ -62,6 +62,11 @@ export interface Project {
   phaseGroup?: string | null;
   phaseSeq?: number | null;
   phaseOf?: string | null;
+  /* Per-project quantity (migration 033): "5 patios ($9,285 total)". Only the
+     count + unit label are stored; the editor derives the per-unit price from
+     the anticipated cost so the two can never disagree. */
+  quantity?: number | null;
+  quantityUnit?: string | null;
   bids?: Bid[];
   /* Contract revision (migration 024). Set when a bad contract is sent back to
      pre-approval: approval is withdrawn, the contract chain cleared, and the
@@ -384,6 +389,14 @@ export function stepsTotal(p: Project): number { return appKeys(p).length; }
     projected-budget-remaining), from GL tie-out flags, and de-emphasized in the
     UI. Actual GL postings still count in "spent" — the ledger is factual. */
 export const isAboveLine = (p: Project): boolean => /above\s+the\s+line/i.test(p.name || '');
+
+/** "5 patios" (or "×5" when no unit was given); '' when no quantity is set. */
+export const qtyLabel = (p: Project): string => {
+  const q = Number(p.quantity);
+  if (!(q > 0)) return '';
+  const u = String(p.quantityUnit || '').trim();
+  return u ? `${q} ${u}` : `×${q}`;
+};
 
 export const isApproved = (p: Project): boolean => !!(p.steps && p.steps.approved);
 export const isPaidP = (p: Project): boolean => !!(p.steps && p.steps.paid);

@@ -97,6 +97,8 @@ export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [
     phaseGroup: r.phase_group ?? null,
     phaseSeq: r.phase_seq ?? null,
     phaseOf: r.phase_of ?? '',
+    quantity: r.quantity ?? null,
+    quantityUnit: r.quantity_unit ?? '',
     steps: r.steps || {},
     notes: r.notes ?? '',
     onHold: !!r.on_hold,

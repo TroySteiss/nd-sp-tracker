@@ -150,6 +150,14 @@ const inProjDiscussed=p=>!isATL(p)&&!p.onHold&&!isInHouse(p)&&phase(p)==='discus
 const projSym=p=>inProjDiscussed(p)
   ? el('span',{title:'Included in cash projections — committed to cash',style:'color:#1fa356;font-weight:800;margin-left:5px'},'$')
   : null;
+/* Red ⚠ beside anything lender-designated — lender-required work must jump out
+   wherever the item appears (rows, cards, tables, plan), not only as the plan
+   view's 🏦 chip. ︎ forces the text glyph so the red color applies (the
+   emoji rendering ignores CSS color). */
+const lenderSym=p=>lenderFlagged(p)
+  ? el('span',{title:'Lender-required item — '+String(p.lenderFlag).trim(),
+      style:'color:#c02a1e;font-weight:800;margin-left:5px'},'⚠︎')
+  : null;
 const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';
 
 /* seedState removed — initial data is seeded server-side into Postgres */
@@ -1398,7 +1406,7 @@ function discussedPanel(list){
   view.slice(0,80).forEach(p2=>{
     const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
     r.append(propChip(p2.property),
-      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name,projSym(p2)),
+      el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name,projSym(p2),lenderSym(p2)),
         el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category+' · '+projDates(p2))),
       el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(cost(p2),false)));
     b.append(r);
@@ -1686,7 +1694,7 @@ function projectCard(p){
   else if(!ih&&phase(p)==='discussed')top.append(el('span',{class:'chip discussed'},'Discussed'));
   top.append(el('div',{style:'flex:1'}), el('span',{style:'font-size:11px;color:var(--ink-3)'},p.category));
   c.append(top);
-  c.append(el('div',{class:'nm'},p.name,projSym(p),phaseChip(p),qtyChip(p)));
+  c.append(el('div',{class:'nm'},p.name,projSym(p),lenderSym(p),phaseChip(p),qtyChip(p)));
   c.append(el('div',{class:'meta'}, p.contractor? '◷ '+p.contractor : (p.actionItem? p.actionItem.slice(0,70):'—')));
   c.append(el('div',{class:'card-added'}, projDates(p)));
   if(ih){
@@ -1742,7 +1750,7 @@ function projectsTable(list){
     const cost=ih?ihTotal(p):(p.actualCost!=null?p.actualCost:p.anticipatedCost);
     tb.append(el('tr',{class:'clickrow',onclick:()=>openProject(p.id)},
       td(propChip(p.property)),
-      td(el('div',{style:'font-weight:600;max-width:280px'},p.name,projSym(p),
+      td(el('div',{style:'font-weight:600;max-width:280px'},p.name,projSym(p),lenderSym(p),
         isSplitP(p)?el('span',{class:'chip',style:'margin-left:6px',title:allocsOf(p).map(a=>a.property+' '+a.pct+'%').join(' · ')},'⇄'):null,
         ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
       td(el('span',{style:'font-size:12px'},p.category)),
@@ -4948,7 +4956,7 @@ function viewProperty(){
     const r=el('div',{class:'clickrow proj-row',onclick:()=>openProject(pr.id)});
     const head=el('div',{class:'pr-head'},
       el('button',{class:'pinbtn'+(pr.pinned?' on':''),title:pr.pinned?'Unpin':'Pin to top',onclick:e=>{e.stopPropagation();pr.pinned=!pr.pinned;saveProject(pr,pr.pinned?'Pinned':'Unpinned');}},'📌'),
-      el('strong',{class:'pr-name'}, pr.name), projSym(pr), phaseChip(pr), qtyChip(pr),
+      el('strong',{class:'pr-name'}, pr.name), projSym(pr), lenderSym(pr), phaseChip(pr), qtyChip(pr),
       split?el('span',{class:'chip',title:`Split across ${allocsOf(pr).map(a=>a.property+' '+a.pct+'%').join(' · ')} — total ${fmt(fullCost,false)}`},`⇄ ${Math.round(shareFor(pr,code)*100)}%`):null,
       el('div',{class:'pr-right'},
         hasCost?el('span',{class:'mono pr-cost',title:split?`This property’s share of ${fmt(fullCost,false)} total`:''},fmt(costVal,false)):null,
@@ -5427,7 +5435,7 @@ function planCellInp(p,key){
 function planChips(p){
   const w=el('span',{style:'display:inline-flex;gap:4px;flex-wrap:wrap'});
   if(!onPlan(p)&&autoPlanAmount(p)>0)w.append(el('span',{class:'chip',title:'Auto — projected spend flows into '+autoPlanYear(p)+' (planned-end year) until scheduled'},'auto'));
-  if(lenderFlagged(p))w.append(el('span',{class:'chip',style:'background:var(--wheat-soft);color:var(--wheat-d)',title:'Lender-required item'},'🏦 '+String(p.lenderFlag).trim()));
+  if(lenderFlagged(p))w.append(lenderSym(p),el('span',{class:'chip',style:'background:var(--wheat-soft);color:var(--wheat-d)',title:'Lender-required item'},'🏦 '+String(p.lenderFlag).trim()));
   if(p.planKind==='recurring')w.append(el('span',{class:'chip',title:'Recurring — repeats each year'},'↻'));
   if(p.inHouse)w.append(el('span',{class:'chip',title:'In-house'},'🛠'));
   if(isSplitP(p))w.append(el('span',{class:'chip',title:'Split across properties — amounts shown are this property’s share; edit the full figures in the project editor'},'⇄'));

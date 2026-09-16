@@ -316,6 +316,9 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | settings | viewSettings | Admin group; app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
 | changelog | viewChangelog | Admin group (top tier only); filters by user/property, load-more pagination |
 
+- Lender-designated projects (`lenderFlag` set) carry a red ⚠ (`lenderSym(p)`, text-glyph
+  `⚠︎` so the red applies) next to the name on property rows, board cards, the projects
+  table, the dashboard Discussed panel and beside the plan view's 🏦 chip (2026-09-16).
 - Project rows/cards/tables show the WORK window, not the record's creation date (2026-09-16):
   `projDates(p)` renders `S: 6/1/26 CB: 6/30/26` from plannedStart/plannedEnd (either alone is
   fine), falling back to `Added <date>` only when neither is set. Used by the property-view

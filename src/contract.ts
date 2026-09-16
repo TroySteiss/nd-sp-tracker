@@ -2,6 +2,7 @@ import { PDFDocument, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
   Layout, MARGIN, CONTENT_W, PAGE_W, PAGE_H, TOP, FIRST_INDENT,
   collectBidItems, placeBidItems, exhibitText, numberPages, sectionSlug, resolveCrossRefs,
+  changeOrderFormPage,
   type BidAttachment, type SigAnchor,
 } from './contract-layout.js';
 
@@ -9,7 +10,8 @@ import {
    Independent Contractor Agreement — PDF generator (pdf-lib, pure Node)
    Reproduces the document structure from Contract_Generation_Workflow_Instructions:
    agreement body (Sections 1-25) + signature block, Exhibit A&B (bid embedded),
-   Exhibit C (Conditional Lien Waiver), Exhibit D (Final Lien Waiver).
+   Exhibit C (Conditional Lien Waiver), Exhibit D (Final Lien Waiver),
+   Exhibit E (blank change-order form, cited by "Notification by Contractor").
 
    This is the SINGLE-entity, Special-Project template ("Contract Price"). The
    multi-entity agreement is a separate template in contract-multi.ts, not a
@@ -198,6 +200,9 @@ export async function buildContract(vars: ContractVars, attachments: BidAttachme
   // ---------- Exhibit D ----------
   exhibitText(doc, roman, bold, exhibitD(vars), 'EXHIBIT D', 'FORM OF FINAL WAIVER OF LIEN AND RELEASE');
 
+  // ---------- Exhibit E (blank change-order form, shared with the multi template) ----------
+  changeOrderFormPage(doc, roman, bold);
+
   // ---------- Page numbers (every page, centered, 9pt) ----------
   numberPages(doc, roman);
 
@@ -307,7 +312,7 @@ function buildSections(v: ContractVars): { title: string; paras: string[] }[] {
   const S = (s: string) => subst(v, s);
   return [
     { title: 'Services and Scope of Work', paras: [S('Contractor shall perform all work and/or services described in the Exhibit A; furnish all labor, materials, equipment, tools, supervision, machinery, and supplies necessary to perform all work described in Exhibit A; and obtain all insurance, permits, licenses, and any other items necessary for the completion of all work described in Exhibit A (collectively, the "Work"). Exhibits A and B are incorporated herein and made part of this Agreement (collectively, the "Exhibits").')] },
-    { title: 'Notification by Contractor', paras: [S('Contractor will notify Owner if any problems, questions, or complications arise that will alter the scope of Work. All changes and/or deviations in the Work must be presented by Contractor to Owner and agreed upon in writing in accordance with this Agreement.')] },
+    { title: 'Notification by Contractor', paras: [S('Contractor will notify Owner if any problems, questions, or complications arise that will alter the scope of Work. All changes and/or deviations in the Work must be presented by Contractor to Owner and agreed upon in writing as a change order, a form of which is attached as Exhibit E hereto and made part hereof.')] },
     { title: 'Term', paras: [S('This Agreement shall commence on {EFFECTIVE_DATE} and remain in effect until {TERM_END_DATE} unless sooner terminated in accordance with this Agreement.')] },
     { title: 'Payment for Services and Contract Price', paras: [
       '',

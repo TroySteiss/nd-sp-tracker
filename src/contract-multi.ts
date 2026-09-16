@@ -2,7 +2,7 @@ import { rgb, type PDFDocument, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
   Layout, MARGIN, CONTENT_W, PAGE_W, PAGE_H, TOP, BOTTOM, FIRST_INDENT,
   collectBidItems, placeBidItems, exhibitText, numberPages, sectionSlug,
-  resolveCrossRefs, drawFormBox,
+  resolveCrossRefs, changeOrderFormPage,
   type BidAttachment, type SigAnchor,
 } from './contract-layout.js';
 
@@ -525,8 +525,8 @@ export async function buildMultiContract(
   exhibitText(doc, roman, bold, exhibitC(vars), 'EXHIBIT C', 'FORM OF CONDITIONAL WAIVER OF LIEN AND RELEASE');
   exhibitText(doc, roman, bold, exhibitD(vars), 'EXHIBIT D', 'FORM OF FINAL WAIVER OF LIEN AND RELEASE');
 
-  // ---------- Exhibit E (change order form) ----------
-  exhibitE(doc, roman, bold);
+  // ---------- Exhibit E (change order form — shared drawing in contract-layout) ----------
+  changeOrderFormPage(doc, roman, bold);
 
   numberPages(doc, roman);
 
@@ -684,66 +684,6 @@ Title:     ___________________
 Date:      ___________________`;
 }
 
-/* ---------- Exhibit E: the change order form ----------
-   A bordered grid, not prose — the only exhibit that is a fillable form. It is
-   deliberately blank: it gets printed and completed by hand when a change arises. */
-function exhibitE(doc: PDFDocument, roman: PDFFont, bold: PDFFont) {
-  const page = doc.addPage([PAGE_W, PAGE_H]);
-  let y = TOP;
-  const center = (txt: string, size: number, f: PDFFont) => {
-    const w = f.widthOfTextAtSize(txt, size);
-    page.drawText(txt, { x: (PAGE_W - w) / 2, y, size, font: f, color: rgb(0, 0, 0) });
-    y -= size + 6;
-  };
-  center('EXHIBIT E', 13, bold);
-  center('FORM OF CHANGE ORDER', 11, bold);
-  y -= 8;
-
-  const box = (label: string, h: number, opts: { half?: 'left' | 'right' } = {}) => {
-    const w = opts.half ? (CONTENT_W - 12) / 2 : CONTENT_W;
-    const x = opts.half === 'right' ? MARGIN + w + 12 : MARGIN;
-    drawFormBox(page, { x, y, w, h, label, font: bold, size: 9 });
-    if (!opts.half || opts.half === 'right') y -= h + 8;
-  };
-
-  box('Change Order No:', 30, { half: 'left' });
-  box('Date:', 30, { half: 'right' });
-  box('Contractor\'s Name and Address:', 62, { half: 'left' });
-  box('Owner\'s Name and Address:', 62, { half: 'right' });
-
-  // `box` leaves the baseline 8pt below the box it drew, which is not enough
-  // clearance for a heading's ascenders — drop clear of the border first.
-  y -= 10;
-  center('THE INDEPENDENT CONTRACTOR AGREEMENT IS HEREBY CHANGED AS FOLLOWS', 9, bold);
-  y -= 2;
-  box('', 150);
-  box('Additional Contract Days (if none, state "NONE"):', 34);
-  box('PREVIOUS CONTRACT SUM: $', 30, { half: 'left' });
-  box('REVISED CONTRACT SUM: $', 30, { half: 'right' });
-
-  y -= 12;
-  center('ALL OTHER TERMS AND CONDITIONS OF THE CONTRACTOR AGREEMENT THAT ARE NOT', 8, bold);
-  center('CHANGED BY THIS CHANGE ORDER REMAIN IN FULL FORCE AND EFFECT.', 8, bold);
-  y -= 6;
-  center('ACCEPTANCE', 11, bold);
-
-  // The acceptance paragraph wraps as body text rather than sitting in a box.
-  const accept = 'The above prices, specifications, and conditions are satisfactory, and are hereby accepted. The Contractor is authorized to do the work as specified, and the Owner shall make payments as outlined above.';
-  let line = '';
-  const draw = (t: string) => { page.drawText(t, { x: MARGIN, y, size: 9, font: roman, color: rgb(0, 0, 0) }); y -= 11; };
-  for (const word of accept.split(/\s+/)) {
-    const next = line ? `${line} ${word}` : word;
-    if (roman.widthOfTextAtSize(next, 9) > CONTENT_W) { draw(line); line = word; } else { line = next; }
-  }
-  if (line) draw(line);
-  y -= 14;
-
-  const sig = (label: string) => {
-    if (y < BOTTOM) return;
-    page.drawText(`${label} _____________________________________    Date: __________________`,
-      { x: MARGIN, y, size: 9, font: roman, color: rgb(0, 0, 0) });
-    y -= 26;
-  };
-  sig('Owner Signature:');
-  sig('Contractor Signature:');
-}
+/* Exhibit E (the blank change-order form) is drawn by changeOrderFormPage in
+   contract-layout.ts — one drawing shared with the SP template, so the two
+   can never drift apart. */

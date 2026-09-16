@@ -524,6 +524,15 @@ shouldn't need an admin, and it only moves work backwards) and `POST /projects/:
   **symbolic** (`{SEC:slug}` in the section text) and resolve against the final ordering; omitting a
   section another one cites **throws** rather than shipping a dangling "Section 6".
 
+**Exhibit E — blank change-order form (2026-09-16)**: BOTH templates now end with the fillable
+FORM OF CHANGE ORDER page, drawn by ONE shared function (`changeOrderFormPage` in
+contract-layout.ts, moved verbatim from contract-multi's local exhibitE so the two templates can
+never drift; the multi template's text snapshot is unchanged). The SP template's "Notification by
+Contractor" section now cites it ("…agreed upon in writing as a change order, a form of which is
+attached as Exhibit E hereto and made part hereof") — that wording change reflows the body, so the
+sigAnchor moves with it (verified via contract-snapshot diff: only the sentence, the reflow and the
+new final page differ). The FILLED change order remains change-order.ts.
+
 UI: *Generate contract → Tailor this contract → 🔍 Review bid pages* opens a pdf.js previewer
 (`openScopePreviewer` in app.js) — pages with include/exclude checkboxes, drag to draw
 strike/cover boxes, click a box to remove it. Marks persist on the bid file (`bids.files[].marks`),

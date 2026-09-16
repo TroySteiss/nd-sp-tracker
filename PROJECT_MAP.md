@@ -316,6 +316,12 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 | settings | viewSettings | Admin group; app title, **property cash tile mode**, **users & roles roster**, regions manager, properties table + editor modal |
 | changelog | viewChangelog | Admin group (top tier only); filters by user/property, load-more pagination |
 
+- Project rows/cards/tables show the WORK window, not the record's creation date (2026-09-16):
+  `projDates(p)` renders `S: 6/1/26 CB: 6/30/26` from plannedStart/plannedEnd (either alone is
+  fine), falling back to `Added <date>` only when neither is set. Used by the property-view
+  project rows, board cards, the projects table (column header "Dates") and the dashboard's
+  Discussed panel. "Date added" still exists in the editor and drives sorting + the countersign
+  adoption cutoff — only the display changed.
 - `pcolor(code)` reads `property.color` from state (stable hash fallback for unknown codes).
 - `regionNames()` reads `S.regions` (ordered). `appTitle()` reads `S.meta.appTitle`.
 - Quarterly summary groups by `property.portfolio` (`portfolios()`); blank portfolio ⇒ own card.
@@ -520,6 +526,14 @@ UI: *Generate contract → Tailor this contract → 🔍 Review bid pages* opens
 strike/cover boxes, click a box to remove it. Marks persist on the bid file (`bids.files[].marks`),
 which round-trips because `writeProject` stores `files` as wholesale JSON.
 
+The reviewer covers the WHOLE packet (2026-09-16): when "Combine with other projects" has
+members ticked, the button fetches `/projects/:id/bid-pages` for the lead **and every combined
+member** and shows them all (member files prefixed with the project name). Page selection keys by
+`fileKey`, which is exactly how the contract route applies `bidPages` to member attachments — so a
+quote's cover/letter page (Jobber prepends a mostly-blank title page to every proposal, which then
+staples into the packet reading like an inserted blank page between the priced quote pages) can be
+switched off for every quote in a combined contract, not only the lead's.
+
 The previewer sheet uses `.sheet-wide` (1440px, vs the editor's 1060px) and has a **1/2/3-across
 size control**. Pages render at their *displayed* width × devicePixelRatio, capped at 1600px, and
 **re-render when the size changes** rather than upscaling a small bitmap — a bid is dense small
@@ -546,7 +560,10 @@ the name was overridden — to a combined contract's printed segment name
 `bids.per_unit` + a "$ is per unit" toggle on each bid slot (live "= $9,285
 (5 patios)" hint). `bidTotal(p, bid)` in domain.ts (mirrored in app.js,
 unit-tested) is THE way to read a bid amount as money — used by bid approval
-(sets anticipatedCost to the multiplied total and syncs the visible field),
+(sets anticipatedCost to the multiplied total and syncs the visible field;
+since 2026-09-16 a **pre-filled actual cost is overwritten too** — actual
+outranks anticipated everywhere money flows, so left stale it printed the
+wrong contract sum; an empty actual cost stays empty),
 the generate dialog's Contract-total prefill, the readiness check, and the
 combined-contract picker. Flipping per_unit on an APPROVED bid changes its
 effective total, so it is part of `approvedSig` (admin-gated like an amount

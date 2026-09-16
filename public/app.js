@@ -60,6 +60,12 @@ function onScrimClose(scrim,fn){
 const today=()=>{const n=new Date();return `${n.getFullYear()}-${String(n.getMonth()+1).padStart(2,'0')}-${String(n.getDate()).padStart(2,'0')}`;};
 const fmtDate=(d)=>{ if(!d)return '—'; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); const dt=new Date(+m[0],+m[1]-1,+m[2]); if(isNaN(dt))return String(d); return dt.toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'}); };
 const fmtDateShort=(d)=>{ if(!d)return ''; const m=String(d).slice(0,10).split('-'); if(m.length!==3)return String(d); return `${+m[1]}/${+m[2]}/${m[0].slice(2)}`; };
+/* Project rows/cards show the WORK window, not the record's creation date:
+   "S: 6/1/26  CB: 6/30/26" (start / complete-by, from planned start/end).
+   Falls back to "Added <date>" only when neither date is planned yet. */
+const projDates=(p)=>{ const s=p.plannedStart?fmtDateShort(p.plannedStart):'', e=p.plannedEnd?fmtDateShort(p.plannedEnd):'';
+  if(!s&&!e)return 'Added '+fmtDateShort(p.dateAdded);
+  return [s?'S: '+s:null, e?'CB: '+e:null].filter(Boolean).join(' '); };
 const inDateRange=(p,state)=>{ const d=(p.dateAdded||'').slice(0,10); if(state.dateFrom&&(!d||d<state.dateFrom))return false; if(state.dateTo&&(!d||d>state.dateTo))return false; return true; };
 const uid = p=>p+Math.random().toString(36).slice(2,8);
 
@@ -1393,7 +1399,7 @@ function discussedPanel(list){
     const r=el('div',{class:'clickrow',style:'display:flex;gap:10px;align-items:center;padding:10px 16px;border-bottom:1px solid var(--line-2)',onclick:()=>openProject(p2.id)});
     r.append(propChip(p2.property),
       el('div',{style:'flex:1;min-width:0'}, el('div',{style:'font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis'},p2.name,projSym(p2)),
-        el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category+(p2.dateAdded?' · '+p2.dateAdded:''))),
+        el('div',{style:'font-size:11px;color:var(--ink-3)'},p2.category+' · '+projDates(p2))),
       el('span',{class:'mono',style:'font-size:12px;color:var(--ink-3)'},fmt(cost(p2),false)));
     b.append(r);
   });
@@ -1682,7 +1688,7 @@ function projectCard(p){
   c.append(top);
   c.append(el('div',{class:'nm'},p.name,projSym(p),phaseChip(p),qtyChip(p)));
   c.append(el('div',{class:'meta'}, p.contractor? '◷ '+p.contractor : (p.actionItem? p.actionItem.slice(0,70):'—')));
-  c.append(el('div',{class:'card-added'}, 'Added '+fmtDate(p.dateAdded)));
+  c.append(el('div',{class:'card-added'}, projDates(p)));
   if(ih){
     c.append(progressEl(p));
     const t=ihTotal(p), d=ihDone(p);
@@ -1727,7 +1733,7 @@ function trackEl(p){
 function projectsTable(list){
   const wrap=el('div',{class:'panel',style:'overflow:auto'});
   const tbl=el('table',{class:'tbl'});
-  tbl.append(el('thead',{},tr(th('Property'),th('Project'),th('Category'),th('Added'),th('Contractor'),th('Lifecycle'),th('Cost','r'),th('Status'))));
+  tbl.append(el('thead',{},tr(th('Property'),th('Project'),th('Category'),th('Dates'),th('Contractor'),th('Lifecycle'),th('Cost','r'),th('Status'))));
   const tb=el('tbody');
   const propOrder=propsByRegion().map(p=>p.code);
   list.sort((a,b)=>(propOrder.indexOf(a.property)-propOrder.indexOf(b.property))||(stage(b)-stage(a)));
@@ -1740,7 +1746,7 @@ function projectsTable(list){
         isSplitP(p)?el('span',{class:'chip',style:'margin-left:6px',title:allocsOf(p).map(a=>a.property+' '+a.pct+'%').join(' · ')},'⇄'):null,
         ih?el('span',{class:'chip ih',style:'margin-left:6px'},'In-house'):null)),
       td(el('span',{style:'font-size:12px'},p.category)),
-      td(el('span',{style:'font-size:12px;white-space:nowrap;color:var(--ink-3)'},fmtDate(p.dateAdded))),
+      td(el('span',{style:'font-size:12px;white-space:nowrap;color:var(--ink-3)'},projDates(p))),
       td(el('span',{style:'font-size:12px'},ih?'own crew':(p.contractor||'—'))),
       td(el('div',{style:'min-width:150px'}, ih?progressEl(p):trackElMini(p))),
       tdn(cost,1),
@@ -2165,9 +2171,10 @@ function openProject(id,preset){
     f('Planned end',plannedEndInp)));
   // mode-specific cost block
   const antInp=costInp('anticipatedCost');
+  const actInp=costInp('actualCost');
   const contractorCost=el('div',{class:'frow'},
     f('Anticipated cost',antInp),
-    f('Actual cost',costInp('actualCost')));
+    f('Actual cost',actInp));
   /* Quantity (033): "5 patios ($9,285 total)". Count × per-unit price stays in
      step with the anticipated cost while typing (edit any of the three);
      only the count + unit label are STORED — per-unit is derived, so it can
@@ -2479,7 +2486,12 @@ function openProject(id,preset){
         if(willApprove){ p.steps.approved=true; p.steps.planned=true; if(bd.contractor)p.contractor=bd.contractor;
           // A per-unit bid ("$1,857 per patio") multiplies by the project quantity.
           const t=bidTotal(p,bd);
-          if(t!=null){ p.anticipatedCost=t; if(typeof antInp!=='undefined'){ antInp.value=t; antInp.dispatchEvent(new Event('input',{bubbles:true})); } } }
+          if(t!=null){ p.anticipatedCost=t; if(typeof antInp!=='undefined'){ antInp.value=t; antInp.dispatchEvent(new Event('input',{bubbles:true})); }
+            // The approved bid is the authoritative sum. A pre-filled actual cost
+            // outranks the anticipated cost everywhere money flows (contract total,
+            // combined-contract segments, exports) — left stale it prints the wrong
+            // sum on the contract. Overwrite it too; empty stays empty.
+            if(p.actualCost!=null&&p.actualCost!==''){ p.actualCost=t; if(typeof actInp!=='undefined'){ actInp.value=t; actInp.dispatchEvent(new Event('input',{bubbles:true})); } } } }
         drawBids(); drawSteps();
       }}, bd.approved?'✓ Approved':'Approve')));
     // Per-unit toggle (034): the vendor quoted per unit of the project quantity.
@@ -3226,9 +3238,27 @@ function openProject(id,preset){
         nMarks?`${nMarks} mark${nMarks===1?'':'s'}`:null].filter(Boolean).join('  ·  ');
     };
     tb.append(el('div',{class:'field'},el('label',{},'Scope (Exhibit A & B)'),
-      el('p',{class:'bs-hint',style:'margin:0 0 8px'},'Open the bid to choose which pages become the scope and strike or cover anything you are not accepting. What you see is what embeds.'),
+      el('p',{class:'bs-hint',style:'margin:0 0 8px'},'Open the bid to choose which pages become the scope — switch off a quote’s cover/letter page so it doesn’t staple in as a near-blank page — and strike or cover anything you are not accepting. Combined projects’ quotes are reviewed here too. What you see is what embeds.'),
       el('div',{style:'display:flex;align-items:center;gap:10px'},
-        el('button',{class:'btn sm',onclick:()=>openScopePreviewer(p.id,scopeState,syncScope)},'🔍 Review bid pages'),
+        el('button',{class:'btn sm',onclick:async e=>{
+          // Lead's winning bid plus every combined project's — one reviewer for
+          // the whole packet, so a member quote's cover page can be switched off
+          // the same way as the lead's. Page choices key by fileKey, which is
+          // exactly how the server applies them to member attachments.
+          const btn=e.currentTarget; btn.disabled=true;
+          try{
+            const files=await API.get('/projects/'+p.id+'/bid-pages');
+            for(const id of combineSel.keys()){
+              try{
+                const mf=await API.get('/projects/'+id+'/bid-pages');
+                const nm=((S.projects||[]).find(x=>x.id===id)||{}).name||'combined project';
+                mf.forEach(f2=>{ f2.fileName=nm+' — '+(f2.fileName||''); files.push(f2); });
+              }catch(err){ /* member without a bid is reported at generate time */ }
+            }
+            openScopePreviewer(files,scopeState,syncScope);
+          }catch(err){ toast('Could not read the bid: '+(err&&err.message||err)); }
+          btn.disabled=false;
+        }},'🔍 Review bid pages'),
         scopeSummary)));
 
     // 2. Options the bid makes you pick from ("Choose One Subscription: 12/36/60
@@ -4099,7 +4129,7 @@ async function openScopePreviewer(source, state, onSave){
     el('button',{class:'btn',onclick:()=>scrim.remove()},'Cancel'));
   const body=el('div',{class:'sb'});
   sheet.append(head,body); scrim.append(sheet); document.body.append(scrim);
-  body.append(el('div',{class:'bs-hint'},'Everything left switched on becomes Exhibit A. Drag a box over any term you are not accepting — strike keeps it readable (the norm on a contract), cover blanks it. Covering paints over the text; it does not delete it from the file.'));
+  body.append(el('div',{class:'bs-hint'},'Everything left switched on becomes Exhibit A — untick a quote’s cover/letter page and it stays out of the contract entirely. Drag a box over any term you are not accepting — strike keeps it readable (the norm on a contract), cover blanks it. Covering paints over the text; it does not delete it from the file.'));
   const status=el('div',{style:'font-size:12.5px;color:var(--ink-3);padding:10px 0'},'Loading bid…');
   body.append(status);
 
@@ -4922,7 +4952,7 @@ function viewProperty(){
       split?el('span',{class:'chip',title:`Split across ${allocsOf(pr).map(a=>a.property+' '+a.pct+'%').join(' · ')} — total ${fmt(fullCost,false)}`},`⇄ ${Math.round(shareFor(pr,code)*100)}%`):null,
       el('div',{class:'pr-right'},
         hasCost?el('span',{class:'mono pr-cost',title:split?`This property’s share of ${fmt(fullCost,false)} total`:''},fmt(costVal,false)):null,
-        el('span',{class:'pr-date'}, el('span',{class:'pr-cat'},pr.category+' · '), fmtDateShort(pr.dateAdded))));
+        el('span',{class:'pr-date'}, el('span',{class:'pr-cat'},pr.category+' · '), projDates(pr))));
     r.append(head, ih?progressEl(pr):trackEl(pr));
     return r;
   }

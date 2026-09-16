@@ -150,12 +150,15 @@ const inProjDiscussed=p=>!isATL(p)&&!p.onHold&&!isInHouse(p)&&phase(p)==='discus
 const projSym=p=>inProjDiscussed(p)
   ? el('span',{title:'Included in cash projections — committed to cash',style:'color:#1fa356;font-weight:800;margin-left:5px'},'$')
   : null;
-/* Red ⚠ beside anything lender-designated — lender-required work must jump out
+/* Red ⚠ beside anything lender-related — lender-required work must jump out
    wherever the item appears (rows, cards, tables, plan), not only as the plan
-   view's 🏦 chip. ︎ forces the text glyph so the red color applies (the
-   emoji rendering ignores CSS color). */
-const lenderSym=p=>lenderFlagged(p)
-  ? el('span',{title:'Lender-required item — '+String(p.lenderFlag).trim(),
+   view's 🏦 chip. Triggers on the Lender-designation field OR the word "Lender"
+   in the project name / program name, since most items carry it in the name
+   rather than the plan field. ︎ forces the text glyph so the red color
+   applies (the emoji rendering ignores CSS color). */
+const lenderNamed=p=>/lender/i.test(String(p.name||''))||/lender/i.test(String(p.phaseOf||''));
+const lenderSym=p=>(lenderFlagged(p)||lenderNamed(p))
+  ? el('span',{title:'Lender-required item'+(lenderFlagged(p)?' — '+String(p.lenderFlag).trim():''),
       style:'color:#c02a1e;font-weight:800;margin-left:5px'},'⚠︎')
   : null;
 const appTitle=()=> (S&&S.meta&&S.meta.appTitle)||'SP Tracker';

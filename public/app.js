@@ -3164,12 +3164,23 @@ function openProject(id,preset){
       data.contractTotal=usd(sum); totalInp.value=data.contractTotal;
       combineNote.textContent=data.combineProjectIds.length+' more project'+(data.combineProjectIds.length>1?'s':'')+' on this contract — Contract total refreshed to '+data.contractTotal+' (edit it if needed). Every combined project shares the signature chain: signed/countersigned/lien-waiver saves apply to all of them.';
     };
-    const combinable=S.projects.filter(x=>x.id!==p.id&&x.property===p.property&&!isInHouse(x)&&!isComplete(x)&&phase(x)!=='note')
-      .sort((a2,b2)=>String(a2.name||'').localeCompare(String(b2.name||'')));
+    /* Only projects whose APPROVED bid is with THIS contract's contractor are
+       offered (2026-09-17): one combined contract = one vendor's signature, so
+       an unapproved project or another vendor's work has no business on it.
+       Blank contractor on either side is given the benefit of the doubt (the
+       server re-checks with the same rule at generate time). */
+    const leadCtr=String(initCtrName||'').trim().toLowerCase();
+    const apprCtrOf=x=>{ const ab=(x.bids||[]).find(bd=>bd.approved); return ab?String(ab.contractor||x.contractor||'').trim().toLowerCase():null; };
+    const combinable=S.projects.filter(x=>{
+      if(x.id===p.id||x.property!==p.property||isInHouse(x)||isComplete(x)||phase(x)==='note')return false;
+      const c=apprCtrOf(x);
+      if(c==null)return false;                       // no approved bid — not combinable
+      return !leadCtr||!c||c===leadCtr;              // both named ⇒ must be the same vendor
+    }).sort((a2,b2)=>String(a2.name||'').localeCompare(String(b2.name||'')));
     if(!combinable.length){
-      bb.append(el('p',{class:'bs-hint',style:'margin:0'},'No other open projects at '+p.property+' to combine.'));
+      bb.append(el('p',{class:'bs-hint',style:'margin:0'},'No other projects at '+p.property+' with an approved '+(initCtrName?initCtrName+' ':'')+'bid to combine — approve the same contractor’s bid on a project and it appears here.'));
     } else {
-      bb.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Tick projects at '+p.property+' to include in THIS contract. Each prints as a segment with its own amount and completion date, and its winning bid embeds behind the exhibit.'));
+      bb.append(el('p',{class:'bs-hint',style:'margin:0 0 6px'},'Projects at '+p.property+' approved with '+(initCtrName||'this contractor')+'. Tick to include in THIS contract: each prints as a segment with its own amount and completion date, and its approved bid embeds behind the exhibit.'));
       const box=el('div',{style:'max-height:210px;overflow:auto;border:1px solid var(--line);border-radius:8px;padding:6px 8px'});
       combinable.forEach(x=>{
         const amt=memberAmt(x);

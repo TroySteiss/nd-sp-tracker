@@ -586,7 +586,13 @@ change). PM bid writes are column-targeted and leave per_unit alone.
 For bidding out a batch of vendor work at ONE property ("the attached bids are
 approved — draft up 1 contract per property"): the SP generate dialog's
 **"Combine with other projects"** section ticks other open projects at the same
-property onto THIS contract. Per member: an editable segment amount (prefilled
+property onto THIS contract. **Only projects whose APPROVED bid is with this
+contract's contractor are offered (2026-09-17)** — one combined contract = one
+vendor's signature. Blank contractor on either side gets the benefit of the
+doubt; the server re-checks the same rule at generate time (400 naming the
+member if it has no approved bid, its approved bid names another vendor, or the
+approved bid has no document), and members' embedded bids are now strictly the
+APPROVED bid, never a first-file fallback. Per member: an editable segment amount (prefilled
 from the approved bid, else actual/anticipated) and completion date (prefilled
 from planned end); the Contract total refreshes to the sum but stays editable —
 printed verbatim as always, never derived at print time.

@@ -748,10 +748,20 @@ api.post('/projects/:id/contract', async (req, res) => {
   // member's winning bid the same way the lead's went in.
   if (members.length) {
     attachments.forEach((a, i) => { a.label = i === 0 ? `Scope — ${proj.name}` : `Scope — ${proj.name} (supporting)`; });
+    // One combined contract = ONE vendor's signature (2026-09-17): every member
+    // must carry an APPROVED bid, and where both sides name a contractor it must
+    // be this contract's contractor. The picker filters the same way client-side;
+    // this is the backstop that keeps another vendor's work off signed paper.
+    const leadCtr = String(vars.contractorName || '').trim().toLowerCase();
     for (const m of members) {
       const mRows = (await query('select * from bids where project_id=$1 order by slot asc', [m.id])).rows;
-      const w = mRows.find((bd) => bd.approved && filesOf(bd).length) || mRows.find((bd) => filesOf(bd).length);
-      if (!w) return res.status(400).json({ error: `"${m.name}" has no bid document attached — every combined project needs its winning bid to embed. Attach it in that project's Bids and save first.` });
+      const w = mRows.find((bd) => bd.approved);
+      if (!w) return res.status(400).json({ error: `"${m.name}" has no approved bid — a combined contract only covers projects approved with ${vars.contractorName || 'this contractor'}. Approve its winning bid and save first.` });
+      const mCtr = String(w.contractor || m.contractor || '').trim();
+      if (leadCtr && mCtr && mCtr.toLowerCase() !== leadCtr) {
+        return res.status(400).json({ error: `"${m.name}" is approved with ${mCtr}, not ${vars.contractorName} — one combined contract covers one contractor. Generate that project's contract separately.` });
+      }
+      if (!filesOf(w).length) return res.status(400).json({ error: `"${m.name}"'s approved bid has no document attached — every combined project's approved bid must embed. Attach it in that project's Bids and save first.` });
       const files = filesOf(w);
       for (let i = 0; i < files.length; i++) {
         const f = files[i];

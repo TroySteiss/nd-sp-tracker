@@ -356,7 +356,7 @@ function stampNotes(req: Request, p: Project): void {
 const fmtMoney = (v: any) => (v == null || v === '' ? '—' : '$' + Number(v).toLocaleString('en-US'));
 const fmtStr = (v: any) => (v == null || String(v).trim() === '' ? '—' : String(v));
 const isoD = (v: any): string => (v instanceof Date ? v.toISOString().slice(0, 10) : v == null ? '' : String(v).slice(0, 10));
-const STEP_LABELS: Record<string, string> = { planned: 'Planned', gotBids: 'Bids Received', approved: 'Bid Approved', contractGenerated: 'Contract Generated', signed: 'Signed', workStarted: 'Work Started', workCompleted: 'Work Completed', paid: 'Paid', completed: 'Completed', lienWaiver: 'Lien Waiver' };
+const STEP_LABELS: Record<string, string> = { planned: 'Planned', gotBids: 'Bids Received', approved: 'Bid Approved', contractGenerated: 'Contract Generated', signed: 'Signed', workStarted: 'Work Started', workCompleted: 'Work Completed', paid: 'Paid', completed: 'Completed' };
 function projectDiff(old: any, p: Project): string[] {
   const out: string[] = [];
   const cmp = (label: string, a: any, b: any, f: (x: any) => string = fmtStr) => { const fa = f(a), fb = f(b); if (fa !== fb) out.push(`${label} ${fa} → ${fb}`); };
@@ -1570,12 +1570,11 @@ api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req
   const key = await storeFile(f.originalname, f.mimetype, f.buffer);
   let leadSteps: any = {};
   for (const proj of rows) {
-    let steps = { ...(proj.steps || {}), signed: true };
-    if (lwSigned) { steps = { ...steps, lienWaiver: true }; }
+    const steps = { ...(proj.steps || {}), signed: true };
     if (proj.id === req.params.id) leadSteps = steps;
     if (lwSigned) {
       // The lien waiver was signed within the executed contract, so that document
-      // also fills the lien-waiver slot (keeps the attachment-derived step true).
+      // also fills the lien-waiver slot (a document only — not a lifecycle step).
       await query(
         `update projects set executed_contract_file_key=$1, executed_contract_file_name=$2,
            lien_waiver_file_key=$1, lien_waiver_file_name=$2, steps=$3, updated_at=now() where id=$4`,
@@ -1592,7 +1591,7 @@ api.post('/projects/:id/executed-contract', memUpload.single('file'), async (req
   res.json({ fileKey: key, fileName: f.originalname, steps: leadSteps, lienWaiverFileKey: lwSigned ? key : null, lienWaiverFileName: lwSigned ? f.originalname : null, combined: rows.length });
 });
 
-/* ---------- Lien waiver upload ---------- */
+/* ---------- Lien waiver upload (document slot only — no lifecycle step) ---------- */
 api.post('/projects/:id/lien-waiver', memUpload.single('file'), async (req, res) => {
   const f = req.file;
   if (!f) return res.status(400).json({ error: 'no file' });
@@ -1601,8 +1600,8 @@ api.post('/projects/:id/lien-waiver', memUpload.single('file'), async (req, res)
   const key = await storeFile(f.originalname, f.mimetype, f.buffer);
   for (const proj of rows) {
     await query(
-      'update projects set lien_waiver_file_key=$1, lien_waiver_file_name=$2, steps=$3, updated_at=now() where id=$4',
-      [key, f.originalname, JSON.stringify({ ...(proj.steps || {}), lienWaiver: true }), proj.id]
+      'update projects set lien_waiver_file_key=$1, lien_waiver_file_name=$2, updated_at=now() where id=$3',
+      [key, f.originalname, proj.id]
     );
   }
   logChange(req, { action: 'contract.lienwaiver', entityType: 'project', entityId: rows[0].id, property: rows[0].property_code, summary: `Lien waiver "${f.originalname}" attached to "${rows[0].name}"${fanoutNote(rows)}` });
@@ -1738,7 +1737,6 @@ api.post('/projects/:id/remove-attachment', async (req, res) => {
       steps.signed = false;
       // A lien waiver signed within the contract shares the same file — it goes too.
       const sharedLW = row.lien_waiver_file_key && row.lien_waiver_file_key === row.executed_contract_file_key;
-      if (sharedLW) steps.lienWaiver = false;
       await query(
         sharedLW
           ? 'update projects set executed_contract_file_key=null, executed_contract_file_name=null, lien_waiver_file_key=null, lien_waiver_file_name=null, steps=$1, updated_at=now() where id=$2'
@@ -1746,8 +1744,8 @@ api.post('/projects/:id/remove-attachment', async (req, res) => {
         [JSON.stringify(steps), row.id]);
       if (sharedLW && row.id === proj.id) label = 'Executed contract (incl. lien waiver signed within)';
     } else if (kind === 'lienWaiver') {
-      steps.lienWaiver = false;
-      await query('update projects set lien_waiver_file_key=null, lien_waiver_file_name=null, steps=$1, updated_at=now() where id=$2', [JSON.stringify(steps), row.id]);
+      // Document only — no lifecycle step to clear.
+      await query('update projects set lien_waiver_file_key=null, lien_waiver_file_name=null, updated_at=now() where id=$1', [row.id]);
     } else {
       await query('update projects set contractor_signed_file_key=null, contractor_signed_file_name=null, updated_at=now() where id=$1', [row.id]);
     }

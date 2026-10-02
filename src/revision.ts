@@ -2,10 +2,10 @@
  * roll a project back identically.
  *
  * A bad contract goes back PAST approval: the office re-picks and re-approves a
- * bid, then regenerates. So this clears every step from `approved` onward (plus
- * the attachment-derived lienWaiver), un-approves all bids, and clears the live
- * contract columns. `planned` and `gotBids` survive — the bids themselves are
- * still on file and still valid as documents.
+ * bid, then regenerates. So this clears every step from `approved` onward,
+ * un-approves all bids, and clears the live contract columns (including the
+ * lien-waiver document slot, which is not a step). `planned` and `gotBids`
+ * survive — the bids themselves are still on file and still valid as documents.
  *
  * Nothing is deleted. The cleared documents move to projects.superseded_contracts
  * so the record of what was wrong, and who called it, survives.
@@ -18,9 +18,8 @@ export interface RevisionResult {
   clearedSteps: string[];
 }
 
-/** Steps a revision clears: approval onward, plus the derived lien-waiver tick. */
-export const REVISION_CLEARS = [...STEP_KEYS.slice(APPROVED_IDX), 'lienWaiver']
-  .filter((k, i, a) => a.indexOf(k) === i);
+/** Steps a revision clears: approval onward. */
+export const REVISION_CLEARS = STEP_KEYS.slice(APPROVED_IDX);
 
 const DOC_COLUMNS: { slot: string; keyCol: string; nameCol: string }[] = [
   { slot: 'generated',        keyCol: 'contract_file_key',           nameCol: 'contract_file_name' },

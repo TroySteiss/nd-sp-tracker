@@ -326,8 +326,10 @@ export interface BudgetItem {
   createdBy: string;
 }
 
-/* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
-   from the executed-contract / lien-waiver attachments) ---------- */
+/* ---------- Lifecycle (9 steps; "signed" is auto-derived from the
+   executed-contract attachment). The lien waiver is NOT a lifecycle step
+   (retired 2026-10-02, migration 035): it remains a document slot on the
+   contract (lienWaiverFileKey) but never counts toward stage/progress. ---------- */
 export const LIFECYCLE = [
   { key: 'planned',           label: 'Planned',                short: 'Plan', desc: 'Scope, anticipated cost and planned timing captured.' },
   { key: 'gotBids',           label: 'Bids Received',          short: 'Bids', desc: 'Bids collected (3 is standard; not always required).' },
@@ -338,7 +340,6 @@ export const LIFECYCLE = [
   { key: 'workCompleted',     label: 'Work Completed',         short: 'Done', desc: 'Contractor completed the work or phase.' },
   { key: 'paid',              label: 'Work Paid For',          short: 'Paid', desc: 'Invoice paid (confirmed by the general ledger).' },
   { key: 'completed',         label: 'Completed',              short: '✓',    desc: 'Work closed out; reflected in the financial statements.' },
-  { key: 'lienWaiver',        label: 'Lien Waiver Received',   short: 'Lien', desc: 'Auto — ticks when the lien waiver is attached.' },
 ] as const;
 
 export const STEP_KEYS: string[] = LIFECYCLE.map(s => s.key);

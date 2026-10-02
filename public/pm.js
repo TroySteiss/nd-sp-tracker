@@ -105,7 +105,7 @@ function stepsPanel(p) {
   const list = $('div', { class: 'steps' });
   S.lifecycle.forEach((s, i) => {
     const on = !!(p.steps && p.steps[s.key]);
-    list.append($('div', { class: 'step' + (on ? ' on' : '') + (s.key === 'lienWaiver' ? ' lien' : '') },
+    list.append($('div', { class: 'step' + (on ? ' on' : '') },
       $('div', { class: 'num' }, on ? '✓' : String(i + 1)),
       $('div', { style: 'min-width:0' },
         $('div', { class: 'nm' }, s.label),

@@ -455,12 +455,7 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .ct-lab{font-weight:600;font-size:12.5px;min-width:150px}
 .ct-drop{border:2px dashed var(--line-2)!important;border-radius:8px;padding:8px 10px;transition:background .15s}
 .ct-ok{font-size:12px;font-weight:700;color:var(--green)}
-.ct-ok.lien{color:#8a63c9}
-
-/* ---- lien waiver: purple completion (track segment + checklist row) ---- */
-.track .seg.done.lien{background:#8a63c9}
-.step.on.lien{border-color:#8a63c9}
-.step.on.lien .num{background:#8a63c9;border-color:#8a63c9;color:#fff}
+.ct-ok.lien{color:#8a63c9}   /* lien-waiver document row in the Contract section (not a lifecycle step) */
 
 /* ---- quarterly summary (Money tab) ---- */
 .qs-card{border:1px solid var(--line);border-radius:10px;padding:12px 14px;margin-bottom:14px;background:var(--panel-2)}

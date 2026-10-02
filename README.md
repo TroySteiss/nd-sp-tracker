@@ -3,8 +3,8 @@
 A shared web tool for tracking special-projects / capital-expenditure work across the
 9-property North Dakota multifamily portfolio (Minot — Holly Haman; Williston — Brittanee Purdue).
 
-It tracks the 12-step project lifecycle (plan → bids → approve → contract → sign → file →
-work → pay → close → lien), per-property cash position and loan terms, and reconciles project
+It tracks the 9-step project lifecycle (plan → bids → approve → contract → sign →
+start → done → pay → close), per-property cash position and loan terms, and reconciles project
 records against the Yardi general ledger. It ingests two spreadsheet feeds — the **SP general
 ledger** and the **cash-cushion report** — and surfaces budgets, projected cash, and
 reconciliation flags. Mid-month cash adjustments layer on top of the monthly snapshot.

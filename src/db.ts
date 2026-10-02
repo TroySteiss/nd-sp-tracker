@@ -71,7 +71,7 @@ export async function propLookup(): Promise<PropLookup> {
 export function rowToProject(r: any, bids: Bid[] = [], notes: ProgressNote[] = [], props?: PropLookup): Project {
   const pr = props?.get(r.property_code);
   // Work Started ticks itself once the planned start date arrives (date-derived,
-  // like signed/lienWaiver mirror their attachments). Derived at READ time on
+  // like signed mirrors the executed-contract attachment). Derived at READ time on
   // every server mapping, persisted whenever the project is next saved.
   const proj: Project = {
     id: r.id,

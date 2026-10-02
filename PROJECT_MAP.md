@@ -2,7 +2,11 @@
 
 > Structural map of this repo so a new session can orient without re-exploring.
 > **Keep this file updated when you change the architecture** (new tables, endpoints, views, build steps).
-> Last updated: 2026-09-08 pm (property view: On hold + Notes moved to their own
+> Last updated: 2026-10-02 (lien waiver retired from the lifecycle — 9 steps now; the
+> lien-waiver DOCUMENT slot stays in the Contract section but never ticks a step or
+> counts toward stage/progress; migration 035 strips the stale `lienWaiver` key from
+> `projects.steps`. Same day: quarterly-summary wording rewritten — see Money tab notes).
+> Previously: 2026-09-08 pm (property view: On hold + Notes moved to their own
 > "Future Projects" panel below Projects; countersign box is draggable +
 > arrow-key nudgeable + "⤓ Stamp on this page" carries the spot to another page
 > for out-of-order scans; app-wide gzip via `compression`; content-visibility
@@ -328,6 +332,14 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
 - `pcolor(code)` reads `property.color` from state (stable hash fallback for unknown codes).
 - `regionNames()` reads `S.regions` (ordered). `appTitle()` reads `S.meta.appTitle`.
 - Quarterly summary groups by `property.portfolio` (`portfolios()`); blank portfolio ⇒ own card.
+  Draft wording (`spendBuckets`/`reportPhrase`/`byPropertyPhrase` in app.js): spend is described
+  per GL category bucket (netted) — the linked project's cleaned name when one project is ≥ half
+  the bucket, else a category phrase from `CAT_PHRASE`. GL remarks are never quoted (Yardi/PO
+  text). `reportPhrase` keeps the first clause, strips unit/SKU/model/qty numbers, caps at 6
+  words, lower-cases except acronyms (AC, LED, HVAC — user wants those kept as typed).
+  Items are grouped by property ("a and b at X; c at Y"),
+  the same work at several sites reads once, and GENERAL/OTHER buckets are left out of the
+  portfolio sentence whenever something more specific exists.
 - Login: username (localStorage-prefilled) + shared team password; rail footer shows user + sign out.
 - Project modal (openProject): core fields → in-house panel → Bids → **Generate contract** panel
   (readiness checklist: bid doc / total / contractor required, approval + owner entity recommended;
@@ -488,7 +500,7 @@ three survive.
 ## Contract revision — send a bad contract back (024)
 
 `src/revision.ts`, shared by both views so they roll back identically. Clears every step from
-`approved` onward plus the derived `lienWaiver`, un-approves all bids, and nulls the four contract
+`approved` onward, un-approves all bids, and nulls the four contract
 document columns. `planned`/`gotBids` survive — the bids are still valid documents. Nothing is
 deleted: the cleared documents move to `projects.superseded_contracts` with who/when/why.
 `POST /projects/:id/request-revision` (open to any signed-in user — spotting a bad contract
@@ -806,8 +818,8 @@ Two rules in `shared/domain.ts` (unit-tested), asymmetric on purpose:
   Derived at READ time in three places that must stay in step: `rowToProject`
   (db.ts — /state and everything built from it), the PM state mapping (pm.ts),
   and the client mirror in app.js `syncDerivedSteps` (same function that mirrors
-  signed/lienWaiver). The DB row is untouched until the next project save
-  persists it — the signed/lienWaiver pattern. Safe because **nothing in the
+  signed). The DB row is untouched until the next project save
+  persists it — the signed pattern. Safe because **nothing in the
   money math reads workStarted** (cashModel keys on approved/paid); it moves the
   funnel segment, the status word and the update-email "future work" list only.
 - **`needsCompletionReview(p, todayIso)`** — a planned end that has STRICTLY

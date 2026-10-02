@@ -7,8 +7,9 @@
    (Postgres). A JSON backup can always be exported/imported.
    ============================================================ */
 
-/* ---------- Lifecycle (10 steps; "signed" and "lienWaiver" are auto-derived
-   from the executed-contract / lien-waiver attachments) ---------- */
+/* ---------- Lifecycle (9 steps; "signed" is auto-derived from the executed-contract
+   attachment). Mirrors LIFECYCLE in shared/domain.ts. The lien waiver is a contract
+   document slot only — not a step (retired 2026-10-02). ---------- */
 const LIFECYCLE = [
   {key:'planned',           label:'Planned',                 short:'Plan', desc:'Scope, anticipated cost and planned timing captured.'},
   {key:'gotBids',           label:'Bids Received',           short:'Bids', desc:'Bids collected (3 is standard; not always required).'},
@@ -19,7 +20,6 @@ const LIFECYCLE = [
   {key:'workCompleted',     label:'Work Completed',          short:'Done', desc:'Contractor completed the work or phase.'},
   {key:'paid',              label:'Work Paid For',           short:'Paid', desc:'Invoice paid (confirmed by the general ledger).'},
   {key:'completed',         label:'Completed',               short:'✓',    desc:'Work closed out; reflected in the financial statements.'},
-  {key:'lienWaiver',        label:'Lien Waiver Received',    short:'Lien', desc:'Auto — ticks when the lien waiver is attached.'},
 ];
 const STEP_KEYS = LIFECYCLE.map(s=>s.key);
 const CATEGORIES = ['APPLIANCES','BUILDING REPAIRS','CABINETS/COUNTERTOPS','CARPETS/VINYL','COMMON AREA UPGRADES','Concrete/Asphalt','DOORS/WINDOWS','DRAPES/BLINDS','ELECTRICAL - EXTERIOR','ELECTRICAL - INTERIOR','ELEVATORS','FENCING','FIRE','FURNITURE/EQUIPMENT','GENERAL','HVAC','INSPECTION EXPENSES','JANITORIAL','LABOR','LANDSCAPING','OTHER','PAINTING - EXTERIOR','PAINTING - INTERIOR','PARKING','PLUMBING','POOL','REPAIR DOWN UNITS','ROOFING','SECURITY CAMERA','SIGNAGE','SUPPLIES','UNIT AMENITIES/UPGRADES','WOOD REPLACEMENT'];
@@ -323,12 +323,12 @@ const CONTRACT_STEPS=['contractGenerated','signed'];
 const naKeys=p=>p.noContract?CONTRACT_STEPS:[];
 const isNA=(p,key)=>!!p.noContract && CONTRACT_STEPS.includes(key);
 /* Steps that are never toggled by hand — they mirror whether the matching
-   attachment exists (executed contract → signed; lien waiver → lienWaiver). */
-const AUTO_STEPS=['signed','lienWaiver'];
+   attachment exists (executed contract → signed). */
+const AUTO_STEPS=['signed'];
 function syncDerivedSteps(p){
   if(!p||p.inHouse)return; p.steps=p.steps||{};
   p.steps.signed=!!p.executedContractFileKey;
-  p.steps.lienWaiver=!!p.lienWaiverFileKey;
+  delete p.steps.lienWaiver;   // retired step (migration 035) — drop the stale key on the next save
   // Work Started ticks itself once the planned start date arrives (inclusive —
   // ON the date counts). One-way: never cleared, so an early manual tick
   // survives. Mirrors syncDateDerivedSteps in domain.ts (the server derives the
@@ -1950,7 +1950,7 @@ function openProject(id,preset){
   // Each bid holds an ordered list of files (first = scope/totals, rest = supporting docs).
   // Normalize legacy single-file bids into the array form.
   p.bids.forEach(bd=>{ if(!Array.isArray(bd.files)) bd.files = bd.fileKey?[{fileKey:bd.fileKey,fileName:bd.fileName,fileSize:bd.fileSize}]:[]; });
-  syncDerivedSteps(p);   // signed / lienWaiver mirror their attachments
+  syncDerivedSteps(p);   // signed mirrors the executed-contract attachment
   const fileSize=n=>n==null?'':n<1024?n+' B':n<1048576?(n/1024).toFixed(0)+' KB':(n/1048576).toFixed(1)+' MB';
   const reg=()=>PROP(p.property)?PROP(p.property).region:'';
 
@@ -3044,7 +3044,8 @@ function openProject(id,preset){
     }
     ctBody.append(eRow);
 
-    // 3) Lien waiver — applicable once a contract is in play; auto-ticks "Lien Waiver Received".
+    // 3) Lien waiver — a document slot once a contract is in play. Not a lifecycle
+    //    step: attaching it never changes stage or progress.
     if(!p.noContract && (p.executedContractFileKey||p.lienWaiverFileKey)){
       const lRow=ctRow('Lien waiver');
       if(p.lienWaiverFileKey){
@@ -3055,7 +3056,7 @@ function openProject(id,preset){
       } else {
         lRow.classList.add('ct-drop');
         const lwBtn=el('button',{class:'btn ghost sm',onclick:()=>lwInput.click()},'⬆ Upload lien waiver');
-        lRow.append(lwBtn, el('span',{class:'bs-meta'},'Auto-ticks “Lien Waiver Received”.'));
+        lRow.append(lwBtn, el('span',{class:'bs-meta'},'Kept with the contract documents.'));
         const lwInput=addDrop(lRow,'.pdf,application/pdf',async file=>{
           lwBtn.disabled=true; lwBtn.textContent='Uploading…';
           const fd=new FormData(); fd.append('file',file);
@@ -3064,8 +3065,7 @@ function openProject(id,preset){
             if(!r.ok){const e=await r.json().catch(()=>({}));toast(e.error||'Upload failed');lwBtn.disabled=false;lwBtn.textContent='⬆ Upload lien waiver';return;}
             const out=await r.json();
             p.lienWaiverFileKey=out.fileKey; p.lienWaiverFileName=out.fileName;
-            p.steps.lienWaiver=true;
-            drawSteps(); refreshGen(); toast('Lien waiver attached');
+            refreshGen(); toast('Lien waiver attached');
           }catch(e){toast('Upload failed: '+e.message);lwBtn.disabled=false;lwBtn.textContent='⬆ Upload lien waiver';}
         });
       }
@@ -3363,7 +3363,7 @@ function openProject(id,preset){
       const na=isNA(p,s.key);
       const auto=AUTO_STEPS.includes(s.key);
       const on=!na && !!p.steps[s.key];
-      const row=el('div',{class:'step'+(on?' on':'')+(na?' na':'')+(s.key==='lienWaiver'?' lien':'')});
+      const row=el('div',{class:'step'+(on?' on':'')+(na?' na':'')});
       row.append(el('div',{class:'num'}, na?'–':(on?'✓':String(i+1))),
         el('div',{style:'flex:1'}, el('div',{class:'nm'},s.label), el('div',{class:'ds'}, na?'Not applicable — no contract needed.':s.desc)));
       if(na){
@@ -3627,9 +3627,9 @@ function buildUpdateEmail(code){
   // Cool tones for committed work; warm tones for the not-in-projections table.
   const COOL_TINTS=[['#dcebe2','#f2f9f5'],['#dde9f4','#f3f8fc'],['#e8e1f5','#f6f3fb'],['#dcebeb','#f1f8f8'],['#e4e7ec','#f4f6f8']];
   const WARM_TINTS=[['#f7ecca','#fcf7e9'],['#f6e0cd','#fbf2ea'],['#f4d9d4','#fbf0ee'],['#f2e3d3','#faf3ea'],['#efe0e0','#f9f2f2']];
-  // Lien-waiver state: filed > received > pending; N/A for in-house / no-contract.
+  // Lien-waiver document on file? (attachment, not a lifecycle step); N/A for in-house / no-contract.
   const lienCell=x=>{ if(isInHouse(x)||x.noContract) return '—';
-    const s=x.steps||{}; return s.lienWaiver?'Received':'Pending'; };
+    return x.lienWaiverFileKey?'Received':'Pending'; };
   const projTable=(list,tints,full)=>{
     const order=[]; const by=new Map();
     list.forEach(x=>{ const lab=projStatusLabel(x); if(!by.has(lab)){by.set(lab,[]);order.push(lab);} by.get(lab).push(x); });
@@ -5296,72 +5296,163 @@ const qtrOf=iso=>{ const m=+String(iso||'').slice(5,7); return m?Math.ceil(m/3):
 function qRange(y,q){ const endM=q*3; const last=new Date(y,endM,0).getDate();
   return [`${y}-${String(endM-2).padStart(2,'0')}-01`, `${y}-${String(endM).padStart(2,'0')}-${String(last).padStart(2,'0')}`]; }
 const glForQuarter=(code,y,q)=>{ const [s,e]=qRange(y,q); return S.gl.filter(g=>{ const d=isoDateOf(g.date); return g.property===code&&d&&d>=s&&d<=e; }); };
-// Human-ish description of a GL line: linked project name > remarks > vendor > category.
-function glDesc(g){
-  const linked=g.linkedProjectId&&S.projects.find(p=>p.id===g.linkedProjectId);
-  let d=String((linked&&linked.name)||g.remarks||g.vendor||g.category||'miscellaneous work').trim();
-  if(d===d.toUpperCase()) d=d.toLowerCase();
-  return d.replace(/\.$/,'');
+/* ---- report wording ----
+   Investor-report drafts are read by owners, so they stay high-level: a
+   quarter's spend is described by what KIND of work it was, grouped by
+   property, rather than by echoing Yardi remarks (SKUs, model numbers,
+   truncated PO text) or raw tracker names ("Apt #1300 306 - per Bobby"). */
+const CAT_PHRASE={
+  'APPLIANCES':'appliance replacements', 'BUILDING REPAIRS':'building repairs',
+  'CABINETS/COUNTERTOPS':'cabinet and countertop upgrades', 'CARPETS/VINYL':'flooring replacements',
+  'COMMON AREA UPGRADES':'common area upgrades', 'CONCRETE/ASPHALT':'concrete and asphalt work',
+  'DOORS/WINDOWS':'door and window replacements', 'DRAPES/BLINDS':'window treatments',
+  'ELECTRICAL - EXTERIOR':'exterior electrical work', 'ELECTRICAL - INTERIOR':'interior electrical work',
+  'ELEVATORS':'elevator repairs', 'FENCING':'fencing', 'FIRE':'fire and life-safety upgrades',
+  'FURNITURE/EQUIPMENT':'furniture and equipment', 'GENERAL':'general property improvements',
+  'HVAC':'HVAC replacements', 'INSPECTION EXPENSES':'inspection expenses', 'JANITORIAL':'janitorial work',
+  'LABOR':'labor', 'LANDSCAPING':'landscaping', 'OTHER':'miscellaneous improvements',
+  'PAINTING - EXTERIOR':'exterior painting', 'PAINTING - INTERIOR':'interior painting',
+  'PARKING':'parking lot work', 'PLUMBING':'plumbing repairs', 'POOL':'pool improvements',
+  'REPAIR DOWN UNITS':'down-unit repairs', 'ROOFING':'roofing', 'SECURITY CAMERA':'security cameras',
+  'SIGNAGE':'signage', 'SUPPLIES':'supplies', 'UNIT AMENITIES/UPGRADES':'unit upgrades',
+  'WOOD REPLACEMENT':'wood replacement' };
+const catPhrase=cat=>{ const k=String(cat||'').trim().toUpperCase();
+  return CAT_PHRASE[k]||(k?k.toLowerCase().replace(/\s*-\s*/g,' ').replace(/\//g,' and '):CAT_PHRASE.GENERAL); };
+const ACRONYM=/^[A-Z]{2,5}$/;                       // AC, LED, HVAC — keep as typed
+const STOP_WORDS=new Set(['in','at','by','between','for','that','on','to','with','per','need','needs','near','of','and','or','the','a','an']);
+// Project name → report wording. First clause only; unit numbers, SKUs,
+// model/qty/PO noise and dates removed; ≤6 words; lower-cased except acronyms
+// (the names sit mid-sentence, and tracker capitalisation is inconsistent).
+// Returns '' when nothing readable survives (caller falls back to the category phrase).
+function reportPhrase(raw){
+  let s=String(raw||'').split(/\r?\n/)[0];
+  s=s.replace(/^U=\S+\s*:?\s*/i,'')                              // Yardi unit prefix "U=05-303 :"
+     .replace(/\bPO amount.*$/i,'').replace(/\bamp;/g,'&')
+     .replace(/\b(SKU|Model|Item|Part)\s*#?\s*:?\s*[\w-]*\d[\w-]*/gi,'')
+     .replace(/\bQTY\s*:?\s*\d+/gi,'').replace(/\b\d{1,2}\/\d{1,2}\/\d{2,4}\b/g,'');
+  if(s===s.toUpperCase()) s=s.toLowerCase();                      // ALL-CAPS Yardi text
+  s=s.replace(/^[\s*:#\-–—|]+/,'').split(/\s[-–—]\s|\s*[|;(,:]\s*|\s+-\s*|\s*-\s+/)[0]||'';
+  // drop "apt #1300 306", "unit 308", "bldg 16", "1125-208", "#691-1A"
+  s=s.replace(/\b(apt|apartment|unit|units|bldg|building|no\.?)\s*#?\s*\d[\w-]*(\s+\d[\w-]*)*/gi,'')
+     .replace(/#?\b\S*\d\S*\b/g,'').replace(/[#*]/g,'').replace(/\s*&\s*/g,' and ');
+  let words=s.split(/\s+/).filter(w=>/[a-z]/i.test(w)).map(w=>w.replace(/^[^\w]+|[^\w)]+$/g,'')).filter(Boolean);
+  if(words.length>6){ const cut=words.findIndex((w,i)=>i>=2&&STOP_WORDS.has(w.toLowerCase()));   // first clause only
+    if(cut>0) words=words.slice(0,cut);
+    if(words.length>7) words=words.slice(0,6); }
+  while(words.length&&STOP_WORDS.has(words[words.length-1].toLowerCase())) words.pop();   // no dangling "near"/"and"
+  words=words.map(w=>ACRONYM.test(w)?w:w.toLowerCase());
+  const letters=words.join('').replace(/[^a-z]/gi,'').length;
+  if(letters<5||!words.some(w=>w.replace(/[^a-z]/gi,'').length>=4)) return '';
+  return words.join(' ');
 }
-const lcFirst=s=>{ s=String(s).trim().replace(/\.$/,''); return /^[A-Z][a-z]/.test(s)?s.charAt(0).toLowerCase()+s.slice(1):s; };
+// Drop repeats and near-repeats ("concrete replacement" next to "concrete step
+// replacement" — keep the fuller one). Order is preserved.
+function dedupePhrases(list){
+  const toks=s=>new Set(s.toLowerCase().split(/\s+/));
+  const out=[];
+  list.forEach(s=>{ if(!s)return; const t=toks(s);
+    if(out.some(o=>{ const ot=toks(o); return [...t].every(x=>ot.has(x)); })) return;   // subset of a kept one
+    for(let i=out.length-1;i>=0;i--){ const ot=toks(out[i]); if([...ot].every(x=>t.has(x))) out.splice(i,1); }  // kept one is a subset of this
+    out.push(s); });
+  return out;
+}
+const propName=code=>(PROP(code)||{}).name||code;
+const joinSerial=arr=>{ arr=arr.filter(Boolean); if(arr.length<=1)return arr[0]||''; if(arr.length===2)return arr[0]+' and '+arr[1];
+  return arr.slice(0,-1).join(', ')+', and '+arr[arr.length-1]; };
 const joinAnd=arr=>{ arr=arr.filter(Boolean); if(!arr.length)return ''; if(arr.length===1)return arr[0];
   if(arr.length===2)return arr[0]+' as well as '+arr[1];
   return arr.slice(0,-1).join(', ')+', as well as '+arr[arr.length-1]; };
+// [{code,desc}] in priority order → "a and b at Cottonwood, c at Legacy
+// Heights, as well as d at River Ridge". The same kind of work at several
+// sites reads once ("roofing at Cottonwood and River Ridge"). Semicolons take
+// over when a group itself holds a comma list. Caps per group and overall,
+// trimming from the lowest-priority groups first.
+function byPropertyPhrase(entries,maxPerProp,maxTotal){
+  entries=entries.filter(e=>e.desc);
+  const sites=new Map();                                   // desc → codes it appears at
+  entries.forEach(e=>{ const k=e.desc.toLowerCase(); const c=sites.get(k)||[]; if(!c.includes(e.code))c.push(e.code); sites.set(k,c); });
+  let groups=[]; const byCode=new Map();
+  entries.forEach(e=>{ const k=e.desc.toLowerCase();
+    if(sites.get(k).length>1){ if(!groups.some(g=>g.key===k)) groups.push({key:k,list:[e.desc],where:sites.get(k).map(propName)}); return; }
+    if(!byCode.has(e.code)){ const g={key:e.code,list:[],where:[propName(e.code)]}; byCode.set(e.code,g); groups.push(g); }
+    byCode.get(e.code).list.push(e.desc); });
+  groups.forEach(g=>{ g.list=dedupePhrases(g.list).slice(0,maxPerProp); });
+  let n=groups.reduce((a,g)=>a+g.list.length,0);
+  for(let i=groups.length-1;i>=0&&n>maxTotal;i--){ while(groups[i].list.length>1&&n>maxTotal){groups[i].list.pop();n--;} }
+  while(groups.length>1&&n>maxTotal){ n-=groups.pop().list.length; }       // still over: drop whole low-priority groups
+  groups=groups.filter(g=>g.list.length);
+  const strs=groups.map(g=>joinSerial(g.list)+' at '+joinSerial(g.where));
+  if(strs.length>2&&strs.some(s=>s.includes(', '))) return strs.slice(0,-1).join('; ')+'; and '+strs[strs.length-1];
+  return joinAnd(strs);
+}
 // Pipeline items that read as "future" work: discussed / notes / on hold / approved but not yet started.
 function futureSPList(code){
-  const seen=new Set();
-  return projForProp(code)
+  return dedupePhrases(projForProp(code)
     .filter(p=>!isComplete(p)&&!isPaidP(p)&&!(p.steps&&p.steps.workStarted)&&phase(p)!=='done'&&!isATL(p))
     .sort((a,b)=>projOutflow(b)-projOutflow(a))
-    .map(p=>lcFirst(p.name)).filter(Boolean)
-    .filter(n=>{ const k=n.toLowerCase(); if(seen.has(k))return false; seen.add(k); return true; });
+    .map(p=>reportPhrase(p.name)).filter(Boolean));
 }
 function qSpend(code,y,q){
   const lines=glForQuarter(code,y,q);
   const interest=lines.filter(isInterestGL).reduce((a,g)=>a+Math.abs(+g.amount||0),0);
   const total=lines.filter(g=>!isInterestGL(g)).reduce((a,g)=>a+(+g.amount||0),0);
-  const items=lines.filter(g=>!isInterestGL(g)&&(+g.amount||0)>0).sort((a,b)=>b.amount-a.amount);
-  return {total,interest,items};
+  return {total,interest,lines:lines.filter(g=>!isInterestGL(g))};
 }
-function topDescs(items,limit,withProp){
-  const out=[],seen=new Set();
-  for(const it of items){
-    const g=it.g||it, code=it.code;
-    let d=glDesc(g); const k=d.toLowerCase();
-    if(seen.has(k))continue; seen.add(k);
-    if(withProp&&code){ const nm=(PROP(code)||{}).name||code; d+=' at '+nm; }
-    out.push({d,amt:+g.amount});
-    if(out.length>=limit)break;
-  }
-  return out;
+// A property's quarter spend as readable buckets, one per GL category, netted
+// (so a reclass or credit offsets what it reverses), largest first. A bucket is
+// described by its linked project's name when one project accounts for at
+// least half of it, else by the category phrase. GL remarks are never used:
+// they are Yardi/PO text (SKUs, truncated descriptions, accrual notes), not
+// report language. `catchAll` marks GENERAL/OTHER buckets with no project
+// name, so the portfolio draft can leave the vague ones out.
+function spendBuckets(code,y,q){
+  const by=new Map();
+  qSpend(code,y,q).lines.forEach(g=>{
+    const cat=String(g.category||'GENERAL').trim().toUpperCase(), amt=+g.amount||0;
+    const b=by.get(cat)||{code,cat,amt:0,names:new Map()}; b.amt+=amt;
+    const linked=g.linkedProjectId&&S.projects.find(p=>p.id===g.linkedProjectId);
+    const nm=linked?reportPhrase(linked.name):'';
+    if(nm&&amt>0){ const k=nm.toLowerCase(), e=b.names.get(k)||{amt:0,phrase:nm}; e.amt+=amt; b.names.set(k,e); }
+    by.set(cat,b);
+  });
+  return [...by.values()].filter(b=>b.amt>0).map(b=>{
+    let best=null; b.names.forEach(e=>{ if(!best||e.amt>best.amt)best=e; });
+    const named=!!best&&best.amt>=b.amt*0.5;
+    b.desc=named?best.phrase:catPhrase(b.cat);
+    b.catchAll=!named&&/^(GENERAL|OTHER)$/.test(b.cat);
+    return b;
+  }).sort((a,b)=>b.amt-a.amt);
 }
 function propQuarterDraft(code,y,q){
-  const {total,interest,items}=qSpend(code,y,q);
+  const {total,interest}=qSpend(code,y,q);
   const parts=[];
   parts.push(total>500?`${fmtQK(total)} was spent on Special Projects throughout the quarter.`
                       :'Special Projects spend was minimal during the quarter.');
-  const ds=topDescs(items,4,false);
-  if(ds.length){
-    parts.push(`The largest cost incurred was attributed to ${ds[0].d} (${fmtQK(ds[0].amt)}).`);
-    if(ds.length>1) parts.push(`Other costs included ${joinAnd(ds.slice(1).map(x=>x.d))}.`);
+  const bs=spendBuckets(code,y,q);
+  if(bs.length&&total>500){
+    parts.push(`The largest cost incurred was attributed to ${bs[0].desc} (${fmtQK(bs[0].amt)}).`);
+    const rest=dedupePhrases(bs.slice(1,4).map(b=>b.desc));
+    if(rest.length) parts.push(`Other costs included ${joinAnd(rest)}.`);
   }
   if(interest>500) parts.push(`The property benefited from ${fmtQK(interest)} of interest income accrued throughout the quarter, resulting in an effective SP cost of ${fmtQK(total-interest)}.`);
-  const fut=futureSPList(code).slice(0,7);
+  const fut=futureSPList(code).slice(0,6);
   if(fut.length) parts.push(`Future Special Projects could include ${joinAnd(fut)}.`);
   return parts.join('  ');
 }
 function portQuarterDraft(pf,y,q){
-  let total=0,interest=0; const items=[];
-  pf.props.forEach(code=>{ const s=qSpend(code,y,q); total+=s.total; interest+=s.interest; s.items.forEach(g=>items.push({g,code})); });
-  items.sort((a,b)=>b.g.amount-a.g.amount);
-  const parts=[`${fmtQK(total)} was spent on Special Projects during the quarter.`];
-  const ds=topDescs(items,4,true);
-  if(ds.length) parts.push(`Special Projects included costs associated with ${joinAnd(ds.map(x=>x.d))}.`);
+  let total=0,interest=0; const buckets=[];
+  pf.props.forEach(code=>{ const s=qSpend(code,y,q); total+=s.total; interest+=s.interest; buckets.push(...spendBuckets(code,y,q)); });
+  buckets.sort((a,b)=>b.amt-a.amt);
+  const specific=buckets.filter(b=>!b.catchAll);          // "general property improvements" only when it is all there is
+  const parts=[total>500?`${fmtQK(total)} was spent on Special Projects during the quarter.`
+                        :'Special Projects spend was minimal during the quarter.'];
+  const spend=byPropertyPhrase((specific.length?specific:buckets).slice(0,8),3,6);
+  if(spend&&total>500) parts.push(`Special Projects included ${spend}.`);
   if(interest>500) parts.push(`The portfolio did benefit from ${fmtQK(interest)} of interest income accrued throughout the quarter, resulting in an effective SP cost of ${fmtQK(total-interest)}.`);
   const fut=[];
-  pf.props.forEach(code=>{ const nm=(PROP(code)||{}).name||code;
-    futureSPList(code).slice(0,3).forEach(f=>fut.push(`${f} at ${nm}`)); });
-  if(fut.length) parts.push(`Future Special Projects may include ${joinAnd(fut.slice(0,8))}.`);
+  pf.props.forEach(code=>futureSPList(code).slice(0,3).forEach(desc=>fut.push({code,desc})));
+  const future=byPropertyPhrase(fut,3,8);
+  if(future) parts.push(`Future Special Projects may include ${future}.`);
   parts.push('On top of these projects, we intend to also continue to address curb appeal items and other minor building repairs throughout the portfolio, as our attention to street appeal and resident satisfaction has allowed for further rental growth and sustained occupancy.');
   return parts.join('  ');
 }

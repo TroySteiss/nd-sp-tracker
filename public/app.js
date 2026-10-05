@@ -5307,7 +5307,7 @@ const CAT_PHRASE={
   'COMMON AREA UPGRADES':'common area upgrades', 'CONCRETE/ASPHALT':'concrete and asphalt work',
   'DOORS/WINDOWS':'door and window replacements', 'DRAPES/BLINDS':'window treatments',
   'ELECTRICAL - EXTERIOR':'exterior electrical work', 'ELECTRICAL - INTERIOR':'interior electrical work',
-  'ELEVATORS':'elevator repairs', 'FENCING':'fencing', 'FIRE':'fire and life-safety upgrades',
+  'ELEVATORS':'elevator repairs', 'FENCING':'fencing', 'FIRE':'fire safety upgrades',
   'FURNITURE/EQUIPMENT':'furniture and equipment', 'GENERAL':'general property improvements',
   'HVAC':'HVAC replacements', 'INSPECTION EXPENSES':'inspection expenses', 'JANITORIAL':'janitorial work',
   'LABOR':'labor', 'LANDSCAPING':'landscaping', 'OTHER':'miscellaneous improvements',
@@ -5364,24 +5364,32 @@ const joinAnd=arr=>{ arr=arr.filter(Boolean); if(!arr.length)return ''; if(arr.l
   return arr.slice(0,-1).join(', ')+', as well as '+arr[arr.length-1]; };
 // [{code,desc}] in priority order → "a and b at Cottonwood, c at Legacy
 // Heights, as well as d at River Ridge". The same kind of work at several
-// sites reads once ("roofing at Cottonwood and River Ridge"). Semicolons take
-// over when a group itself holds a comma list. Caps per group and overall,
-// trimming from the lowest-priority groups first.
-function byPropertyPhrase(entries,maxPerProp,maxTotal){
+// sites reads once ("roofing at Cottonwood and River Ridge"); at EVERY site in
+// `allCodes` it reads "across the portfolio" instead of a roll-call, and when
+// everything is portfolio-wide the tail is said once ("a as well as b across
+// the portfolio"). Site lists follow the portfolio's own order. Semicolons
+// take over when a group itself holds a comma list. Caps per group and
+// overall, trimming from the lowest-priority groups first.
+function byPropertyPhrase(entries,maxPerProp,maxTotal,allCodes){
   entries=entries.filter(e=>e.desc);
+  allCodes=allCodes||[...new Set(entries.map(e=>e.code))];
+  const order=c=>{ const i=allCodes.indexOf(c); return i<0?1e9:i; };
   const sites=new Map();                                   // desc → codes it appears at
   entries.forEach(e=>{ const k=e.desc.toLowerCase(); const c=sites.get(k)||[]; if(!c.includes(e.code))c.push(e.code); sites.set(k,c); });
   let groups=[]; const byCode=new Map();
   entries.forEach(e=>{ const k=e.desc.toLowerCase();
-    if(sites.get(k).length>1){ if(!groups.some(g=>g.key===k)) groups.push({key:k,list:[e.desc],where:sites.get(k).map(propName)}); return; }
-    if(!byCode.has(e.code)){ const g={key:e.code,list:[],where:[propName(e.code)]}; byCode.set(e.code,g); groups.push(g); }
+    if(sites.get(k).length>1){ if(!groups.some(g=>g.key===k)) groups.push({key:k,list:[e.desc],codes:sites.get(k).slice()}); return; }
+    if(!byCode.has(e.code)){ const g={key:e.code,list:[],codes:[e.code]}; byCode.set(e.code,g); groups.push(g); }
     byCode.get(e.code).list.push(e.desc); });
-  groups.forEach(g=>{ g.list=dedupePhrases(g.list).slice(0,maxPerProp); });
+  groups.forEach(g=>{ g.list=dedupePhrases(g.list).slice(0,maxPerProp);
+    g.codes.sort((a,b)=>order(a)-order(b));
+    g.wide=allCodes.length>1&&allCodes.every(c=>g.codes.includes(c)); });
   let n=groups.reduce((a,g)=>a+g.list.length,0);
   for(let i=groups.length-1;i>=0&&n>maxTotal;i--){ while(groups[i].list.length>1&&n>maxTotal){groups[i].list.pop();n--;} }
   while(groups.length>1&&n>maxTotal){ n-=groups.pop().list.length; }       // still over: drop whole low-priority groups
   groups=groups.filter(g=>g.list.length);
-  const strs=groups.map(g=>joinSerial(g.list)+' at '+joinSerial(g.where));
+  if(groups.length&&groups.every(g=>g.wide)) return joinAnd(groups.map(g=>joinSerial(g.list)))+' across the portfolio';
+  const strs=groups.map(g=>joinSerial(g.list)+(g.wide?' across the portfolio':' at '+joinSerial(g.codes.map(propName))));
   if(strs.length>2&&strs.some(s=>s.includes(', '))) return strs.slice(0,-1).join('; ')+'; and '+strs[strs.length-1];
   return joinAnd(strs);
 }
@@ -5446,12 +5454,12 @@ function portQuarterDraft(pf,y,q){
   const specific=buckets.filter(b=>!b.catchAll);          // "general property improvements" only when it is all there is
   const parts=[total>500?`${fmtQK(total)} was spent on Special Projects during the quarter.`
                         :'Special Projects spend was minimal during the quarter.'];
-  const spend=byPropertyPhrase((specific.length?specific:buckets).slice(0,8),3,6);
+  const spend=byPropertyPhrase((specific.length?specific:buckets).slice(0,8),3,6,pf.props);
   if(spend&&total>500) parts.push(`Special Projects included ${spend}.`);
   if(interest>500) parts.push(`The portfolio did benefit from ${fmtQK(interest)} of interest income accrued throughout the quarter, resulting in an effective SP cost of ${fmtQK(total-interest)}.`);
   const fut=[];
   pf.props.forEach(code=>futureSPList(code).slice(0,3).forEach(desc=>fut.push({code,desc})));
-  const future=byPropertyPhrase(fut,3,8);
+  const future=byPropertyPhrase(fut,3,8,pf.props);
   if(future) parts.push(`Future Special Projects may include ${future}.`);
   parts.push('On top of these projects, we intend to also continue to address curb appeal items and other minor building repairs throughout the portfolio, as our attention to street appeal and resident satisfaction has allowed for further rental growth and sustained occupancy.');
   return parts.join('  ');

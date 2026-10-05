@@ -338,8 +338,10 @@ handlers; errors flow to a JSON 500 middleware in server.ts instead of crashing 
   text). `reportPhrase` keeps the first clause, strips unit/SKU/model/qty numbers, caps at 6
   words, lower-cases except acronyms (AC, LED, HVAC — user wants those kept as typed).
   Items are grouped by property ("a and b at X; c at Y"),
-  the same work at several sites reads once, and GENERAL/OTHER buckets are left out of the
-  portfolio sentence whenever something more specific exists.
+  the same work at several sites reads once, work at EVERY site reads "across the portfolio"
+  (said once at the end when everything is portfolio-wide), site lists follow the portfolio's
+  property order, and GENERAL/OTHER buckets are left out of the portfolio sentence whenever
+  something more specific exists.
 - Login: username (localStorage-prefilled) + shared team password; rail footer shows user + sign out.
 - Project modal (openProject): core fields → in-house panel → Bids → **Generate contract** panel
   (readiness checklist: bid doc / total / contractor required, approval + owner entity recommended;

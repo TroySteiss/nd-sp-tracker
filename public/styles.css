@@ -329,8 +329,14 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 
 /* ---- locked property header ---- */
 .prop-head{flex-direction:column;align-items:stretch;gap:12px;padding-top:14px;padding-bottom:14px}
-.prop-head .ph-row1{display:flex;align-items:center;gap:16px}
-.prop-head .ph-actions{display:flex;align-items:center;gap:8px;margin-left:auto}
+.prop-head .ph-row1{display:flex;align-items:center;gap:10px 16px;flex-wrap:wrap}
+/* The title keeps a sane minimum width; when the action buttons no longer fit
+   beside it (narrow windows, compacted sidebar views) they drop to their own
+   row instead of squeezing the name into one word per line. */
+.prop-head .ph-row1 .tt{flex:1 1 260px;min-width:0}
+.prop-head .ph-row1 .crumb{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.prop-head .ph-row1 h2{overflow-wrap:normal;word-break:normal}
+.prop-head .ph-actions{display:flex;align-items:center;gap:8px;margin-left:auto;flex-wrap:wrap;justify-content:flex-end}
 .headstats{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:10px}
 .hstat{background:var(--panel-2);border:1px solid var(--line-2);border-left:3px solid var(--line);border-radius:9px;padding:8px 11px;min-width:0}
 .hstat .hs-lab{font-size:10px;text-transform:uppercase;letter-spacing:.05em;color:var(--ink-3);font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
@@ -339,7 +345,7 @@ details.acc[open]>summary .chev{transform:rotate(90deg)}
 .hstat.tone-good{border-left-color:var(--green);background:var(--green-soft)} .hstat.tone-good .hs-val{color:var(--green)}
 .hstat.tone-warn{border-left-color:var(--amber);background:var(--amber-soft)} .hstat.tone-warn .hs-val{color:var(--amber)}
 .hstat.tone-bad{border-left-color:var(--rust);background:var(--rust-soft)} .hstat.tone-bad .hs-val{color:var(--rust)}
-@media(max-width:820px){.headstats{grid-template-columns:repeat(2,1fr)}.prop-head .ph-row1{flex-wrap:wrap}}
+@media(max-width:820px){.headstats{grid-template-columns:repeat(2,1fr)}}
 
 /* ---- bubble toggle filters ---- */
 .dash-filter{display:flex;flex-direction:column;gap:8px}

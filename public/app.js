@@ -2273,11 +2273,24 @@ function openProject(id,preset){
       const u=Number((PROP(a.property)||{}).units)||0;
       /* Custom mode (2026-10-16): edit EITHER the % or the $ — typing a dollar
          amount derives the % (what is stored; shares stay a ratio of the cost
-         everywhere else). Stored at 2 decimals, so a cents-level drift between
-         the typed amount and the re-derived one is possible on large totals. */
-      const shareCell=(p.split.mode==='custom'&&total)
-        ? td(el('input',{type:'number',step:'0.01',value:round2(total*(Number(a.pct)||0)/100),style:'width:110px;text-align:right',
-            onchange:e=>{const amt=Number(e.target.value)||0;a.pct=round2(Math.max(0,amt)/total*100);drawSplit();}}),'r')
+         everywhere else). With no actual cost locking the total, the dollar
+         shares BUILD the cost: other rows keep their current dollars, this row
+         takes the typed one, and the anticipated cost becomes their sum — so
+         allocation can start from amounts with nothing entered above. Stored at
+         2 decimals, so cents-level drift on re-display is possible. */
+      const costLocked=p.actualCost!=null&&p.actualCost!=='';
+      const shareCell=(p.split.mode==='custom')
+        ? td(el('input',{type:'number',step:'0.01',value:total?round2(total*(Number(a.pct)||0)/100):'',placeholder:'$ amount',style:'width:110px;text-align:right',
+            onchange:e=>{
+              const amt=Math.max(0,Number(e.target.value)||0);
+              if(costLocked&&total){ a.pct=round2(amt/total*100); drawSplit(); return; }   // actuals fix the total — convert against it
+              const amts=p.split.list.map(x=>x===a?amt:round2((total||0)*(Number(x.pct)||0)/100));
+              const sum=round2(amts.reduce((s,v)=>s+v,0));
+              p.anticipatedCost=sum>0?sum:null;
+              p.split.list.forEach((x,i2)=>{ if(sum>0)x.pct=round2(amts[i2]/sum*100); });
+              if(typeof antInp!=='undefined'){ antInp.value=sum>0?sum:''; antInp.dispatchEvent(new Event('input',{bubbles:true})); }  // cost side-effects incl. redraw
+              drawSplit();
+            }}),'r')
         : el('td',{class:'num r'},total?fmt(total*(Number(a.pct)||0)/100):'—');
       const pctCell=p.split.mode==='custom'
         ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=round2(Number(e.target.value)||0);drawSplit();}}),'r')
@@ -2295,7 +2308,9 @@ function openProject(id,preset){
       const dollarGap=total?` (shares total ${fmt(total*sum/100)} of the ${fmt(total)} cost)`:'';
       splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Shares total ${Math.round(sum*100)/100}%${dollarGap} — they must equal 100% of the cost to save.`));
     }
-    if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},'Enter an anticipated or actual cost above to '+(p.split.mode==='custom'?'type dollar shares':'see dollar shares')+'.'));
+    if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},p.split.mode==='custom'
+      ?'Type a dollar share per property — the anticipated cost is set to their sum.'
+      :'Enter an anticipated or actual cost above to see dollar shares.'));
   }
   b.append(splitPanel);
   drawSplit();

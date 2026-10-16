@@ -533,8 +533,28 @@ export function exhibitText(doc: PDFDocument, roman: PDFFont, bold: PDFFont, bod
   center(head1, 13, bold);
   center(head2, 11, bold);
   y -= 10;
-  // wrap body paragraphs
-  for (const para of body.split('\n')) {
+  const paras = body.split('\n');
+  // Height a paragraph will occupy, mirroring the draw loop below exactly —
+  // wrapped lines at LEADING each, plus the 6pt paragraph gap (blank line: 10pt).
+  const heightOf = (para: string): number => {
+    if (para.trim() === '') return 10;
+    let line = '', n = 0;
+    for (const wd of para.split(/\s+/)) {
+      const test = line ? line + ' ' + wd : wd;
+      if (roman.widthOfTextAtSize(test, 11) > CONTENT_W && line) { n++; line = wd; } else line = test;
+    }
+    return (n + (line ? 1 : 0)) * LEADING + 6;
+  };
+  // Keep the sign-off together: on a 16-entity portfolio contract the lien
+  // waiver's Signature/Name/Company/Title lines used to break mid-block,
+  // stranding a lone "Date: ____" on an otherwise blank page. When everything
+  // REMAINING is one short tail that can't fit, break first so the whole block
+  // lands on one page.
+  const KEEP_TOGETHER = 230;
+  for (let i = 0; i < paras.length; i++) {
+    const para = paras[i];
+    const rest = paras.slice(i).reduce((s, p2) => s + heightOf(p2), 0);
+    if (rest <= KEEP_TOGETHER && y - rest < BOTTOM && y < TOP) { page = doc.addPage([PAGE_W, PAGE_H]); y = TOP; }
     if (para.trim() === '') { y -= 10; continue; }
     const words = para.split(/\s+/);
     let line = '';

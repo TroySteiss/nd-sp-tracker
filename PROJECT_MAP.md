@@ -102,6 +102,10 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   Custom mode (2026-10-16, per Troy): the Cost-allocation table takes EITHER a % or a **$ amount**
   per property — a typed amount derives the stored pct (2dp, so cents-level drift on re-display is
   possible on large totals); the ≠100% warning also reports the dollar shortfall vs the cost.
+  With no actual cost locking the total, the $ inputs are live even on a costless project and the
+  dollar shares BUILD the cost: other rows keep their current dollars and the anticipated cost
+  becomes the sum (synced into the cost field so its side-effects run). An actual cost fixes the
+  total; typed amounts then convert against it as before.
   - **The editor's Properties field IS the control** — a dropdown (`.cat-dd` pattern, grouped by
     region) that is **single-select by default**, with a "⇄ Split across multiple properties" switch
     at the foot of the list that swaps the rows over to checkboxes (`propSplitMode`, initialised
@@ -549,6 +553,12 @@ Contractor" section now cites it ("…agreed upon in writing as a change order, 
 attached as Exhibit E hereto and made part hereof") — that wording change reflows the body, so the
 sigAnchor moves with it (verified via contract-snapshot diff: only the sentence, the reflow and the
 new final page differ). The FILLED change order remains change-order.ts.
+
+**Exhibit sign-off keep-together (2026-10-16, per Troy)**: `exhibitText` (Exhibits C/D in both
+templates) pre-measures each paragraph and, when everything REMAINING is one short tail (≤230pt)
+that can't fit before BOTTOM, breaks the page first — on a 16-entity portfolio contract the Final
+Lien Waiver's Signature/Name/Company/Title lines used to split, stranding a lone "Date: ____" on an
+otherwise blank page. Short documents are unaffected (SP snapshot text-identical).
 
 UI: *Generate contract → Tailor this contract → 🔍 Review bid pages* opens a pdf.js previewer
 (`openScopePreviewer` in app.js) — pages with include/exclude checkboxes, drag to draw

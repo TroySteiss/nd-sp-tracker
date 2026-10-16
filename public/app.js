@@ -4054,9 +4054,17 @@ async function openMultiContract(){
   /* Default the representatives from the same contacts the notices use
      (2026-10-16, per Troy): the ticked regions' AM & RM plus the signed-in
      user, names looked up from the roster by email. Only fires while every
-     rep row is still blank, so typed reps are never overwritten. */
+     rep row is still blank, so typed reps are never overwritten. When a ticked
+     region is missing AM/RM emails, say so instead of silently defaulting to
+     the signed-in user alone. */
+  const repsGap=el('p',{class:'bs-hint',style:'display:none;margin:8px 0 0;color:var(--rust)'});
   defaultReps=()=>{
-    if(!d.properties.length) return;
+    if(!d.properties.length){ repsGap.style.display='none'; return; }
+    const regionsTicked=[...new Set(d.properties.map(c=>(PROP(c)||{}).region).filter(Boolean))];
+    const missing=regionsTicked.filter(rn=>{ const rr=(S.regions||[]).find(x=>x.name===rn)||{};
+      return !String(rr.amEmail||'').trim()||!String(rr.rmEmail||'').trim(); });
+    repsGap.style.display=missing.length?'':'none';
+    if(missing.length) repsGap.textContent='⚠ '+missing.join(', ')+(missing.length===1?' is':' are')+' missing an AM or RM email — fill them in Settings ▸ Regions and the representatives (and notice emails) default automatically.';
     if(d.ownerReps.some(r2=>String(r2.name||'').trim()||String(r2.email||'').trim())) return;
     const seen=new Set(), reps=[];
     const add=(name,email)=>{ email=String(email||'').trim(); if(!email)return;
@@ -4067,6 +4075,7 @@ async function openMultiContract(){
     if(reps.length){ d.ownerReps=reps; renderReps(); }
   };
   renderReps();
+  rBody.append(repsGap);
   defaultReps();   // a resumed draft may already have properties ticked
   rBody.append(el('p',{class:'bs-hint',style:'margin:0 0 10px'},'Named in Section 1 and again in the Owner\'s Representatives section, which is where copies of every notice must go.'),repsWrap);
   body.append(rPanel);

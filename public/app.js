@@ -2632,15 +2632,18 @@ function openProject(id,preset){
   function openMultiFromProject(){
     const approved=p.bids.find(b2=>b2.approved)||{};
     const total=projOutflow(p);
+    const usdM=n=>'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     const per={};
-    allocsOf(p).forEach(a=>{ const amt=Math.round(total*(Number(a.pct)||0))/100;
-      per[a.property]={sum:amt?String(amt):'',upfront:'',ongoing:''}; });
+    // shareFor, not pct: an amount-driven split carries exact dollars, and the
+    // sums print on the contract — formatted ($, commas), never raw numbers.
+    allocsOf(p).forEach(a=>{ const amt=Math.round(total*shareFor(p,a.property)*100)/100;
+      per[a.property]={sum:amt?usdM(amt):'',upfront:'',ongoing:''}; });
     const f0=(approved.files&&approved.files[0])||{};
     MULTI_DRAFT=Object.assign(multiDraftDefaults(),{
       properties:selCodes().slice(),
       perProperty:per,
       contractorName:(approved.contractor||p.contractor||'').trim(),
-      contractSum:total?String(total):'',
+      contractSum:total?usdM(total):'',
       billing:'one-time',                       // a project is billed once, not recurring
       scope:p.plan||p.name||'',
       effectiveDate:today(),

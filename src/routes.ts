@@ -921,6 +921,17 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
   // Per-property extras the builder collects: this property's share of the sum,
   // and the notice phone/email if they aren't on the property yet.
   const per: Record<string, any> = (b.perProperty && typeof b.perProperty === 'object') ? b.perProperty : {};
+  // Money fields print VERBATIM — except a BARE number ("225960", "88620.5"),
+  // which can only be a formatting accident on signed paper: it is normalized to
+  // $X,XXX.XX. Anything already formatted, or non-numeric ("see Exhibit A"),
+  // passes through untouched.
+  const moneyish = (s: any): string => {
+    const t = String(s ?? '').trim();
+    const m = t.match(/^\$?\s*([\d,]+(?:\.\d+)?)$/);
+    if (!m) return t;
+    const n = Number(m[1].replace(/,/g, ''));
+    return isFinite(n) ? '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : t;
+  };
   const entities: MultiEntity[] = codes.map((code) => {
     const r = rows.find((x) => x.code === code)!;
     const p = per[code] || {};
@@ -941,9 +952,9 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
       noticeEmail: String(p.noticeEmail || r.notice_email || '').trim(),
       // A property's share is either one lump sum or an up-front plus an ongoing
       // amount, printed as two separate line items.
-      sum: String(p.sum ?? '').trim(),
-      upfront: String(p.upfront ?? '').trim(),
-      ongoing: String(p.ongoing ?? '').trim(),
+      sum: moneyish(p.sum),
+      upfront: moneyish(p.upfront),
+      ongoing: moneyish(p.ongoing),
     };
   });
 
@@ -961,7 +972,7 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
     contractType: String(b.contractType || 'Bid Contract').trim(),
     ownerReps: reps,
     workCompletionDate: slashDate(b.workCompletionDate),
-    contractSum: String(b.contractSum || '').trim(),
+    contractSum: moneyish(b.contractSum),
     billing: (['monthly', 'annual', 'one-time'].includes(String(b.billing)) ? String(b.billing) : 'monthly') as Billing,
     // Off unless asked for: this form is used for recurring service work, so the
     // construction apparatus (punch lists, Certificate of Occupancy, drawings and

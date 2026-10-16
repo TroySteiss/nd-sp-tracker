@@ -658,6 +658,12 @@ LLCs — landscaping/snow, pest, pool. **Not** a Special Project: no `project_id
 lifecycle, no signature chain. Entered from *Contractors ▸ ＋ New multi-entity contract* (that tab
 is top-tier admin only — see below).
 
+- **Money fields normalize bare numbers (2026-10-16, per Troy):** Contract Sum and per-property
+  sum/upfront/ongoing still print VERBATIM, except a BARE numeric ("225960", "88620.5", "225,960",
+  "$ 1200") — a formatting accident on signed paper — which `moneyish()` in the /contracts/multi
+  route normalizes to $X,XXX.XX. Formatted or non-numeric strings ("see Exhibit A") pass through
+  untouched. `openMultiFromProject` also prefills Contract Sum and the per-property sums formatted,
+  and derives those sums with `shareFor` (exact amount-driven dollars), not the rounded pct.
 - **Notice defaults (035, 2026-10-16, per Troy):** each region carries AM/RM phone + email
   (Settings ▸ Regions, `regions.am_phone/rm_phone/am_email/rm_email`), and each user their own
   email (Settings ▸ Users & roles, `app_users.email` — a stored setting, never derived from the

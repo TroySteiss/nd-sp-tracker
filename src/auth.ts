@@ -66,14 +66,16 @@ export function requireAdmin(req: Request, res: Response, next: NextFunction) {
 
 
 /* ---------- Roles (app_users, migration 023) ----------
-   'admin' — the env allowlist, always wins; full view + Settings/Change log.
-   'user'  — full view, no admin tabs. The default for anyone not on the roster,
-             so adding this feature downgrades nobody.
-   'pm'    — the stripped /pm view, scoped to the sites on their roster row.
+   'admin'  — the env allowlist, always wins; full view + Settings/Change log.
+   'user'   — full view, no admin tabs. The default for anyone not on the roster,
+              so adding this feature downgrades nobody.
+   'pm'     — the stripped /pm view, scoped to the sites on their roster row.
+   'viewer' — "Full; View only" (2026-10-16): the full tracker, but every write
+              is refused server-side (blockViewerWrites).
 
    Login is a shared password with a free-form username, so this is a UI/route
    guardrail, not authentication. Don't treat a role as proof of identity. */
-export type Role = 'admin' | 'manager' | 'user' | 'pm';
+export type Role = 'admin' | 'manager' | 'user' | 'pm' | 'viewer';
 
 export interface UserRecord { key: string; display: string; role: Role; sites: string[]; }
 
@@ -105,7 +107,19 @@ export async function roleOf(username?: string): Promise<Role> {
   if (isAdminUser(username)) return 'admin';
   if (isManagerUser(username)) return 'manager';
   const rec = await getUserRecord(username);
-  return rec?.role === 'pm' || rec?.role === 'user' ? rec.role : 'user';
+  return rec?.role === 'pm' || rec?.role === 'user' || rec?.role === 'viewer' ? rec.role : 'user';
+}
+
+/** 'viewer' ("Full; View only") sees everything and changes nothing: GETs pass,
+    every write is refused with a message naming the fix. Role is looked up only
+    on writes, so the hot read path costs no extra query. Login/logout/status are
+    registered before this middleware and never reach it. */
+export async function blockViewerWrites(req: Request, res: Response, next: NextFunction) {
+  if (req.method === 'GET' || req.method === 'HEAD' || req.method === 'OPTIONS') return next();
+  if ((await roleOf(req.session?.username)) === 'viewer') {
+    return res.status(403).json({ error: 'This account is view-only — an admin can change that in Settings ▸ Users & roles.' });
+  }
+  next();
 }
 
 /** Record the display spelling and stamp the sign-in.

@@ -3,7 +3,7 @@ import express from 'express';
 import compression from 'compression';
 import { existsSync } from 'node:fs';
 import { join } from 'node:path';
-import { sessionMiddleware, requireAuth, login, logout, status } from './auth.js';
+import { sessionMiddleware, requireAuth, blockViewerWrites, login, logout, status } from './auth.js';
 import { bumpMutation } from './db.js';
 import { conversionAvailable } from './convert.js';
 import { api } from './routes.js';
@@ -44,10 +44,10 @@ app.use('/api', (req, _res, next) => { if (req.method !== 'GET') bumpMutation();
 // The property-manager surface. Mounted before the main api router so /api/pm/*
 // never falls through to a full-view endpoint. Its own routes re-check the
 // caller's role and site list on every request.
-app.use('/api/pm', requireAuth, pmApi);
+app.use('/api/pm', requireAuth, blockViewerWrites, pmApi);
 
-// everything else under /api requires auth
-app.use('/api', requireAuth, api);
+// everything else under /api requires auth; "Full; View only" accounts read it all, write nothing
+app.use('/api', requireAuth, blockViewerWrites, api);
 
 // JSON error handler for the wrapped async routes (see routes.ts) — log and
 // answer 500 instead of letting the error take the process down.

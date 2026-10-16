@@ -238,7 +238,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | imports | import history (014) | kind gl/cushion, raw workbook file_key, label, counts, username |
 | change_log | who/what/when audit (014) | username, action, summary, details jsonb |
 | app_meta | single row | gl_period, cash_as_of, `app_title` (014), `cash_tile_mode` (022 — display only) |
-| app_users | user roster (023, `last_seen` 025) | pk `key` = normalized username; `role` ('pm'/'user'), `sites` jsonb for a PM's covered properties. Rows appear on first login (`auth.touchUser`) **or** are created up front by an admin; `last_seen` null ⇒ pre-created, never signed in |
+| app_users | user roster (023, `last_seen` 025, `email` 035) | pk `key` = normalized username; `role` ('pm'/'user'/'viewer'), `sites` jsonb for a PM's covered properties, `email` feeds the multi-entity notice default. Rows appear on first login (`auth.touchUser`) **or** are created up front by an admin; `last_seen` null ⇒ pre-created, never signed in. **'viewer' = "Full; View only" (2026-10-16):** the full tracker UI, but `blockViewerWrites` (auth.ts, mounted on both /api routers after requireAuth) refuses every non-GET with a message naming the fix; login/logout/status are registered before the middleware. The client shows a "👁 view only" rail chip (`IS_VIEWER` from /api/auth/status `role`) |
 | session / _migrations | infra | — |
 
 Also on `projects`: `pm_review_requested_at/by` (023 — PM hand-off) and

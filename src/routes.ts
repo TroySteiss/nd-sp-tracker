@@ -133,7 +133,7 @@ api.post('/users', requireAdmin, async (req, res) => {
   }
   // Env tiers own their own role; creating a row for one would be misleading.
   const role = isManagerUser(display) ? (isAdminUser(display) ? 'admin' : 'manager')
-             : ['pm', 'user'].includes(String(req.body?.role)) ? String(req.body.role) : 'user';
+             : ['pm', 'user', 'viewer'].includes(String(req.body?.role)) ? String(req.body.role) : 'user';
   let sites: string[] = [];
   if (Array.isArray(req.body?.sites)) {
     const valid = (await query<{ code: string }>('select code from properties')).rows.map(r => r.code);
@@ -179,7 +179,7 @@ api.patch('/users/:key', requireAdmin, async (req, res) => {
       error: 'This user is an admin or manager via the ADMIN_USERS / MANAGER_USERS env vars; change it there',
     });
   }
-  const role = ['pm', 'user'].includes(String(req.body?.role)) ? String(req.body.role) : cur.role;
+  const role = ['pm', 'user', 'viewer'].includes(String(req.body?.role)) ? String(req.body.role) : cur.role;
   let sites = Array.isArray(cur.sites) ? cur.sites : [];
   if (Array.isArray(req.body?.sites)) {
     const valid = (await query<{ code: string }>('select code from properties')).rows.map(r => r.code);

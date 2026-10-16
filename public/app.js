@@ -274,6 +274,7 @@ async function restoreBackup(state){ try{ await API.send('POST','/restore',state
 /* ---------- login (username + shared password) ---------- */
 let USER='';       // signed-in username (First.Last), from the session
 let USER_EMAIL=''; // their email from the roster (Settings ▸ Users & roles) — a stored setting, never derived from the name
+let IS_VIEWER=false;  // "Full; View only" role — the server refuses every write; this only labels the UI
 let IS_ADMIN=false;   // top-level admins only: Settings, Change log, approvals, countersign.
                       // Mirrored from /api/auth/status; the server enforces regardless.
                       // The 'manager' tier exists server-side but grants nothing extra yet.
@@ -304,7 +305,7 @@ async function start(){
       }
       r=await send(true);
     }
-    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; USER_EMAIL=j.email||''; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){}
+    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; USER_EMAIL=j.email||''; IS_ADMIN=!!j.isAdmin; IS_VIEWER=j.role==='viewer'; try{localStorage.setItem('sp-username',username);}catch(e){}
       // Property managers get the simplified view; the full tracker never loads for them.
       if(j.role==='pm'){ location.href='/pm'; return; }
       hideLogin(); await boot(); }
@@ -314,7 +315,7 @@ async function start(){
     setLoginTitle(st.appTitle);
     if(st.authed){
       if(st.role==='pm'){ location.href='/pm'; return; }   // returning PM session
-      USER=st.username||''; USER_EMAIL=st.email||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
+      USER=st.username||''; USER_EMAIL=st.email||''; IS_ADMIN=!!st.isAdmin; IS_VIEWER=st.role==='viewer'; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -729,6 +730,8 @@ function rail(){
   const foot=el('div',{class:'foot'},
     el('div',{class:'row',style:'margin-bottom:6px'}, el('span',{},'Signed in as'),
       el('span',{class:'mono',title:USER,style:'max-width:110px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap'},USER||'—')),
+    IS_VIEWER?el('div',{class:'row',style:'margin-bottom:6px'},
+      el('span',{class:'chip hold',title:'Full; View only — everything is visible, nothing can be changed. An admin can change the role in Settings ▸ Users & roles.'},'👁 view only')):null,
     el('button',{class:'theme-toggle',onclick:signOut,style:'margin-bottom:6px'},'⎋  Sign out'),
     el('button',{class:'theme-toggle',onclick:toggleTheme}, isDark()?'☀  Light mode':'🌙  Dark mode'),
     el('div',{class:'row'}, el('span',{},'GL period'), el('span',{class:'mono'},S.meta&&S.meta.glPeriod?S.meta.glPeriod:'—')),
@@ -6203,7 +6206,8 @@ function viewSettings(){
      different account and the pre-assigned role/sites would not find them. */
   const newName=el('input',{placeholder:'Full name as they will type it, e.g. Dana Whitfield',style:inpStyle+';flex:2;min-width:200px'});
   const newRole=el('select',{style:inpStyle+';width:auto'},
-    el('option',{value:'user'},'Full user'), el('option',{value:'pm'},'Property manager'));
+    el('option',{value:'user'},'Full user'), el('option',{value:'pm'},'Property manager'),
+    el('option',{value:'viewer'},'Full; View only'));
   const newSites=el('input',{placeholder:'Sites, e.g. CLND, SPND',style:inpStyle+';flex:1;min-width:150px',disabled:''});
   newRole.addEventListener('change',()=>{ newSites.disabled = newRole.value!=='pm'; if(newSites.disabled) newSites.value=''; });
   const addBtn=el('button',{class:'btn accent',onclick:async()=>{
@@ -6232,7 +6236,7 @@ function viewSettings(){
     const tb=el('tbody');
     rows.forEach(u=>{
       const roleSel=el('select',{style:inpStyle+';width:auto',disabled:u.envAdmin?'':null},
-        ...['user','pm'].map(r=>el('option',{value:r,...(u.role===r?{selected:'selected'}:{})},r==='pm'?'Property manager':'Full user')));
+        ...[['user','Full user'],['pm','Property manager'],['viewer','Full; View only']].map(([r,label])=>el('option',{value:r,...(u.role===r?{selected:'selected'}:{})},label)));
       if(u.envAdmin) roleSel.append(el('option',{value:u.role,selected:'selected'},u.role==='admin'?'Admin (env)':'Manager (env)'));
       const sitesI=el('input',{value:(u.sites||[]).join(', '),placeholder:'e.g. CLND, SPND',style:inpStyle,
                                disabled:(u.role==='pm'&&!u.envAdmin)?null:'disabled'});

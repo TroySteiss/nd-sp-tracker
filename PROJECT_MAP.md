@@ -583,6 +583,25 @@ print, and a strike box can't be placed over a line you can't read. One-across i
 US Letter page's natural 816px at 96dpi. Marks are stored as fractions of the page, so resizing
 never moves them.
 
+## GL vendor matching + auto-tie (2026-10-16, per Troy)
+
+- `vendorMatchStrength(vendor, contractor)` in domain.ts (mirrored in app.js): 2 = same business
+  (significant words IDENTICAL after dropping corporate noise words and apostrophes — a one-way
+  subset is NOT enough, or "Crystal Clear Pools" would claim "Crystal Clear Services Corporation"),
+  1 = shares a distinctive word, 0 = unrelated. `projectContractors(p)` = contractor field +
+  approved bids' contractors.
+- **Scoring**: glMatchScore (and the fast glCandPrep/glBestCandidate pair — kept in step) now score
+  the vendor on its own: +38 "vendor" at strength 2, +18 "vendor ~" at 1, on top of the generic
+  token overlap.
+- **Auto-tie** (`glAutoTie`): amount equal TO THE CENT to this property's share of the project cost
+  (the scorer's 0.5% "exact $" band is a suggestion threshold, not a write threshold) AND vendor at
+  strength 2, never in-house. Callers guard ambiguity: a line matching two projects, a second line
+  for one project, or a project that already has a linked line stays manual.
+  - Server: `/import/gl/confirm` auto-ties freshly imported unlinked lines after commit
+    (best-effort; change-log lists each tie).
+  - Client: the Reconciliation panel shows "⚡ Auto-tie N (exact $ + vendor)" for the existing
+    backlog; the tooltip lists every pair before anything is written.
+
 ## Project quantity (033, 2026-09-15)
 
 "On the DRND patio, please include 5 patios ($9,285 total)": `projects.quantity`

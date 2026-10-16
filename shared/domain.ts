@@ -769,6 +769,30 @@ export function unplannedAll(state: AppState): GLLine[] {
 }
 
 /* ---------- GL → project match scoring (spec §7.3) ---------- */
+/** Vendor ↔ contractor comparison for GL tie-out, ignoring corporate noise
+    words. 2 = the same business (one side's significant words all appear in
+    the other's — "Crystal Clear Services Corp" vs "Crystal Clear Services
+    Corporation"), 1 = shares a distinctive word ("Sealco LLC" vs "Sealco
+    Asphalt"), 0 = unrelated. */
+export function vendorMatchStrength(vendor: any, contractor: any): 0 | 1 | 2 {
+  const NOISE = new Set(['llc', 'inc', 'co', 'corp', 'corporation', 'company', 'companies', 'services', 'service', 'llp', 'ltd', 'the', 'and', 'of', 'enterprises', 'group']);
+  // Apostrophes collapse ("Ken's" ⇒ "kens") so possessives match their plain form.
+  const words = (s: any) => String(s || '').toLowerCase().replace(/['’]/g, '').split(/[^a-z0-9]+/).filter(w => w.length > 1 && !NOISE.has(w));
+  const a = words(vendor), b = words(contractor);
+  if (!a.length || !b.length) return 0;
+  // Same business = the significant word sets are IDENTICAL. A one-way subset is
+  // not enough: "Crystal Clear Pools" must not claim "Crystal Clear Services
+  // Corporation" just because the suffix words are noise.
+  const aSet = new Set(a), bSet = new Set(b);
+  if (a.every(w => bSet.has(w)) && b.every(w => aSet.has(w))) return 2;
+  return a.some(w => w.length > 3 && bSet.has(w)) ? 1 : 0;
+}
+/** The names a project's money actually goes to: the contractor field plus any
+    approved bids' contractors. */
+export const projectContractors = (p: Project): string[] =>
+  [p.contractor, ...(p.bids || []).filter(b => b && b.approved).map(b => b.contractor)]
+    .map(c => String(c || '').trim()).filter(Boolean);
+
 export function glMatchScore(g: GLLine, p: Project): { score: number; reasons: string[] } {
   let score = 0; const reasons: string[] = [];
   if (g.category && p.category && String(g.category).toUpperCase() === String(p.category).toUpperCase()) { score += 40; reasons.push('category'); }
@@ -782,12 +806,34 @@ export function glMatchScore(g: GLLine, p: Project): { score: number; reasons: s
     else if (diff < 0.05) { score += 32; reasons.push('≈ $'); }
     else if (diff < 0.2) { score += 16; reasons.push('~ $'); }
   }
+  // The vendor IS the signal on a contractor project (2026-10-16, per Troy) —
+  // scored on its own, not just as generic word soup.
+  let vend = 0;
+  for (const c of projectContractors(p)) vend = Math.max(vend, vendorMatchStrength(g.vendor, c));
+  if (vend === 2) { score += 38; reasons.push('vendor'); }
+  else if (vend === 1) { score += 18; reasons.push('vendor ~'); }
   const toks = (s: any) => String(s || '').toLowerCase().split(/[^a-z0-9]+/).filter(w => w.length > 2);
   const gtok = new Set([...toks(g.vendor), ...toks(g.remarks)]);
   const ptok = new Set([...toks(p.name), ...toks(p.contractor), ...toks(p.plan)]);
   let overlap = 0; ptok.forEach(t => { if (gtok.has(t)) overlap++; });
   if (overlap) { score += Math.min(30, overlap * 12); reasons.push('name'); }
   return { score, reasons };
+}
+
+/** TRUE when this GL line should tie itself to p with no human in the loop:
+    the amount is EXACTLY this property's share of the project cost AND the
+    vendor IS the project's contractor (strength 2). In-house work has no
+    vendor paper trail to auto-match. Callers still guard ambiguity: a line
+    matching two projects, or a second line for the same project, stays manual. */
+export function glAutoTie(g: GLLine, p: Project): boolean {
+  if (p.inHouse) return false;
+  const amt = Math.abs(Number(g.amount) || 0);
+  const sh = isSplit(p) ? shareFor(p, g.property) : 1;
+  const tot = Math.abs(projOutflow(p)) * (sh || 1);
+  // To the CENT — the scorer's 0.5% "exact $" band is a suggestion threshold,
+  // but an automatic write demands the literal figure.
+  if (!(amt > 0 && tot > 0) || Math.abs(amt - tot) > 0.01) return false;
+  return projectContractors(p).some(c => vendorMatchStrength(g.vendor, c) === 2);
 }
 
 /* ---------- Conditional-formatting thresholds for property tiles (spec §7.4) ---------- */

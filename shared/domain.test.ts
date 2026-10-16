@@ -5,7 +5,7 @@ import {
   advance, toggleStep, appKeys, isNA, applyCostRules,
   cashModel, auditModel, glMatchScore, glSpentFor, cashAdjFor,
   toneRemaining, toneProjected, toneCashPerDoor, yearsToMaturity, PROPERTIES, isAboveLine,
-  allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp,
+  allocsOf, isSplit, shareFor, involvesProp, projOutflowFor, projForProp, vendorMatchStrength, glAutoTie,
   PLAN_POST, normalizePlanYears, onPlan, planFor, planTotal, planForProp, planTotalForProp,
   lenderFlagged, planAutoHold, planHorizonEnd, planYearCols, isHexColor, hexToHsl, hslToHex, shadesOf, regionShadeMap,
   autoPlanAmount, autoPlanYear, effPlanFor, effPlanTotal, effPlanForProp, effPlanTotalForProp, inPlan,
@@ -286,6 +286,35 @@ describe('multi-property split', () => {
     });
     expect(shareFor(p, 'CLND')).toBe(0.6);
     expect(shareFor(p, 'SPND')).toBe(0.4);
+  });
+});
+
+describe('GL vendor matching + auto-tie (2026-10-16)', () => {
+  it('vendorMatchStrength ranks same-business > shared-word > unrelated', () => {
+    expect(vendorMatchStrength('Crystal Clear Services Corporation', 'Crystal Clear Services Corp')).toBe(2);
+    expect(vendorMatchStrength('KENS GUTTERS LLC', "Ken's Gutters")).toBe(2);
+    expect(vendorMatchStrength('Sealco LLC', 'Sealco Asphalt')).toBe(1);
+    expect(vendorMatchStrength('Dakota Plumbing', 'Northern HVAC')).toBe(0);
+    expect(vendorMatchStrength('', 'Sealco')).toBe(0);
+    expect(vendorMatchStrength('LLC Inc', 'Co Corp')).toBe(0);   // nothing but noise words
+  });
+  const patios = proj({
+    id: 'G1', property: 'DRND', anticipatedCost: 9285, contractor: 'Crystal Clear Services Corporation',
+    steps: { planned: true, gotBids: true, approved: true },
+    bids: [{ id: 'b1', contractor: 'Crystal Clear Services Corporation', amount: 9285, approved: true } as any],
+  });
+  const line = (over: any = {}) => ({ id: 'L1', property: 'DRND', category: 'GENERAL', vendor: 'Crystal Clear Services Corp', amount: 9285, ...over } as any);
+  it('glMatchScore scores the vendor on its own', () => {
+    const { reasons } = glMatchScore(line(), patios);
+    expect(reasons).toContain('vendor');
+    expect(reasons).toContain('exact $');
+  });
+  it('glAutoTie: exact dollars + same vendor ⇒ ties; anything less stays manual', () => {
+    expect(glAutoTie(line(), patios)).toBe(true);
+    expect(glAutoTie(line({ amount: 9290 }), patios)).toBe(false);                 // close is not exact
+    expect(glAutoTie(line({ vendor: 'Sealco LLC' }), patios)).toBe(false);          // wrong vendor
+    expect(glAutoTie(line({ vendor: 'Crystal Clear Pools LLC' }), patios)).toBe(false); // shared words ≠ same business
+    expect(glAutoTie(line(), proj({ inHouse: true, totalToComplete: 9285 }))).toBe(false);
   });
 });
 

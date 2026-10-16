@@ -14,7 +14,7 @@ import { isOfficeDoc, officeToPdf } from './convert.js';
 import { buildContract, stampSignature, contractSectionList, sanitizeMarks, type ContractVars, type BidAttachment } from './contract.js';
 import { buildMultiContract, multiSectionList, type MultiContractVars, type MultiEntity, type Billing } from './contract-multi.js';
 import { buildChangeOrder, type ChangeOrderVars } from './change-order.js';
-import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planAutoHold, planTotal, isHexColor, regionShadeMap, type Project, type AppState } from '../shared/domain.js';
+import { applyCostRules, uid, STEP_KEYS, CONTRACT_STEPS, COLOR_PALETTE, normalizePlanYears, planAutoHold, planTotal, isHexColor, regionShadeMap, glAutoTie, involvesProp, type Project, type AppState } from '../shared/domain.js';
 import { buildPlanWorkbook } from './plan-export.js';
 
 export const api = Router();
@@ -1406,10 +1406,34 @@ api.post('/import/gl/confirm', requireAdmin, async (req, res) => {
     }
     if (period) await c.query('update app_meta set gl_period=$1 where id=1', [period]);
   });
+  // Auto-tie (2026-10-16, per Troy): a freshly imported, unlinked line that
+  // matches a project EXACTLY — this property's share of its cost to the dollar
+  // AND the vendor is the project's contractor — links itself. Only unambiguous
+  // pairs: a line matching two projects, a second line for the same project, or
+  // a project that already has a linked line stays manual. Best-effort: the
+  // import itself has already committed.
+  const autoTied: string[] = [];
+  try {
+    const projRows = (await query<any>('select * from projects')).rows;
+    const bidRows = (await query<any>('select project_id, contractor from bids where approved = true')).rows;
+    const bidsBy = new Map<string, any[]>();
+    for (const b2 of bidRows) { const l = bidsBy.get(b2.project_id) || []; l.push({ approved: true, contractor: b2.contractor }); bidsBy.set(b2.project_id, l); }
+    const projs = projRows.map((r) => rowToProject(r, bidsBy.get(r.id) as any || []));
+    const fresh = (await query<any>('select id, property_code, vendor, amount from gl_lines where property_code = any($1) and linked_project_id is null', [codes])).rows;
+    const tiedProjects = new Set<string>((await query<any>('select distinct linked_project_id as id from gl_lines where linked_project_id is not null')).rows.map((r) => r.id));
+    for (const row of fresh) {
+      const g: any = { id: row.id, property: row.property_code, vendor: row.vendor, amount: Number(row.amount) || 0 };
+      const cands = projs.filter((p2: Project) => !tiedProjects.has(p2.id) && involvesProp(p2, g.property) && glAutoTie(g, p2));
+      if (cands.length !== 1) continue;
+      await query('update gl_lines set linked_project_id=$1, partial=false where id=$2', [cands[0].id, row.id]);
+      tiedProjects.add(cands[0].id);
+      autoTied.push(`${fmtMoney(g.amount)} (${g.vendor || 'no vendor'}) → "${cands[0].name}"`);
+    }
+  } catch (e) { console.error('gl auto-tie skipped:', e); }
   await recordImport(req, 'gl', p.file, period || '', lines.length, byProperty);
-  logChange(req, { action: 'import.gl', entityType: 'import', summary: `GL imported — ${lines.length} lines across ${codes.length} properties${period ? ` (${period})` : ''}${unknownCodes?.length ? `; kept for future properties: ${unknownCodes.join(', ')}` : ''}` });
+  logChange(req, { action: 'import.gl', entityType: 'import', summary: `GL imported — ${lines.length} lines across ${codes.length} properties${period ? ` (${period})` : ''}${autoTied.length ? `; auto-tied ${autoTied.length}: ${autoTied.slice(0, 6).join('; ')}${autoTied.length > 6 ? ` +${autoTied.length - 6} more` : ''}` : ''}${unknownCodes?.length ? `; kept for future properties: ${unknownCodes.join(', ')}` : ''}` });
   pending.delete(req.body.token);
-  res.json({ ok: true, count: lines.length });
+  res.json({ ok: true, count: lines.length, autoTied: autoTied.length });
 });
 
 api.post('/import/cushion', requireAdmin, memUpload.single('file'), async (req, res) => {

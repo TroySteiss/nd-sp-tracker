@@ -578,6 +578,29 @@ function auditModel(code){
   return {gls,glTotal,unplanned,paid,paidNoGL,linkedCount:linkedIds.size};
 }
 function unplannedAll(){ return S.gl.filter(g=>Number(g.amount)>OVER_THRESHOLD && !g.linkedProjectId && !isInterestGL(g)); }
+/* Vendor ↔ contractor comparison — mirrors domain.ts vendorMatchStrength.
+   2 = same business (significant words subset either way), 1 = shares a
+   distinctive word, 0 = unrelated. */
+const GL_VENDOR_NOISE=new Set(['llc','inc','co','corp','corporation','company','companies','services','service','llp','ltd','the','and','of','enterprises','group']);
+function vendorMatchStrength(vendor,contractor){
+  const words=s=>String(s||'').toLowerCase().replace(/['’]/g,'').split(/[^a-z0-9]+/).filter(w=>w.length>1&&!GL_VENDOR_NOISE.has(w));
+  const a=words(vendor),b=words(contractor);
+  if(!a.length||!b.length)return 0;
+  const aSet=new Set(a),bSet=new Set(b);
+  if(a.every(w=>bSet.has(w))&&b.every(w=>aSet.has(w)))return 2;   // identical significant words — one-way subset is NOT the same business
+  return a.some(w=>w.length>3&&bSet.has(w))?1:0;
+}
+const projectContractors=p=>[p.contractor,...(p.bids||[]).filter(b=>b&&b.approved).map(b=>b.contractor)].map(c=>String(c||'').trim()).filter(Boolean);
+/* TRUE when a line ties itself: amount EXACTLY this property's share of the
+   project cost AND the vendor IS the contractor — mirrors domain.ts glAutoTie. */
+function glAutoTie(g,p){
+  if(p.inHouse)return false;
+  const amt=Math.abs(Number(g.amount)||0);
+  const sh=isSplitP(p)?shareFor(p,g.property):1;
+  const tot=Math.abs(projOutflow(p))*(sh||1);
+  if(!(amt>0&&tot>0)||Math.abs(amt-tot)>0.01)return false;   // to the CENT — automatic writes demand the literal figure
+  return projectContractors(p).some(c=>vendorMatchStrength(g.vendor,c)===2);
+}
 /* Rough GL→project match scoring, so tying out is point-and-click rather than hunting. */
 function glMatchScore(g,p){
   let score=0; const reasons=[];
@@ -591,6 +614,10 @@ function glMatchScore(g,p){
     else if(diff<0.05){ score+=32; reasons.push('≈ $'); }
     else if(diff<0.2){ score+=16; reasons.push('~ $'); }
   }
+  // The vendor IS the signal on a contractor project — scored on its own.
+  const vend=projectContractors(p).reduce((m,c)=>Math.max(m,vendorMatchStrength(g.vendor,c)),0);
+  if(vend===2){ score+=38; reasons.push('vendor'); }
+  else if(vend===1){ score+=18; reasons.push('vendor ~'); }
   const toks=s=>String(s||'').toLowerCase().split(/[^a-z0-9]+/).filter(w=>w.length>2);
   const gtok=new Set([...toks(g.vendor),...toks(g.remarks)]);
   const ptok=new Set([...toks(p.name),...toks(p.contractor),...toks(p.plan)]);
@@ -612,6 +639,7 @@ function glCandPrep(code){
   return projForProp(code).map(p=>({p,
     cat:String(p.category||'').toUpperCase(),
     tot:Math.abs(p.inHouse?ihTotal(p):projOutflow(p))*((isSplitP(p)?shareFor(p,code):1)||1),
+    ctrs:projectContractors(p),
     ptok:new Set([...GL_TOKS(p.name),...GL_TOKS(p.contractor),...GL_TOKS(p.plan)])}));
 }
 function glBestCandidate(g,prep){
@@ -624,6 +652,8 @@ function glBestCandidate(g,prep){
     if(g._catU&&c.cat&&g._catU===c.cat)score+=40;
     if(c.tot>0&&amt>0){ const diff=Math.abs(amt-c.tot)/Math.max(amt,c.tot);
       if(diff<0.005)score+=45; else if(diff<0.05)score+=32; else if(diff<0.2)score+=16; }
+    const vend=c.ctrs.reduce((m,x)=>Math.max(m,vendorMatchStrength(g.vendor,x)),0);
+    if(vend===2)score+=38; else if(vend===1)score+=18;
     let overlap=0; c.ptok.forEach(t=>{ if(g._tok.has(t))overlap++; });
     if(overlap)score+=Math.min(30,overlap*12);
     if(score>bestScore){ bestScore=score; best=c.p; }
@@ -5158,10 +5188,35 @@ function viewProperty(){
     reconCell('Difference',am.glTotal-cm.paidTotal,Math.abs(am.glTotal-cm.paidTotal)>OVER_THRESHOLD)));
   // GL lines not tied to any project — every size, not just the >$5K flags.
   // "Review in ledger" points the ledger's filters at exactly these lines.
+  /* Auto-tie (2026-10-16, per Troy): untied lines whose amount EXACTLY matches
+     a project's share here and whose vendor IS that project's contractor.
+     Only unambiguous pairs — one project per line, one line per project, and
+     projects that already have a linked line are skipped. */
+  const autoTies=(()=>{
+    const out=[]; const cand0=projForProp(code);
+    const usedP=new Set(gls.filter(g2=>g2.linkedProjectId).map(g2=>g2.linkedProjectId));
+    untied.forEach(g2=>{
+      const cands=cand0.filter(p2=>!usedP.has(p2.id)&&glAutoTie(g2,p2));
+      if(cands.length===1){ out.push({g:g2,p:cands[0]}); usedP.add(cands[0].id); }
+    });
+    return out;
+  })();
   ab.append(el('div',{class:'rc',style:'display:flex;align-items:center;gap:12px;flex-wrap:wrap;margin-bottom:6px'},
     el('div',{}, el('div',{class:'rk'},'Not tied to a project'),
       el('div',{class:'rv mono'},untied.length?`${fmt(untiedTotal)} · ${untied.length} line${untied.length>1?'s':''}`:'none — every line is tied')),
     el('div',{style:'flex:1'}),
+    autoTies.length?el('button',{class:'btn sm',title:'Each of these lines matches exactly one project here: same dollars to the cent (this property’s share) and the vendor is that project’s contractor — '+autoTies.map(t=>`${fmt(Number(t.g.amount)||0)} ${t.g.vendor||''} → ${t.p.name}`).join(' · '),
+      onclick:async e=>{
+        const b2=e.currentTarget; b2.disabled=true; let n=0;
+        for(const t of autoTies){
+          try{
+            await API.send('PATCH','/gl/'+t.g.id+'/link',{linkedProjectId:t.p.id,partial:false});
+            t.g.linkedProjectId=t.p.id; t.g.partial=false; n++;
+            const pr2=S.projects.find(x=>x.id===t.p.id); if(pr2&&typeof syncDerivedSteps==='function')syncDerivedSteps(pr2);
+          }catch(err){}
+        }
+        render(); toast('Auto-tied '+n+' line'+(n===1?'':'s')+' — exact $ + vendor');
+      }},'⚡ Auto-tie '+autoTies.length+' (exact $ + vendor)'):null,
     untied.length?el('button',{class:'btn sm accent',onclick:()=>{GLFILT.match='unlinked';GLFILT.hideSmall=false;GLFILT.cat='';GLFILT.q='';GLFILT.proj='';render();
       setTimeout(()=>{const g2=document.querySelector('[data-gl-panel]');if(g2)g2.scrollIntoView({behavior:'smooth',block:'start'});},60);}},'Review in ledger ↓'):null));
   ab.append(flagBlock('Posted over $5,000 — unplanned',

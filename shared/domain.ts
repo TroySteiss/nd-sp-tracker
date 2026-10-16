@@ -31,7 +31,12 @@ export interface Steps { [key: string]: boolean; }
 
 /* Multi-property split: cost shared across sites, usually pro-rata by unit
    count. list[0] is the lead property (mirrors Project.property). */
-export interface SplitAllocation { property: string; pct: number; }
+/* `amt` (2026-10-16): the exact dollar share typed in the editor's custom mode.
+   When EVERY allocation carries one, the amounts are authoritative and pct is
+   display-only — a 2dp percentage cannot represent "$88,620 of $225,960"
+   without drifting whole dollars. pct-only lists (units mode, legacy data,
+   %-edited customs) behave exactly as before. */
+export interface SplitAllocation { property: string; pct: number; amt?: number | null; }
 export interface ProjectSplit { mode: 'units' | 'custom'; list: SplitAllocation[]; }
 
 export interface Project {
@@ -565,8 +570,16 @@ export const allocsOf = (p: Project): SplitAllocation[] =>
 export const isSplit = (p: Project): boolean => allocsOf(p).length > 1;
 /** Fraction (0..1) of the project's cost carried by `code`. */
 export function shareFor(p: Project, code: string): number {
-  const a = allocsOf(p).find(x => x.property === code);
-  return a ? (Number(a.pct) || 0) / 100 : 0;
+  const list = allocsOf(p);
+  const a = list.find(x => x.property === code);
+  if (!a) return 0;
+  // Amount-driven custom split: exact dollars outrank the rounded pct.
+  const amts = list.map(x => Number(x.amt));
+  if (amts.every(v => isFinite(v) && v >= 0) && amts.some(v => v > 0)) {
+    const sum = amts.reduce((s, v) => s + v, 0);
+    return (Number(a.amt) || 0) / sum;
+  }
+  return (Number(a.pct) || 0) / 100;
 }
 export const involvesProp = (p: Project, code: string): boolean => allocsOf(p).some(a => a.property === code);
 /** This property's slice of the project outflow (= full outflow for unsplit projects). */

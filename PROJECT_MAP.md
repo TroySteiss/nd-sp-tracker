@@ -100,12 +100,15 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   app.js). `projForProp` includes split projects; cashModel/glMatchScore/email amounts are
   share-weighted. Server normalizes via `normalizeSplit` (lead = list[0] = projects.property_code).
   Custom mode (2026-10-16, per Troy): the Cost-allocation table takes EITHER a % or a **$ amount**
-  per property — a typed amount derives the stored pct (2dp, so cents-level drift on re-display is
-  possible on large totals); the ≠100% warning also reports the dollar shortfall vs the cost.
+  per property. A $ edit stores the EXACT amounts on every row (`SplitAllocation.amt`) — when all
+  rows carry one, **shareFor treats the amounts as authoritative** and pct is display-only, because
+  a 2dp pct cannot represent "$88,620 of $225,960" without drifting whole dollars (unit-tested with
+  that exact case). A % edit clears the amts and the list goes back to pct-driven; units mode and
+  legacy pct-only data behave exactly as before (any row missing amt ⇒ pct-driven).
   With no actual cost locking the total, the $ inputs are live even on a costless project and the
-  dollar shares BUILD the cost: other rows keep their current dollars and the anticipated cost
-  becomes the sum (synced into the cost field so its side-effects run). An actual cost fixes the
-  total; typed amounts then convert against it as before.
+  dollar shares BUILD the cost: the anticipated cost becomes their sum (synced into the cost field
+  so its side-effects run). A set actual cost fixes the total; a mismatch between it and the dollar
+  shares shows a pro-rata warning instead of changing the cost.
   - **The editor's Properties field IS the control** — a dropdown (`.cat-dd` pattern, grouped by
     region) that is **single-select by default**, with a "⇄ Split across multiple properties" switch
     at the foot of the list that swaps the rows over to checkboxes (`propSplitMode`, initialised

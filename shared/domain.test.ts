@@ -263,6 +263,30 @@ describe('multi-property split', () => {
     const { reasons } = glMatchScore(g, split);
     expect(reasons).toContain('exact $');
   });
+  it('amount-driven custom split: exact dollars outrank the rounded pct (Ken\'s Gutters case)', () => {
+    // $88,620 of $225,960 is 39.2193…% — stored pct rounds to 39.22, which read
+    // back as $88,621.51. With amts on every row the dollars come back exact.
+    const p = proj({
+      id: 'S2', property: 'BCND', anticipatedCost: 225960,
+      split: { mode: 'custom', list: [
+        { property: 'BCND', pct: 39.22, amt: 88620 },
+        { property: 'ECND', pct: 31.57, amt: 71340 },
+        { property: 'FHND', pct: 29.21, amt: 66000 },
+      ] },
+    });
+    expect(projOutflowFor(p, 'BCND')).toBeCloseTo(88620, 6);
+    expect(projOutflowFor(p, 'ECND')).toBeCloseTo(71340, 6);
+    expect(projOutflowFor(p, 'FHND')).toBeCloseTo(66000, 6);
+    expect(shareFor(p, 'BCND') + shareFor(p, 'ECND') + shareFor(p, 'FHND')).toBeCloseTo(1, 9);
+  });
+  it('a list with any amt missing stays pct-driven (legacy data unchanged)', () => {
+    const p = proj({
+      id: 'S3', property: 'CLND', anticipatedCost: 100000,
+      split: { mode: 'custom', list: [{ property: 'CLND', pct: 60, amt: 60000 }, { property: 'SPND', pct: 40 }] },
+    });
+    expect(shareFor(p, 'CLND')).toBe(0.6);
+    expect(shareFor(p, 'SPND')).toBe(0.4);
+  });
 });
 
 describe('reference data (seed defaults — runtime source of truth is the properties table)', () => {

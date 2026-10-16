@@ -268,11 +268,14 @@ api.get('/version', async (_req, res) => {
 
 /* ---------- projects ---------- */
 /** Normalize a multi-property split: valid entries only, pcts to 2dp; the lead
-    property (projects.property_code) is always first. <2 sites ⇒ no split. */
+    property (projects.property_code) is always first. <2 sites ⇒ no split.
+    `amt` (exact dollar share from the editor's custom mode) rides along at 2dp —
+    when every row carries one, shareFor treats the amounts as authoritative. */
 function normalizeSplit(p: Project): void {
   const list = (p.split && Array.isArray(p.split.list) ? p.split.list : [])
-    .map((a) => ({ property: String(a.property || '').toUpperCase(), pct: Math.round((Number(a.pct) || 0) * 100) / 100 }))
-    .filter((a) => a.property && a.pct > 0);
+    .map((a) => ({ property: String(a.property || '').toUpperCase(), pct: Math.round((Number(a.pct) || 0) * 100) / 100,
+                   amt: (a.amt != null && isFinite(Number(a.amt)) && Number(a.amt) >= 0) ? Math.round(Number(a.amt) * 100) / 100 : null }))
+    .filter((a) => a.property && (a.pct > 0 || (a.amt != null && a.amt > 0)));
   if (list.length < 2) { p.split = null; return; }
   const leadIdx = list.findIndex((a) => a.property === p.property);
   if (leadIdx > 0) list.unshift(list.splice(leadIdx, 1)[0]);

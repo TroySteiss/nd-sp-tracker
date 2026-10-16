@@ -370,7 +370,13 @@ function effectiveCash(code){ const c=S.cash[code]; const base=c&&c.cash!=null?N
    (default) or custom %. allocsOf falls back to a single 100% allocation. */
 const allocsOf=p=>(p&&p.split&&Array.isArray(p.split.list)&&p.split.list.length)?p.split.list:[{property:p.property,pct:100}];
 const isSplitP=p=>allocsOf(p).length>1;
-const shareFor=(p,code)=>{const a=allocsOf(p).find(x=>x.property===code);return a?(Number(a.pct)||0)/100:0;};
+/* Amount-driven custom splits (2026-10-16): when every allocation carries an
+   exact dollar `amt`, the amounts are authoritative and pct is display-only —
+   mirrors domain.ts shareFor. */
+const shareFor=(p,code)=>{const list=allocsOf(p);const a=list.find(x=>x.property===code);if(!a)return 0;
+  const amts=list.map(x=>Number(x.amt));
+  if(amts.every(v=>isFinite(v)&&v>=0)&&amts.some(v=>v>0)){const sum=amts.reduce((s,v)=>s+v,0);return (Number(a.amt)||0)/sum;}
+  return (Number(a.pct)||0)/100;};
 const involvesProp=(p,code)=>allocsOf(p).some(a=>a.property===code);
 function projForProp(code){ return S.projects.filter(p=>involvesProp(p,code)); }
 function estAdditional(code){ return projForProp(code).filter(p=>!isComplete(p)&&!p.onHold).reduce((a,p)=>a+(Number(p.anticipatedCost)||0)*shareFor(p,code),0); }
@@ -2247,7 +2253,7 @@ function openProject(id,preset){
     if(!p.split||!p.split.list)return;
     if(p.split.mode!=='custom'){
       const totalUnits=p.split.list.reduce((a,x)=>a+(Number((PROP(x.property)||{}).units)||0),0);
-      p.split.list.forEach(x=>{ const u=Number((PROP(x.property)||{}).units)||0;
+      p.split.list.forEach(x=>{ const u=Number((PROP(x.property)||{}).units)||0; x.amt=null;   // unit mode is pct-driven
         x.pct=totalUnits?Math.round(u/totalUnits*10000)/100:Math.round(10000/p.split.list.length)/100; });
     }
   }
@@ -2279,21 +2285,26 @@ function openProject(id,preset){
          allocation can start from amounts with nothing entered above. Stored at
          2 decimals, so cents-level drift on re-display is possible. */
       const costLocked=p.actualCost!=null&&p.actualCost!=='';
+      /* A $ edit stores the EXACT amounts on every row (a.amt — authoritative in
+         shareFor, so $88,620 stays $88,620); pct becomes display-only. A % edit
+         clears the amounts and the list goes back to pct-driven. */
+      const rowAmt=x=>x.amt!=null?Number(x.amt):round2((total||0)*(Number(x.pct)||0)/100);
       const shareCell=(p.split.mode==='custom')
-        ? td(el('input',{type:'number',step:'0.01',value:total?round2(total*(Number(a.pct)||0)/100):'',placeholder:'$ amount',style:'width:110px;text-align:right',
+        ? td(el('input',{type:'number',step:'0.01',value:(a.amt!=null||total)?rowAmt(a):'',placeholder:'$ amount',style:'width:110px;text-align:right',
             onchange:e=>{
               const amt=Math.max(0,Number(e.target.value)||0);
-              if(costLocked&&total){ a.pct=round2(amt/total*100); drawSplit(); return; }   // actuals fix the total — convert against it
-              const amts=p.split.list.map(x=>x===a?amt:round2((total||0)*(Number(x.pct)||0)/100));
+              const amts=p.split.list.map(x=>x===a?amt:rowAmt(x));
               const sum=round2(amts.reduce((s,v)=>s+v,0));
-              p.anticipatedCost=sum>0?sum:null;
-              p.split.list.forEach((x,i2)=>{ if(sum>0)x.pct=round2(amts[i2]/sum*100); });
-              if(typeof antInp!=='undefined'){ antInp.value=sum>0?sum:''; antInp.dispatchEvent(new Event('input',{bubbles:true})); }  // cost side-effects incl. redraw
+              p.split.list.forEach((x,i2)=>{ x.amt=amts[i2]; if(sum>0)x.pct=round2(amts[i2]/sum*100); });
+              if(!costLocked){   // no actuals: the dollar shares BUILD the anticipated cost
+                p.anticipatedCost=sum>0?sum:null;
+                if(typeof antInp!=='undefined'){ antInp.value=sum>0?sum:''; antInp.dispatchEvent(new Event('input',{bubbles:true})); }
+              }
               drawSplit();
             }}),'r')
         : el('td',{class:'num r'},total?fmt(total*(Number(a.pct)||0)/100):'—');
       const pctCell=p.split.mode==='custom'
-        ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=round2(Number(e.target.value)||0);drawSplit();}}),'r')
+        ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=round2(Number(e.target.value)||0);p.split.list.forEach(x=>{x.amt=null;});drawSplit();}}),'r')
         : td(el('span',{class:'mono'},(Number(a.pct)||0)+'%'),'r');
       tb2.append(tr(
         td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},
@@ -2303,10 +2314,19 @@ function openProject(id,preset){
     });
     t.append(tb2);
     splitBody.append(el('div',{style:'overflow:auto'},t));
-    const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
-    if(p.split.mode==='custom'&&Math.abs(sum-100)>0.1){
-      const dollarGap=total?` (shares total ${fmt(total*sum/100)} of the ${fmt(total)} cost)`:'';
-      splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Shares total ${Math.round(sum*100)/100}%${dollarGap} — they must equal 100% of the cost to save.`));
+    const amtDriven=p.split.mode==='custom'&&p.split.list.every(x=>x.amt!=null);
+    if(amtDriven){
+      // Amounts are authoritative; the only inconsistency possible is against a
+      // locked actual cost (unlocked, the anticipated cost IS their sum).
+      const amtSum=round2(p.split.list.reduce((a,x)=>a+(Number(x.amt)||0),0));
+      if(p.actualCost!=null&&p.actualCost!==''&&Math.abs(amtSum-total)>0.01)
+        splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Dollar shares total ${fmt(amtSum)} but the actual cost is ${fmt(total)} — shares are allocated pro-rata to the amounts entered.`));
+    } else if(p.split.mode==='custom'){
+      const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
+      if(Math.abs(sum-100)>0.1){
+        const dollarGap=total?` (shares total ${fmt(total*sum/100)} of the ${fmt(total)} cost)`:'';
+        splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Shares total ${Math.round(sum*100)/100}%${dollarGap} — they must equal 100% of the cost to save.`));
+      }
     }
     if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},p.split.mode==='custom'
       ?'Type a dollar share per property — the anticipated cost is set to their sum.'

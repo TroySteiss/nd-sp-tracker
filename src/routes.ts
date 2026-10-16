@@ -109,13 +109,13 @@ api.post('/projects/:id/clear-revision', requireAdmin, async (req, res) => {
    never overwrites role/sites on conflict, so a pre-assignment survives login.
    Env ADMIN_USERS / MANAGER_USERS still win over any role stored here. */
 api.get('/users', requireAdmin, async (_req, res) => {
-  const rows = (await query<any>('select key, display, role, sites, updated_at, last_seen from app_users order by role, key')).rows;
+  const rows = (await query<any>('select key, display, role, sites, email, updated_at, last_seen from app_users order by role, key')).rows;
   res.json(rows.map(r => ({
     key: r.key, display: r.display || r.key,
     role: isAdminUser(r.display || r.key) ? 'admin' : isManagerUser(r.display || r.key) ? 'manager' : r.role,
     // Env-allowlisted tiers can't be edited here — they're set by ADMIN_USERS / MANAGER_USERS.
     envAdmin: isManagerUser(r.display || r.key),
-    sites: Array.isArray(r.sites) ? r.sites : [], updatedAt: r.updated_at,
+    sites: Array.isArray(r.sites) ? r.sites : [], email: r.email || '', updatedAt: r.updated_at,
     lastSeen: r.last_seen,          // null ⇒ created by an admin, never signed in
   })));
 });
@@ -167,7 +167,14 @@ api.patch('/users/:key', requireAdmin, async (req, res) => {
   const key = normUser(req.params.key);
   const cur = (await query<any>('select key, display, role, sites from app_users where key=$1', [key])).rows[0];
   if (!cur) return res.status(404).json({ error: 'No such user' });
+  // Email (035) is editable for EVERYONE, env-tier users included — it only feeds
+  // the multi-entity notice default, never a permission. The env guard below
+  // protects role/sites only.
+  if (req.body?.email !== undefined) {
+    await query('update app_users set email=$2, updated_at=now() where key=$1', [key, String(req.body.email).trim().slice(0, 120)]);
+  }
   if (isManagerUser(cur.display || cur.key)) {
+    if (req.body?.role === undefined && req.body?.sites === undefined) return res.json({ ok: true });   // email-only update
     return res.status(400).json({
       error: 'This user is an admin or manager via the ADMIN_USERS / MANAGER_USERS env vars; change it there',
     });
@@ -923,7 +930,10 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
       // TO: block on Exhibit C — exactly how the executed contracts read.
       // `||`, not `??`: the builder posts '' for a field left blank, and a blank
       // must fall back to what is stored on the property, not override it.
-      noticeAddr: String(p.noticeAddr || r.owner_notice_addr || '').trim(),
+      // Fallback is the property's OWN address (2026-10-16, per Troy): a notice
+      // address typed on an earlier single-entity contract (owner_notice_addr)
+      // must not carry over into a multi-entity contract.
+      noticeAddr: String(p.noticeAddr || r.address || '').trim(),
       noticePhone: String(p.noticePhone || r.notice_phone || '').trim(),
       noticeEmail: String(p.noticeEmail || r.notice_email || '').trim(),
       // A property's share is either one lump sum or an up-front plus an ongoing
@@ -1891,7 +1901,15 @@ api.patch('/regions/:name', requireAdmin, async (req, res) => {
       await c.query('update regions set color=$1 where name=$2', [color || null, newName]);
       if (color) recoloured = await reRampRegion(newName, c);
     }
+    // AM / RM business phones + emails (035) — the multi-entity builder's notice
+    // defaults. Each is sent explicitly (possibly '') to set or clear.
+    const contact: [string, string, number][] = [['amPhone', 'am_phone', 40], ['rmPhone', 'rm_phone', 40], ['amEmail', 'am_email', 120], ['rmEmail', 'rm_email', 120]];
+    for (const [key, col, cap] of contact) {
+      if (b[key] !== undefined) await c.query(`update regions set ${col}=$1 where name=$2`, [String(b[key]).trim().slice(0, cap) || null, newName]);
+    }
   });
+  if (['amPhone', 'rmPhone', 'amEmail', 'rmEmail'].some((k) => b[k] !== undefined)) logChange(req, { action: 'region.contacts', entityType: 'region', entityId: newName,
+    summary: `Region "${newName}" notice contacts updated (AM ${String(b.amPhone ?? '').trim() || '—'} ${String(b.amEmail ?? '').trim() || ''}, RM ${String(b.rmPhone ?? '').trim() || '—'} ${String(b.rmEmail ?? '').trim() || ''})`.replace(/\s+/g, ' ').trim() });
   if (newName !== oldName) logChange(req, { action: 'region.rename', entityType: 'region', entityId: newName, summary: `Region "${oldName}" renamed to "${newName}"` });
   if (wantColor) logChange(req, { action: 'region.color', entityType: 'region', entityId: newName,
     summary: color

@@ -207,7 +207,7 @@ export async function assembleState(): Promise<AppState> {
     notes: r.notes ?? '', fileKey: r.file_key ?? null, fileName: r.file_name ?? null,
     createdBy: r.created_by ?? '',
   }));
-  const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0, color: r.color ?? '' }));
+  const regionList = regions.rows.map((r: any) => ({ name: r.name, sort: r.sort ?? 0, color: r.color ?? '', amPhone: r.am_phone ?? '', rmPhone: r.rm_phone ?? '', amEmail: r.am_email ?? '', rmEmail: r.rm_email ?? '' }));
 
   return { meta: metaObj, properties, regions: regionList, cash: cashMap, cashAdjustments, gl: glLines, projects, contracts: contractRecords, contractors, budgetItems };
 }

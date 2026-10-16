@@ -89,6 +89,17 @@ export async function getUserRecord(username?: string): Promise<UserRecord | nul
   }
 }
 
+/** The user's own email (Settings ▸ Users & roles) — a stored setting, never
+    derived from the name: real addresses vary between First.Last@ and
+    first-initial+lastname@, and a guessed address on a contract notice is worse
+    than none. Feeds the multi-entity builder's notice-email default. */
+export async function userEmail(username?: string): Promise<string> {
+  const key = normUser(username);
+  if (!key) return '';
+  try { return String((await query<any>('select email from app_users where key=$1', [key])).rows[0]?.email || '').trim(); }
+  catch { return ''; }   // pre-migration DB
+}
+
 export async function roleOf(username?: string): Promise<Role> {
   // Env allowlists are authoritative and outrank anything on the roster.
   if (isAdminUser(username)) return 'admin';
@@ -175,7 +186,7 @@ export async function login(req: Request, res: Response) {
   req.session.username = user;
   touchUser(user).catch(() => { /* roster is best-effort */ });
   const role = await roleOf(user);
-  res.json({ ok: true, username: user, isAdmin: role === 'admin', isManager: role === 'admin' || role === 'manager', role });
+  res.json({ ok: true, username: user, isAdmin: role === 'admin', isManager: role === 'admin' || role === 'manager', role, email: await userEmail(user) });
 }
 
 export function logout(req: Request, res: Response) {
@@ -196,6 +207,7 @@ export async function status(req: Request, res: Response) {
     isManager: role === 'admin' || role === 'manager',
     role,
     sites: rec ? rec.sites : undefined,   // PM's covered sites; drives the /pm first-run picker
+    email: authed ? await userEmail(req.session.username) : '',
     appTitle,
   });
 }

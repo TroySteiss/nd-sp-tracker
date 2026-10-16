@@ -273,6 +273,7 @@ async function resetSeed(){ try{ await API.send('POST','/reset'); await afterWri
 async function restoreBackup(state){ try{ await API.send('POST','/restore',state); await afterWrite('Backup restored'); }catch(e){ toast('That file is not a valid backup.'); } }
 /* ---------- login (username + shared password) ---------- */
 let USER='';       // signed-in username (First.Last), from the session
+let USER_EMAIL=''; // their email from the roster (Settings ▸ Users & roles) — a stored setting, never derived from the name
 let IS_ADMIN=false;   // top-level admins only: Settings, Change log, approvals, countersign.
                       // Mirrored from /api/auth/status; the server enforces regardless.
                       // The 'manager' tier exists server-side but grants nothing extra yet.
@@ -303,7 +304,7 @@ async function start(){
       }
       r=await send(true);
     }
-    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){}
+    if(r.ok){ const j=await r.json().catch(()=>({})); USER=username; USER_EMAIL=j.email||''; IS_ADMIN=!!j.isAdmin; try{localStorage.setItem('sp-username',username);}catch(e){}
       // Property managers get the simplified view; the full tracker never loads for them.
       if(j.role==='pm'){ location.href='/pm'; return; }
       hideLogin(); await boot(); }
@@ -313,7 +314,7 @@ async function start(){
     setLoginTitle(st.appTitle);
     if(st.authed){
       if(st.role==='pm'){ location.href='/pm'; return; }   // returning PM session
-      USER=st.username||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
+      USER=st.username||''; USER_EMAIL=st.email||''; IS_ADMIN=!!st.isAdmin; hideLogin(); await boot(); } else { showLogin(); } }
   catch(e){ showLogin(); }
 }
 /* ---------- Derived ---------- */
@@ -2261,19 +2262,25 @@ function openProject(id,preset){
       'The total cost is shared between the ticked sites — each property’s cash & budget projections carry only its slice. “By unit count” keeps the allocation pro-rata as unit counts change. Add or remove sites in the Properties dropdown above.'));
     const seg=el('div',{class:'seg-ctl sm',style:'margin-bottom:10px'},
       el('button',{class:p.split.mode!=='custom'?'on':'',onclick:()=>{p.split.mode='units';drawSplit();}},'By unit count'),
-      el('button',{class:p.split.mode==='custom'?'on':'',onclick:()=>{p.split.mode='custom';drawSplit();}},'Custom %'));
+      el('button',{class:p.split.mode==='custom'?'on':'',onclick:()=>{p.split.mode='custom';drawSplit();}},'Custom'));
     splitBody.append(seg);
     const total=projOutflow(p);
+    const round2=n=>Math.round(n*100)/100;
     const t=el('table',{class:'tbl'});
     t.append(el('thead',{},tr(th('Property'),th('Units','r'),th('Share %','r'),th('$ share','r'))));
     const tb2=el('tbody');
-    const shareCells=[];
     p.split.list.forEach(a=>{
       const u=Number((PROP(a.property)||{}).units)||0;
-      const shareCell=el('td',{class:'num r'},total?fmt(total*(Number(a.pct)||0)/100):'—');
-      shareCells.push({a,cell:shareCell});
+      /* Custom mode (2026-10-16): edit EITHER the % or the $ — typing a dollar
+         amount derives the % (what is stored; shares stay a ratio of the cost
+         everywhere else). Stored at 2 decimals, so a cents-level drift between
+         the typed amount and the re-derived one is possible on large totals. */
+      const shareCell=(p.split.mode==='custom'&&total)
+        ? td(el('input',{type:'number',step:'0.01',value:round2(total*(Number(a.pct)||0)/100),style:'width:110px;text-align:right',
+            onchange:e=>{const amt=Number(e.target.value)||0;a.pct=round2(Math.max(0,amt)/total*100);drawSplit();}}),'r')
+        : el('td',{class:'num r'},total?fmt(total*(Number(a.pct)||0)/100):'—');
       const pctCell=p.split.mode==='custom'
-        ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=Math.round((Number(e.target.value)||0)*100)/100;drawSplit();}}),'r')
+        ? td(el('input',{type:'number',step:'0.01',value:a.pct,style:'width:90px;text-align:right',onchange:e=>{a.pct=round2(Number(e.target.value)||0);drawSplit();}}),'r')
         : td(el('span',{class:'mono'},(Number(a.pct)||0)+'%'),'r');
       tb2.append(tr(
         td(el('span',{style:'display:inline-flex;align-items:center;gap:6px'},
@@ -2284,9 +2291,11 @@ function openProject(id,preset){
     t.append(tb2);
     splitBody.append(el('div',{style:'overflow:auto'},t));
     const sum=p.split.list.reduce((a,x)=>a+(Number(x.pct)||0),0);
-    if(p.split.mode==='custom'&&Math.abs(sum-100)>0.1)
-      splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Percentages total ${Math.round(sum*100)/100}% — they must equal 100% to save.`));
-    if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},'Enter an anticipated or actual cost above to see dollar shares.'));
+    if(p.split.mode==='custom'&&Math.abs(sum-100)>0.1){
+      const dollarGap=total?` (shares total ${fmt(total*sum/100)} of the ${fmt(total)} cost)`:'';
+      splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--rust)'},`⚠ Shares total ${Math.round(sum*100)/100}%${dollarGap} — they must equal 100% of the cost to save.`));
+    }
+    if(!total) splitBody.append(el('div',{style:'margin-top:8px;font-size:12px;color:var(--ink-3)'},'Enter an anticipated or actual cost above to '+(p.split.mode==='custom'?'type dollar shares':'see dollar shares')+'.'));
   }
   b.append(splitPanel);
   drawSplit();
@@ -3799,6 +3808,17 @@ async function openMultiContract(){
   const inp=(key,ph,type)=>el('input',{type:type||'text',placeholder:ph||'',value:d[key]||'',
     oninput:e=>{ d[key]=e.target.value; if(key==='contractorName') fillContractor(e.target.value); }});
 
+  /* Roster (names + emails) backs the owner-reps default: an AM/RM email from
+     the region settings gets its person's display name. Loaded async; names
+     that arrive late are filled into still-nameless auto-added reps. */
+  let ROSTER=[], defaultReps=null;
+  const repName=em=>{ const hit=ROSTER.find(u2=>String(u2.email||'').trim().toLowerCase()===String(em||'').trim().toLowerCase()); return hit?hit.display:''; };
+  API.get('/users').then(r=>{ ROSTER=Array.isArray(r)?r:[];
+    let touched=false;
+    d.ownerReps.forEach(x=>{ if(!String(x.name||'').trim()&&String(x.email||'').trim()){ const n=repName(x.email); if(n){x.name=n;touched=true;} } });
+    if(touched&&typeof renderReps==='function') renderReps();
+  }).catch(()=>{});
+
   /* ---- 1. Properties → entities ---- */
   const pPanel=el('div',{class:'panel',style:'margin-bottom:14px'});
   pPanel.append(el('div',{class:'ph'},el('h3',{},'Properties & owner entities')));
@@ -3845,13 +3865,23 @@ async function openMultiContract(){
     d.properties.forEach(code=>{
       const pp=d.perProperty[code]=d.perProperty[code]||{sum:'',upfront:'',ongoing:''};
       const pr=PROP(code)||{};
-      // Autofill the notice fields from the property the first time it is ticked,
-      // so they arrive filled in and editable rather than as grey placeholders.
-      // `??=` only fills a field that has never been touched, so re-ticking a
-      // property doesn't overwrite something typed here.
-      if(pp.noticeAddr==null) pp.noticeAddr=pr.ownerNoticeAddr||pr.address||'';
-      if(pp.noticePhone==null) pp.noticePhone=pr.noticePhone||'';
-      if(pp.noticeEmail==null) pp.noticeEmail=pr.noticeEmail||'';
+      // Autofill the notice fields the first time a property is ticked, so they
+      // arrive filled in and editable rather than as grey placeholders. Only a
+      // never-touched field fills, so re-ticking doesn't overwrite typed text.
+      // Address: the property's OWN address (2026-10-16, per Troy) — a notice
+      // address typed on an earlier single-entity contract must not carry over.
+      // Phone & email: the region's AM / RM contacts (Settings ▸ Regions), the
+      // email additionally carrying the signed-in user's own address (their
+      // roster email in Settings ▸ Users & roles — stored, never derived from
+      // the name). Both fall back to the property's remembered values when the
+      // region has none.
+      const rg=(S.regions||[]).find(r2=>r2.name===pr.region)||{};
+      const joinAmRm=(am,rm,extra)=>{ am=String(am||'').trim(); rm=String(rm||'').trim(); extra=String(extra||'').trim();
+        if(extra&&[am,rm].some(v=>v.toLowerCase()===extra.toLowerCase()))extra='';   // the generating user often IS the AM — don't print them twice
+        return [am&&('AM '+am),rm&&('RM '+rm),extra].filter(Boolean).join(' / '); };
+      if(pp.noticeAddr==null) pp.noticeAddr=pr.address||'';
+      if(pp.noticePhone==null) pp.noticePhone=joinAmRm(rg.amPhone,rg.rmPhone)||pr.noticePhone||'';
+      if(pp.noticeEmail==null) pp.noticeEmail=joinAmRm(rg.amEmail,rg.rmEmail,USER_EMAIL)||pr.noticeEmail||'';
       const cells=[td(el('div',{style:'font-size:12px'},el('div',{},propChip(code),' ',pr.name||code),
         el('div',{style:'color:var(--ink-3);font-size:11px'},pr.ownerEntity||'⚠ no owner entity')))];
       if(d.splitAmounts){
@@ -3869,7 +3899,7 @@ async function openMultiContract(){
     refreshTotals();
     perWrap.append(el('p',{class:'bs-hint',style:'margin:12px 0 6px'},d.splitAmounts
       ? `Each property prints as two separate line items — "(up front)" and "(${period})" — under the Contract Sum and in Exhibit B, so a mobilisation or setup charge never reads as part of the recurring fee. Leave either blank to print only the other.`
-      : 'A share per property is optional — leave blank for a single lump sum. Notice phone/email default to whatever is already on the property and are remembered for next time.'),
+      : 'A share per property is optional — leave blank for a single lump sum. Notice address defaults to the property’s own address; notice phone and email default to the region’s AM / RM contacts plus your own email (set all of those in Settings ▸ Regions and Users & roles).'),
       el('div',{style:'overflow:auto'},t),
       el('p',{class:'bs-hint',style:'margin:6px 0 0'},'Entered totals are a check for you — only the Contract Sum you typed is printed on the contract.'));
   };
@@ -3880,6 +3910,7 @@ async function openMultiContract(){
       if(e.target.checked){ if(!d.properties.includes(p.code)) d.properties.push(p.code); }
       else d.properties=d.properties.filter(c=>c!==p.code);
       renderPer();
+      if(typeof defaultReps==='function')defaultReps();   // AM/RM/user become the reps while the rep rows are untouched
     }});
     cb.checked=d.properties.includes(p.code);
     grid.append(el('label',{style:'display:flex;align-items:center;gap:7px;font-size:12.5px;padding:3px 0;cursor:pointer'},
@@ -3932,12 +3963,18 @@ async function openMultiContract(){
   const phoneInp=inp('contractorPhone','Phone');
   const emailInp=inp('contractorEmail','Email');
   function fillContractor(name){
-    const hit=(S.contractors||[]).find(c=>c.name.toLowerCase()===String(name||'').toLowerCase());
+    const hit=(S.contractors||[]).find(c=>c.name.trim().toLowerCase()===String(name||'').trim().toLowerCase());
     if(!hit) return;
-    if(!d.contractorAddr&&hit.address){ d.contractorAddr=hit.address; addrInp.value=hit.address; }
-    if(!d.contractorPhone&&hit.phone){ d.contractorPhone=hit.phone; phoneInp.value=hit.phone; }
-    if(!d.contractorEmail&&hit.email){ d.contractorEmail=hit.email; emailInp.value=hit.email; }
+    // An exact directory match means "use this contractor" — pull its details in,
+    // REPLACING what's there (it used to fill only blank fields, so switching
+    // contractors kept the old one's address/phone/email). The fields stay
+    // editable; a detail the directory doesn't have keeps whatever is typed.
+    if(hit.address){ d.contractorAddr=hit.address; addrInp.value=hit.address; }
+    if(hit.phone){ d.contractorPhone=hit.phone; phoneInp.value=hit.phone; }
+    if(hit.email){ d.contractorEmail=hit.email; emailInp.value=hit.email; }
   }
+  nameInp.addEventListener('blur',()=>fillContractor(d.contractorName));   // typed-then-clicked-away also pulls in
+  if(d.contractorName&&!d.contractorAddr) fillContractor(d.contractorName);   // resumed draft with a bare name
   cb2.append(dl,field('Name',nameInp),field('Address',addrInp),
     el('div',{style:'display:grid;grid-template-columns:1fr 1fr;gap:12px'},field('Phone',phoneInp),field('Email',emailInp)));
   body.append(cPanel);
@@ -3976,7 +4013,23 @@ async function openMultiContract(){
     });
     repsWrap.append(el('button',{class:'btn sm',onclick:()=>{d.ownerReps.push({name:'',email:''});renderReps();}},'＋ Add representative'));
   };
+  /* Default the representatives from the same contacts the notices use
+     (2026-10-16, per Troy): the ticked regions' AM & RM plus the signed-in
+     user, names looked up from the roster by email. Only fires while every
+     rep row is still blank, so typed reps are never overwritten. */
+  defaultReps=()=>{
+    if(!d.properties.length) return;
+    if(d.ownerReps.some(r2=>String(r2.name||'').trim()||String(r2.email||'').trim())) return;
+    const seen=new Set(), reps=[];
+    const add=(name,email)=>{ email=String(email||'').trim(); if(!email)return;
+      const k=email.toLowerCase(); if(seen.has(k))return; seen.add(k);
+      reps.push({name:String(name||'').trim()||repName(email),email}); };
+    d.properties.forEach(c=>{ const rr=(S.regions||[]).find(x=>x.name===(PROP(c)||{}).region)||{}; add('',rr.amEmail); add('',rr.rmEmail); });
+    add(USER,USER_EMAIL);
+    if(reps.length){ d.ownerReps=reps; renderReps(); }
+  };
   renderReps();
+  defaultReps();   // a resumed draft may already have properties ticked
   rBody.append(el('p',{class:'bs-hint',style:'margin:0 0 10px'},'Named in Section 1 and again in the Owner\'s Representatives section, which is where copies of every notice must go.'),repsWrap);
   body.append(rPanel);
 
@@ -6073,7 +6126,7 @@ function viewSettings(){
     catch(e){ utb.append(el('div',{style:'color:var(--bad)'},'Could not load users: '+e.message)); return; }
     if(!rows.length){ utb.append(el('div',{style:'color:var(--ink-3);font-size:13px'},'Nobody on the roster yet — add someone above.')); return; }
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('User'),th('Role'),th('Sites (PM only)'),th('Signed in'),th(''))));
+    t.append(el('thead',{},tr(th('User'),th('Role'),th('Sites (PM only)'),th('Email'),th('Signed in'),th(''))));
     const tb=el('tbody');
     rows.forEach(u=>{
       const roleSel=el('select',{style:inpStyle+';width:auto',disabled:u.envAdmin?'':null},
@@ -6082,6 +6135,10 @@ function viewSettings(){
       const sitesI=el('input',{value:(u.sites||[]).join(', '),placeholder:'e.g. CLND, SPND',style:inpStyle,
                                disabled:(u.role==='pm'&&!u.envAdmin)?null:'disabled'});
       roleSel.addEventListener('change',()=>{ sitesI.disabled = roleSel.value!=='pm'; });
+      // Email (035): editable for everyone, env-tier users included — stored, not
+      // derived (addresses vary between First.Last@ and tsteiss@-style). Feeds the
+      // multi-entity contract builder's notice-email default for this user.
+      const emailI=el('input',{type:'email',value:u.email||'',placeholder:'name@monarchinvestment.com',style:inpStyle});
       // A pre-created account has never been used — say so, since "row exists"
       // no longer implies the person has logged in.
       const seen=u.lastSeen
@@ -6089,13 +6146,18 @@ function viewSettings(){
         : el('span',{class:'chip'},'not yet');
       tb.append(tr(
         td(el('div',{}, el('strong',{},u.display), el('div',{style:'color:var(--ink-3);font-size:12px'},u.key))),
-        td(roleSel), td(sitesI), td(seen),
+        td(roleSel), td(sitesI), td(emailI), td(seen),
         td(el('div',{style:'display:flex;gap:6px'},
-          el('button',{class:'btn sm',disabled:u.envAdmin?'':null,onclick:async()=>{
+          el('button',{class:'btn sm',title:u.envAdmin?'Role and sites are set by env vars — this saves the email only':'',onclick:async()=>{
             try{
-              await API.send('PATCH','/users/'+encodeURIComponent(u.key),{
+              // Env-tier rows: email only (their role/sites live in ADMIN_USERS / MANAGER_USERS).
+              const payload=u.envAdmin?{email:emailI.value.trim()}:{
                 role:roleSel.value,
-                sites:sitesI.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean)});
+                sites:sitesI.value.split(',').map(s=>s.trim().toUpperCase()).filter(Boolean),
+                email:emailI.value.trim()};
+              await API.send('PATCH','/users/'+encodeURIComponent(u.key),payload);
+              const normU=s=>String(s||'').toLowerCase().replace(/[^a-z]/g,'');   // mirrors auth.ts normUser
+              if(normU(u.key)===normU(USER)) USER_EMAIL=emailI.value.trim();   // own row — the builder default follows immediately
               toast('Saved '+u.display); await loadUsers();
             }catch(e){ toast('Failed: '+e.message); }
           }},'Save'),
@@ -6118,7 +6180,7 @@ function viewSettings(){
   rpad.append(el('p',{style:'margin:0 0 10px;color:var(--ink-3);font-size:12.5px'},
     'Give a region one base colour and every property in it becomes a shade of it — no need to pick colours property by property. A property can still be recoloured individually in its own editor; that sticks until the region colour is set again.'));
   regs.forEach((r,i)=>{
-    const row=el('div',{style:'display:flex;align-items:center;gap:8px;padding:7px 0;border-bottom:1px solid var(--line)'});
+    const row=el('div',{style:'display:flex;align-items:center;gap:8px;padding:7px 0'});
     const inRegion=S.properties.filter(p=>p.region===r.name);
     const nProps=inRegion.length;
     /* Base colour → shade ramp. Saving re-shades every property in the region
@@ -6164,6 +6226,19 @@ function viewSettings(){
       el('button',{class:'btn ghost sm',title:'Delete',onclick:async()=>{ if(!confirm('Delete region "'+r.name+'"? Only possible when it has no properties.'))return;
         try{ await API.send('DELETE','/regions/'+encodeURIComponent(r.name)); await afterWrite('Region deleted'); }catch(e){ toast(e.message); } }},'🗑'));
     rpad.append(row);
+    /* AM / RM notice contacts (035) — the multi-entity contract builder defaults
+       every property's notice phone to "AM <phone> / RM <phone>" and its notice
+       email to "AM <email> / RM <email> / <your email>" for its region. */
+    const cIn=(ph,val)=>el('input',{placeholder:ph,value:val||'',style:inpStyle+';font-size:12px;padding:5px 8px'});
+    const amP=cIn('AM phone',r.amPhone), rmP=cIn('RM phone',r.rmPhone), amE=cIn('AM email',r.amEmail), rmE=cIn('RM email',r.rmEmail);
+    rpad.append(el('div',{style:'display:grid;grid-template-columns:repeat(4,minmax(120px,1fr)) auto;gap:8px;align-items:center;padding:0 0 10px;border-bottom:1px solid var(--line)'},
+      amP, rmP, amE, rmE,
+      el('button',{class:'btn ghost sm',title:'Save '+r.name+'’s AM / RM notice contacts — the multi-entity contract builder defaults each property’s notice phone & email to these',
+        onclick:async()=>{
+          try{ await API.send('PATCH','/regions/'+encodeURIComponent(r.name),{amPhone:amP.value,rmPhone:rmP.value,amEmail:amE.value,rmEmail:rmE.value});
+               await afterWrite(r.name+' notice contacts saved'); }
+          catch(e){ toast('Failed: '+e.message); }
+        }},'Save contacts')));
   });
   const newRegI=el('input',{placeholder:'New region name…',style:inpStyle+';flex:1'});
   rpad.append(el('div',{style:'display:flex;gap:8px;margin-top:12px'}, newRegI,

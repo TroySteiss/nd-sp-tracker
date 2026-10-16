@@ -99,6 +99,9 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
   (016). Helpers `allocsOf/isSplit/shareFor/involvesProp/projOutflowFor` in domain.ts (mirrored in
   app.js). `projForProp` includes split projects; cashModel/glMatchScore/email amounts are
   share-weighted. Server normalizes via `normalizeSplit` (lead = list[0] = projects.property_code).
+  Custom mode (2026-10-16, per Troy): the Cost-allocation table takes EITHER a % or a **$ amount**
+  per property — a typed amount derives the stored pct (2dp, so cents-level drift on re-display is
+  possible on large totals); the ≠100% warning also reports the dollar shortfall vs the cost.
   - **The editor's Properties field IS the control** — a dropdown (`.cat-dd` pattern, grouped by
     region) that is **single-select by default**, with a "⇄ Split across multiple properties" switch
     at the foot of the list that swaps the rows over to checkboxes (`propSplitMode`, initialised
@@ -641,6 +644,23 @@ One Independent Contractor Agreement covering work across several properties own
 LLCs — landscaping/snow, pest, pool. **Not** a Special Project: no `project_id`, no bid slots, no
 lifecycle, no signature chain. Entered from *Contractors ▸ ＋ New multi-entity contract* (that tab
 is top-tier admin only — see below).
+
+- **Notice defaults (035, 2026-10-16, per Troy):** each region carries AM/RM phone + email
+  (Settings ▸ Regions, `regions.am_phone/rm_phone/am_email/rm_email`), and each user their own
+  email (Settings ▸ Users & roles, `app_users.email` — a stored setting, never derived from the
+  name; addresses vary between First.Last@ and tsteiss@-style). Migration 035 seeds the five known
+  users' emails and each region's RM contact (matched from its properties' dominant manager); AM
+  contacts are typed in Settings. In the builder, a ticked property's notice phone defaults to
+  `AM <phone> / RM <phone>`, its notice email to `AM / RM / <user's email>` (deduped when the user
+  IS the AM), and its notice ADDRESS to the property's OWN address — `owner_notice_addr` from
+  earlier single-entity contracts no longer carries over (the server-side blank fallback is
+  `properties.address` too). The user's email rides on `/api/auth/status` + login (`USER_EMAIL`).
+- **Owner's Representatives default (2026-10-16):** while every rep row is blank, ticking
+  properties fills the reps from the same contacts — each ticked region's AM & RM emails plus the
+  signed-in user, deduped, names resolved from the roster by email. Typed reps are never replaced.
+- **Contractor pull-in (2026-10-16):** an exact directory match now REPLACES address/phone/email
+  (it used to fill only blanks, so switching contractors kept the old one's details); also fires
+  on blur and when resuming a draft that has a bare name.
 
 - **It defaults to a recurring SERVICE agreement.** This form began as Monarch's build contract, so
   it carries punch lists, a Certificate of Occupancy payment condition, a drawings-and-specifications

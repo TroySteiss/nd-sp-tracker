@@ -832,7 +832,9 @@ function viewContracts(){
   };
   const latestByProj=new Map();
   (S.contracts||[]).forEach(c=>{
-    const key=isMulti(c)?'multi:'+c.id:c.projectId;
+    // A multi row generated FROM a project carries its projectId and behaves
+    // like that project's contract (regenerations collapse, chain status reads).
+    const key=(isMulti(c)&&!c.projectId)?'multi:'+c.id:c.projectId;
     const ex=latestByProj.get(key);
     if(!ex||String(c.createdAt||'')>String(ex.createdAt||'')) latestByProj.set(key,c);
   });
@@ -843,7 +845,7 @@ function viewContracts(){
   const statusOf=c=>{
     // A multi-entity contract has no project, so there is no signature chain to
     // read: it is generated, then handled outside the tracker.
-    if(isMulti(c)) return 'generated';
+    if(isMulti(c)&&!c.projectId) return 'generated';
     const pr=projById.get(c.projectId);
     if(pr&&pr.executedContractFileKey) return 'executed';
     if(pr&&pr.steps&&pr.steps.signed) return 'countersigned';
@@ -2662,8 +2664,8 @@ function openProject(id,preset){
      (27 sections, Exhibits A–E) — those sites are owned by different LLCs, so
      the single-property SP template can't name the Owner correctly. Prefill the
      multi builder from the project rather than making the admin retype it. */
-  function openMultiFromProject(){
-    const approved=p.bids.find(b2=>b2.approved)||{};
+  async function openMultiFromProject(){
+    const approved=p.bids.find(b2=>b2.approved)||p.bids.find(b2=>(Array.isArray(b2.files)&&b2.files.length)||b2.fileKey)||{};
     const total=projOutflow(p);
     const usdM=n=>'$'+Number(n).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     const per={};
@@ -2671,8 +2673,15 @@ function openProject(id,preset){
     // sums print on the contract — formatted ($, commas), never raw numbers.
     allocsOf(p).forEach(a=>{ const amt=Math.round(total*shareFor(p,a.property)*100)/100;
       per[a.property]={sum:amt?usdM(amt):'',upfront:'',ongoing:''}; });
-    const f0=(approved.files&&approved.files[0])||{};
+    // Bids carry a `files` list; the legacy single fileKey is the fallback.
+    const bidFiles=(Array.isArray(approved.files)&&approved.files.length)?approved.files:(approved.fileKey?[{fileKey:approved.fileKey,fileName:approved.fileName}]:[]);
+    const f0=bidFiles[0]||{};
+    // Page count for the scope previewer — the builder only knew it for bids
+    // uploaded inside the builder, so a project's bid had no "Review bid pages".
+    let pageCount=0;
+    if(f0.fileKey){ try{ const list=await API.get('/projects/'+p.id+'/bid-pages'); const hit=(list||[]).find(x=>x.fileKey===f0.fileKey); pageCount=(hit&&hit.pages)||0; }catch(e){ pageCount=0; } }
     MULTI_DRAFT=Object.assign(multiDraftDefaults(),{
+      projectId:p.id,                           // the generated contract attaches to this project
       properties:selCodes().slice(),
       perProperty:per,
       contractorName:(approved.contractor||p.contractor||'').trim(),
@@ -2681,7 +2690,8 @@ function openProject(id,preset){
       scope:p.plan||p.name||'',
       effectiveDate:today(),
       workCompletionDate:p.plannedEnd||'',
-      bidFileKey:f0.fileKey||'', bidFileName:f0.fileName||'',
+      bidFileKey:f0.fileKey||'', bidFileName:f0.fileName||'', bidPageCount:pageCount,
+      _seeded:true,
     });
     close();                                    // the editor would sit under the builder
     openMultiContract();
@@ -3162,7 +3172,11 @@ function openProject(id,preset){
 
   function openContractDialog(){
     const prop=PROP(p.property)||{};
-    const approved=p.bids.find(b=>b.approved&&b.fileKey)||p.bids.find(b=>b.fileKey)||{};
+    // The approved bid wins whatever shape its document takes — bids now carry a
+    // `files` list and only gain the legacy `fileKey` on save, so matching on
+    // fileKey alone skipped a freshly approved bid and nothing pulled through.
+    const hasDoc=b=>(Array.isArray(b.files)&&b.files.length>0)||!!b.fileKey;
+    const approved=p.bids.find(b=>b.approved)||p.bids.find(hasDoc)||{};
     const total=p.actualCost!=null?p.actualCost:(approved.amount!=null?(bidTotal(p,approved)??0):(p.anticipatedCost!=null?p.anticipatedCost:0));
     const usd=n=>'$'+Number(n||0).toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
     const isoToMdy=iso=>{const m=String(iso||'').split('-');return m.length===3?`${m[1]}/${m[2]}/${m[0]}`:'';};
@@ -3172,8 +3186,12 @@ function openProject(id,preset){
     const ctrByName=nm=>(S.contractors||[]).find(c=>c.name.trim().toLowerCase()===String(nm||'').trim().toLowerCase());
     const initCtrName=(approved.contractor||p.contractor||'');
     const initCtr=ctrByName(initCtrName);
+    // End date defaults to the project's planned end when it is still ahead of
+    // us, so a date changed in the editor carries onto the contract; +60 days
+    // only when the project has none (or it has already passed).
+    const endIso=(p.plannedEnd&&p.plannedEnd>=today())?p.plannedEnd:plusDaysIso(60);
     const data={
-      effectiveDate:isoToMdy(today()), termEndDate:plusDays(60),
+      effectiveDate:isoToMdy(today()), termEndDate:isoToMdy(endIso),
       ownerEntity:prop.ownerEntity||'', contractorName:initCtrName,
       propertyName:prop.name||'', propertyAddr:prop.address||'',
       ownerNoticeAddr:prop.ownerNoticeAddr||prop.address||'', contractorAddr:(initCtr&&initCtr.address)||'',
@@ -3197,8 +3215,11 @@ function openProject(id,preset){
     bb.append(f('Owner notice address','ownerNoticeAddr',{ph:'usually same as property'}));
     // --- Contract ---
     sect('Contract');
-    const dateFld=(label,key,initIso)=>{const inp=el('input',{type:'date',value:initIso,onchange:e=>data[key]=isoToMdy(e.target.value),oninput:e=>data[key]=isoToMdy(e.target.value)});return el('div',{class:'field'},el('label',{},label),inp);};
-    bb.append(el('div',{class:'frow'}, dateFld('Start date','effectiveDate',today()), dateFld('End date','termEndDate',plusDaysIso(60))));
+    // A lead-date change re-syncs the combined segments (the lead's completion
+    // is copied from termEndDate), otherwise the segment printed the old date.
+    const onDate=(key,v)=>{ data[key]=isoToMdy(v); if(key==='termEndDate'&&typeof syncCombine==='function'&&data.combineProjectIds&&data.combineProjectIds.length) syncCombine(); };
+    const dateFld=(label,key,initIso)=>{const inp=el('input',{type:'date',value:initIso,onchange:e=>onDate(key,e.target.value),oninput:e=>onDate(key,e.target.value)});return el('div',{class:'field'},el('label',{},label),inp);};
+    bb.append(el('div',{class:'frow'}, dateFld('Start date','effectiveDate',today()), dateFld('End date','termEndDate',endIso)));
     const totalField=f('Contract total','contractTotal');
     const totalInp=totalField.querySelector('input');
     bb.append(el('div',{class:'frow'}, totalField, f('Unit # (optional)','unit',{ph:'e.g. 201'})));
@@ -3405,12 +3426,17 @@ function openProject(id,preset){
     const genBtn=el('button',{class:'btn accent',onclick:async()=>{
       if(!data.ownerEntity||!data.contractorName||!data.contractTotal){ err.textContent='Owner entity, contractor name and contract total are required.'; return; }
       genBtn.disabled=true; genBtn.textContent='Generating…'; err.textContent='';
+      if(data.combineProjectIds.length) syncCombine();   // segments reflect the inputs as they are NOW
       try{
         await saveProjectSilent(p);
         const r=await fetch('/api/projects/'+p.id+'/contract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(data)});
         if(!r.ok){ const e=await r.json().catch(()=>({})); err.textContent=e.error||'Generation failed.'; genBtn.disabled=false; genBtn.textContent='Generate contract'; return; }
         const out=await r.json();
         const a=el('a',{href:out.downloadUrl}); document.body.append(a); a.click(); a.remove();
+        // The server just attached the contract and ticked the steps; p was
+        // flushed before generating, so the close must NOT autosave the stale
+        // client copy over it (that un-ticked "contract generated").
+        flushOnClose=false;
         scrim.remove(); close(); await afterWrite('Contract generated · '+out.contractFileName);
       }catch(e){ err.textContent='Failed: '+e.message; genBtn.disabled=false; genBtn.textContent='Generate contract'; }
     }},'Generate contract');
@@ -3848,13 +3874,16 @@ const multiDraftDefaults=()=>({
   exhibitBText:'', scope:'',
   splitAmounts:false,
   bidFileKey:'', bidFileName:'', bidPages:'', bidMarks:[], bidPageCount:0,
+  projectId:null,                      // set when opened from a project — the contract attaches to it
   omitSections:[], excludedTerms:[], electedTerms:[],
   scope_:{pages:{},marks:{}},          // page selection + marks for the previewer
 });
 
 async function openMultiContract(){
-  const resuming=!!MULTI_DRAFT;
+  // A draft seeded from a project a moment ago is not "resumed" work.
+  const resuming=!!MULTI_DRAFT&&!MULTI_DRAFT._seeded;
   const d=MULTI_DRAFT||(MULTI_DRAFT=multiDraftDefaults());
+  delete d._seeded;
 
   // Closing keeps the draft — see MULTI_DRAFT. Nothing here discards work.
   const scrim=el('div',{class:'scrim',onclick:e=>{if(e.target===scrim)close();}});
@@ -4265,6 +4294,7 @@ async function openMultiContract(){
         exhibitBText:d.exhibitBText, scope:d.scope,
         bidFileKey:d.bidFileKey, bidPages:d.bidPages, bidMarks:d.bidMarks,
         omitSections:d.omitSections, excludedTerms:d.excludedTerms, electedTerms:d.electedTerms,
+        projectId:d.projectId||null,
       });
       window.open(r.downloadUrl,'_blank');
       MULTI_DRAFT=null;

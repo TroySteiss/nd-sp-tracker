@@ -868,11 +868,14 @@ api.post('/projects/:id/contract', async (req, res) => {
 /* =============================================================================
    Multi-entity contract generator (migration 027)
 
-   Top-admin level, and deliberately NOT tied to a Special Project: no project_id,
-   no bid slots, no lifecycle. It produces the agreement used for work spanning
-   several properties owned by different LLCs (landscaping/snow, pest, pool).
-   Records land in `contracts` with kind='multi', a null project_id and the entity
-   list in `details`.
+   Top-admin level. Two entry points:
+   - Contractors ▸ New multi-entity contract: a standalone service agreement
+     (landscaping/snow, pest, pool) — no project_id, no bid slots, no lifecycle.
+   - A split project's "Generate multi-entity contract" (2026-10-19): the builder
+     opens prefilled and posts `projectId`; the row then carries that project_id
+     and the document attaches to the project exactly like an SP contract
+     (contract_file_key, steps cascade, sig_anchor), so the signature chain runs.
+   Records land in `contracts` with kind='multi' and the entity list in `details`.
    ============================================================================= */
 
 /** The 27 numbered sections, so the builder can offer them for omission. */
@@ -907,6 +910,12 @@ api.post('/contracts/multi/bid', requireAdmin, memUpload.single('file'), async (
 
 api.post('/contracts/multi', requireAdmin, async (req, res) => {
   const b = req.body || {};
+
+  // Opened from a split project: the generated agreement IS that project's
+  // contract, so it attaches to the project the same way the SP route does.
+  const projectId = String(b.projectId || '').trim();
+  const proj: any = projectId ? (await query('select * from projects where id=$1', [projectId])).rows[0] : null;
+  if (projectId && !proj) return res.status(400).json({ error: 'The project this contract was opened from no longer exists — reopen it and generate again.' });
 
   // The entity list is assembled SERVER-SIDE from the ticked property codes. The
   // client sends codes, never entity names: these print verbatim on signed paper,
@@ -1037,7 +1046,7 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
     // the full entity list lives in `details`, which is the authoritative record.
     await c.query(
       `insert into contracts(id,project_id,property_code,output_filename,owner_entity,contractor,total,effective_date,term_end,scope,file_key,kind,details)
-       values($1,null,$2,$3,$4,$5,$6,$7,$8,$9,$10,'multi',$11)`,
+       values($1,$12,$2,$3,$4,$5,$6,$7,$8,$9,$10,'multi',$11)`,
       // The date columns take the builder's raw ISO values — the vars carry the
       // spelled-out forms the document prints, which dnull() can't parse.
       [id, codes[0], fileName, entities.map((e) => e.entity).join('; '), vars.contractorName, total,
@@ -1050,8 +1059,20 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
          workDays: vars.workDays, workStart: vars.workStart, workEnd: vars.workEnd,
          insuranceDeductible: vars.insuranceDeductible, exhibitBText: vars.exhibitBText,
          sigAnchor, tailoring: opts,
-       })]
+       }), proj ? proj.id : null]
     );
+    if (proj) {
+      // Same attachment as the SP route: the file lands on the project, the
+      // "contract generated" step ticks (cascading the earlier non-N/A steps),
+      // and the signature anchor is kept for countersigning.
+      let steps = { ...(proj.steps || {}), contractGenerated: true };
+      const noContract = !!proj.no_contract;
+      STEP_KEYS.slice(0, STEP_KEYS.indexOf('contractGenerated')).forEach((k) => {
+        if (!(noContract && CONTRACT_STEPS.includes(k))) steps[k] = true;
+      });
+      await c.query('update projects set contract_file_key=$1, contract_file_name=$2, steps=$3, sig_anchor=$4, updated_at=now() where id=$5',
+        [fileKey, fileName, JSON.stringify(steps), JSON.stringify(sigAnchor), proj.id]);
+    }
     // Remember the notice contacts so the next multi contract pre-fills them.
     // `entities` was built by mapping over `codes`, so the indices line up.
     if (b.rememberProperty !== false) {
@@ -1083,7 +1104,7 @@ api.post('/contracts/multi', requireAdmin, async (req, res) => {
   ].filter(Boolean).join('; ');
   logChange(req, {
     action: 'contract.generate.multi', entityType: 'contract', entityId: id, property: codes[0],
-    summary: `Multi-entity contract generated — ${vars.contractorName}, ${vars.contractSum} across ${entities.length} propert${entities.length === 1 ? 'y' : 'ies'} (${codes.join(', ')}) (${fileName})${tailored ? ` · ${tailored}` : ''}`,
+    summary: `Multi-entity contract generated — ${vars.contractorName}, ${vars.contractSum} across ${entities.length} propert${entities.length === 1 ? 'y' : 'ies'} (${codes.join(', ')}) (${fileName})${proj ? ` · attached to project "${proj.name}"` : ''}${tailored ? ` · ${tailored}` : ''}`,
     details: { properties: codes, entities: entities.map((e) => e.entity), tailoring: opts },
   });
   res.json({ id, contractFileKey: fileKey, contractFileName: fileName, downloadUrl: `/api/files/${fileKey}?name=${encodeURIComponent(fileName)}` });

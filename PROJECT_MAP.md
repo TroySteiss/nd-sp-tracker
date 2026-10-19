@@ -126,7 +126,10 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
     (ticked codes, per-property amounts from the shares, contractor, sum, scope, planned end,
     winning bid file; `billing:'one-time'`) and opens the builder. Admin-only, and an owner entity
     on **every** ticked property becomes a REQUIRED readiness check — the server 400s otherwise.
-    Note the generated multi row still has `project_id` null by design (see 027).
+    The generated multi row carries this project's `project_id` and the document attaches to
+    the project like an SP contract — `contract_file_key`, the "contract generated" step cascade and
+    `sig_anchor` (2026-10-19) — so the signature chain and Contracts view read it as the project's
+    contract. Standalone multi contracts from *Contractors* still have `project_id` null.
   - **In the property view they sit in a collapsed "⇄ Shared across properties" group, hidden by
     default** (`PFILT.hide.shared`; a ⇄ Shared chip reveals it) — same shape as the ATL group but
     **display only**: the share is real money at that site, so it stays in the financial summary,
@@ -231,7 +234,7 @@ shared/domain.ts          domain contract (lifecycle, phases, cash/audit models,
 | cash_snapshots | latest cushion per property | **no FK** — holds rows for not-yet-added properties (014); has `units`; `cash_after_dist` (cushion Col V) + `projected_dist` (Col U) base the year-end cash projection (020); `budget_ret_q1..q4` (Cols AE–AH) drive forward per-quarter accretion (021) |
 | cash_adjustments | mid-month deltas | FK to properties; survives imports |
 | gl_lines | SP general ledger | **no FK** (014) — keeps lines for unknown codes; `linked_project_id` ties to projects |
-| contracts | generated-contract records | Contracts view. `kind` 'sp'\|'multi' + `details` jsonb (027). `project_id` is nullable and is **always null for 'multi'** — those aren't Special Projects. A multi row's `property_code` is only the lead property; `details.entities` is the authoritative list. `change_orders` jsonb (030) — issued change orders in order; index+1 IS the CO number, latest `revisedSum` = current value |
+| contracts | generated-contract records | Contracts view. `kind` 'sp'\|'multi' + `details` jsonb (027). `project_id` is nullable; null for a standalone 'multi' row from Contractors, set when the multi builder was opened from a split project (2026-10-19). A multi row's `property_code` is only the lead property; `details.entities` is the authoritative list. `change_orders` jsonb (030) — issued change orders in order; index+1 IS the CO number, latest `revisedSum` = current value |
 | contractors | vendor directory | unique name |
 | budget_items | non-SP budget notes (031) | per-property ABOVE-THE-LINE recurring costs with month-level timing (annual fire inspection, landscaping/snow contracts): amount lands in `month` every year `first_year`→`last_year` (NULL = open-ended); optional attachment in files. **Informational only — nothing reads it** (see below). on delete cascade with the property |
 | files | uploaded/generated files as bytea | survive Railway redeploys (no volume) |

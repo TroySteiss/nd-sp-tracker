@@ -86,7 +86,7 @@ let BFILT={year:null};   // property view: selected year for the non-SP budget n
 let DASH={region:'',props:[],cats:[],catOpen:false,hidePlanned:true,discSort:'cost',discProp:''};  // dashboard controls
 let CFILT={prop:'',q:'',sort:'date_desc',status:'',region:''};  // contracts view filters + sort
 let IHF={region:''};   // in-house view region toggle
-let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true,q:'',proj:'',showAll:false};  // GL ledger filters (q = text search, proj = tie-out project, showAll = lift the 250-row render cap)
+let GLFILT={cat:'',match:'',hideSmall:true,hideInterest:true,q:'',proj:'',showAll:false,sort:'date',dir:'desc'};  // GL ledger filters (q = text search, proj = tie-out project, showAll = lift the 250-row render cap, sort/dir = click-a-header sorting — date desc by default)
 let QS={year:null,q:null};   // quarterly summary picker (Money tab)
 let PLANV={prop:''};         // long-range plan view: ''=portfolio summary, else a property code
 let CLOG={rows:[],user:'',prop:'',done:false,loading:false};   // change log view state
@@ -5281,7 +5281,31 @@ function viewProperty(){
   if(GLFILT.match==='interest') glView=glView.filter(g=>isInterestGL(g));
   // Sweep/interest income is never budgeted SP spend — hidden by default unless explicitly viewed
   if(GLFILT.hideInterest && GLFILT.match!=='interest' && !GLFILT.proj) glView=glView.filter(g=>!isInterestGL(g));
-  glView.sort((a,b)=>Math.abs(Number(b.amount)||0)-Math.abs(Number(a.amount)||0)||(String(a.category||'').localeCompare(String(b.category||''))));
+  /* Click-a-header sorting (2026-10-20, per Troy): date (most recent first) is
+     the default; amount sorts by magnitude; ties fall back to newest-first then
+     largest-first so the order is stable. ISO dates compare as strings. */
+  const GL_CMP={
+    amount:(a,b)=>Math.abs(Number(a.amount)||0)-Math.abs(Number(b.amount)||0),
+    category:(a,b)=>String(a.category||'').localeCompare(String(b.category||'')),
+    date:(a,b)=>String(a.date||'').localeCompare(String(b.date||'')),
+    vendor:(a,b)=>String(a.vendor||'').localeCompare(String(b.vendor||'')),
+  };
+  const glCmp=GL_CMP[GLFILT.sort]||GL_CMP.date;
+  glView.sort((a,b)=>{
+    const d2=glCmp(a,b);
+    if(d2)return GLFILT.dir==='desc'?-d2:d2;
+    return String(b.date||'').localeCompare(String(a.date||''))||(Math.abs(Number(b.amount)||0)-Math.abs(Number(a.amount)||0));
+  });
+  const glSortTh=(label,key,cls)=>{
+    const active=GLFILT.sort===key;
+    const h=th(label+(active?(GLFILT.dir==='desc'?' ▼':' ▲'):''),cls);
+    h.style.cursor='pointer'; h.style.userSelect='none';
+    h.title='Sort by '+label.toLowerCase()+(active?' — click to flip the direction':'');
+    h.onclick=()=>{ if(GLFILT.sort===key)GLFILT.dir=GLFILT.dir==='desc'?'asc':'desc';
+      else{ GLFILT.sort=key; GLFILT.dir=(key==='category'||key==='vendor')?'asc':'desc'; }
+      render(); };
+    return h;
+  };
   const glViewTotal=glView.reduce((a,g)=>a+(Number(g.amount)||0),0);
   const gp=el('div',{class:'panel',style:'overflow:auto','data-gl-panel':'1'});
   const glCatSel=el('select',{class:'mini-sel',onchange:e=>{GLFILT.cat=e.target.value;render();}},
@@ -5332,7 +5356,7 @@ function viewProperty(){
   }
   if(glView.length){
     const t=el('table',{class:'tbl'});
-    t.append(el('thead',{},tr(th('Amount','r'),th('Category'),th('Date'),th('Vendor / description'),th('Match'))));
+    t.append(el('thead',{},tr(glSortTh('Amount','amount','r'),glSortTh('Category','category'),glSortTh('Date','date'),glSortTh('Vendor / description','vendor'),th('Match'))));
     const tbb=el('tbody');
     // One candidate-prep for the whole table + a row cap: a thousand-row DOM
     // (with a suggestion per row) is the other half of the tie-out lag.
@@ -5348,7 +5372,7 @@ function viewProperty(){
     if(rowsToShow.length<glView.length)
       tbb.append(tr(el('td',{colspan:'5',style:'text-align:center;padding:10px'},
         el('button',{class:'btn ghost sm',onclick:()=>{GLFILT.showAll=true;render();}},
-          'Show all '+glView.length+' lines ('+(glView.length-rowsToShow.length)+' more — largest are already shown)'))));
+          'Show all '+glView.length+' lines ('+(glView.length-rowsToShow.length)+' more — the first '+rowsToShow.length+' of the current sort are shown)'))));
     if(glView.length>1) tbb.append(tr(td(el('strong',{class:'mono'},fmt(glViewTotal)),'r'),td(el('strong',{},'TOTAL — shown lines'),el('div',{style:'font-weight:400;font-size:11px;color:var(--ink-3)'},rowsToShow.length<glView.length?'total covers every filtered line, not just the '+rowsToShow.length+' rendered':'')),td(''),td(''),td('')));
     t.append(tbb); gp.append(t);
   } else gp.append(el('div',{class:'empty'},gls.length?'No lines match the current filters.':'No ledger lines for this property. Upload a general ledger on the Data tab.'));

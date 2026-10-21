@@ -2,7 +2,7 @@ import { rgb, type PDFDocument, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
   Layout, MARGIN, CONTENT_W, PAGE_W, PAGE_H, TOP, BOTTOM, FIRST_INDENT,
   collectBidItems, placeBidItems, exhibitText, numberPages, sectionSlug,
-  resolveCrossRefs, changeOrderFormPage,
+  resolveCrossRefs, changeOrderFormPage, termMonths, monthlyBreakdown,
   type BidAttachment, type SigAnchor,
 } from './contract-layout.js';
 
@@ -304,12 +304,16 @@ function generalTerms(v: MultiContractVars): string[] {
   paras.push(`Work Completion Date: ${v.workCompletionDate}.`);
   // The per-property breakdown is optional: the executed contract states only the
   // total, but a bid split by property (or into up-front/ongoing) itemises here.
+  // Monthly billing states total + monthly wherever the division is exact (see
+  // monthlyBreakdown) — same format on the sum and on every property line.
+  const months = v.billing === 'monthly' ? termMonths(v.effectiveDate, v.workCompletionDate) : 0;
+  const sumLabel = (months && monthlyBreakdown(v.contractSum, months)) || v.contractSum;
   const items = lineItems(v);
   if (items.length) {
-    paras.push(`"Contract Sum": ${v.contractSum}, as broken out by property below:\n`
-      + items.map((it) => `${it.label}: ${it.amount}`).join('\n'));
+    paras.push(`"Contract Sum": ${sumLabel}, as broken out by property below:\n`
+      + items.map((it) => `${it.label}: ${(months && !isSplit(v) && monthlyBreakdown(it.amount, months)) || it.amount}`).join('\n'));
   } else {
-    paras.push(`"Contract Sum": ${v.contractSum}`);
+    paras.push(`"Contract Sum": ${sumLabel}`);
   }
   return paras;
 }
@@ -626,15 +630,23 @@ async function exhibitAB(
 
 /* The executed Exhibit B reads "$330,000.00, per bid in Exhibit A." followed by
    the monthly total and any proration note — the admin supplies that narrative.
-   This fallback covers a blank field and itemises the breakdown if one was given. */
+   This fallback covers a blank field and itemises the breakdown if one was given.
+   Monthly billing (2026-10-21, per Troy) states BOTH figures wherever the math is
+   exact: "$225,960.00 Total, $37,660.00 paid monthly for 6 months" — and each
+   property line carries the same format. */
 function defaultExhibitB(v: MultiContractVars): string {
-  const lines = [`${v.contractSum}, per bid in Exhibit A.`];
+  const months = v.billing === 'monthly' ? termMonths(v.effectiveDate, v.workCompletionDate) : 0;
+  const head = (months && monthlyBreakdown(v.contractSum, months)) || v.contractSum;
+  const lines = [`${head}, per bid in Exhibit A.`];
   const items = lineItems(v);
   if (items.length) {
     lines.push('', isSplit(v)
       ? `Broken out below as the up-front and ${recurringLabel(v.billing)} amounts for each property.`
       : 'Includes the total for each property.');
-    for (const it of items) lines.push(`${it.label}: ${it.amount}`);
+    for (const it of items) {
+      const bd = (months && !isSplit(v)) ? monthlyBreakdown(it.amount, months) : null;
+      lines.push(`${it.label}: ${bd || it.amount}`);
+    }
   }
   return lines.join('\n');
 }

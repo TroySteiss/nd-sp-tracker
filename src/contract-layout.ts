@@ -338,6 +338,35 @@ export function changeOrderFormPage(doc: PDFDocument, roman: PDFFont, bold: PDFF
   sig('Contractor Signature:');
 }
 
+/* ---------- monthly breakdown (2026-10-21, per Troy) ----------
+   "$225,960.00 Total, $37,660.00 paid monthly for 6 months" on monthly
+   contracts. Derived ONLY when the math is airtight: the amount parses as
+   money, the term spans ≥2 months, and total ÷ months lands exactly on cents.
+   Anything else keeps the verbatim amount alone — a derived figure that can
+   disagree with the invoices has no place on signed paper. */
+export function termMonths(startMdy: string, endMdy: string): number {
+  const p = (s: string) => { const m = String(s || '').match(/^(\d{1,2})\/(\d{1,2})\/(\d{4})$/); return m ? new Date(+m[3], +m[1] - 1, +m[2]) : null; };
+  const a = p(startMdy), b = p(endMdy);
+  if (!a || !b || b <= a) return 0;
+  return Math.max(1, Math.round((b.getTime() - a.getTime()) / (30.4375 * 24 * 3600 * 1000)));
+}
+export function moneyNum(s: any): number | null {
+  const m = String(s || '').trim().match(/^\$?\s*([\d,]+(?:\.\d{1,2})?)$/);
+  if (!m) return null;
+  const n = Number(m[1].replace(/,/g, ''));
+  return isFinite(n) && n > 0 ? n : null;
+}
+export const usdFmt = (n: number): string => '$' + n.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+/** null when the breakdown can't be stated exactly — print the amount verbatim then. */
+export function monthlyBreakdown(amount: string, months: number): string | null {
+  if (months < 2) return null;
+  const n = moneyNum(amount);
+  if (n == null) return null;
+  const per = Math.round(n / months * 100) / 100;
+  if (Math.abs(per * months - n) > 0.005) return null;   // doesn't divide to the cent
+  return `${usdFmt(n)} Total, ${usdFmt(per)} paid monthly for ${months} months`;
+}
+
 /** Page numbers on every page, centered, 9pt. Call last, once all pages exist. */
 export function numberPages(doc: PDFDocument, roman: PDFFont): void {
   doc.getPages().forEach((p, i) => {

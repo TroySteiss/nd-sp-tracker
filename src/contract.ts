@@ -2,7 +2,7 @@ import { PDFDocument, rgb, type PDFFont, type PDFPage } from 'pdf-lib';
 import {
   Layout, MARGIN, CONTENT_W, PAGE_W, PAGE_H, TOP, FIRST_INDENT,
   collectBidItems, placeBidItems, exhibitText, numberPages, sectionSlug, resolveCrossRefs,
-  changeOrderFormPage,
+  changeOrderFormPage, termMonths,
   type BidAttachment, type SigAnchor,
 } from './contract-layout.js';
 
@@ -87,12 +87,17 @@ function priceSplitSentence(v: ContractVars): string {
   if (one) return ` The Contract Price is a one-time amount of ${one}, payable on satisfactory completion of the Work.`;
   return '';
 }
-/** Exhibit A & B breakdown lines under CONTRACT TOTAL. */
+/** Exhibit A & B breakdown lines under CONTRACT TOTAL. A monthly recurring
+    charge also states how many months the term spans (2026-10-21, per Troy),
+    when the term dates parse — the amount itself stays verbatim as entered. */
 function priceSplitLines(v: ContractVars): string[] {
   const one = oneTimeOf(v), ong = ongoingOf(v);
   const out: string[] = [];
   if (one) out.push(`One-time: ${one}`);
-  if (ong) out.push(`Recurring (${RECUR_ADVERB[recurPeriod(v)]}): ${ong}`);
+  if (ong) {
+    const months = recurPeriod(v) === 'monthly' ? termMonths(v.effectiveDate, v.termEndDate) : 0;
+    out.push(`Recurring (${RECUR_ADVERB[recurPeriod(v)]}): ${ong}${months >= 2 ? ` for ${months} months` : ''}`);
+  }
   return out;
 }
 /* The bid/mark plumbing and the signature stamper now live in the shared layout

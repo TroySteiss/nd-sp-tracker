@@ -560,6 +560,15 @@ attached as Exhibit E hereto and made part hereof") — that wording change refl
 sigAnchor moves with it (verified via contract-snapshot diff: only the sentence, the reflow and the
 new final page differ). The FILLED change order remains change-order.ts.
 
+**Monthly breakdown (2026-10-21, per Troy)**: monthly contracts state BOTH figures —
+"$225,960.00 Total, $37,660.00 paid monthly for 6 months" — via `termMonths`/`monthlyBreakdown`
+(contract-layout.ts). Derived ONLY when airtight: the amount parses as money, the term spans ≥2
+months, and total ÷ months lands exactly on cents; otherwise the verbatim amount prints alone.
+Multi template: the Exhibit A & B narrative headline AND every per-property line (same format),
+plus §1.d "Contract Sum" — skipped for the up-front/ongoing split (its ongoing is already
+per-period). SP template: the Exhibit A & B "Recurring (monthly)" line appends "for N months"
+(amount verbatim as entered). One-time/annual billing unchanged; SP snapshot text-identical.
+
 **Exhibit sign-off keep-together (2026-10-16, per Troy)**: `exhibitText` (Exhibits C/D in both
 templates) pre-measures each paragraph and, when everything REMAINING is one short tail (≤230pt)
 that can't fit before BOTTOM, breaks the page first — on a 16-entity portfolio contract the Final
